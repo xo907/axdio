@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121212">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta id="meta-robots" name="robots" content="noindex, nofollow">
+  <meta name="description" content="Axdio lossless audio streaming">
+  <meta property="og:title" content="Axdio">
+  <meta property="og:type" content="music.song">
+  <title>Axdio</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/favicon.ico">
+  <link rel="apple-touch-icon" href="/api/app-icon">
+  <link rel="stylesheet" href="/web/fonts/fonts.css">
+  <link rel="stylesheet" href="/web/mobile/mobile.css?v=3.1.0">
+  <style id="axdio-custom-css"></style>
+</head>
+<body>
+  <!-- Two decks: the second buffers the next song for gapless playback and crossfades. -->
+  <audio id="audio" preload="auto" playsinline></audio>
+  <audio id="audio2" preload="auto" playsinline></audio>
+
+  <main id="app"></main>
+
+  <div id="offline" role="status"><svg class="i"><use href="#i-cloud-off"/></svg>You're offline — only downloaded music will play</div>
+
+  <!-- Mini player -->
+  <div id="mini" class="hide" data-act="open-player" role="button" aria-label="Open Now Playing">
+    <img class="mini-art" id="mini-art" alt="">
+    <div class="mini-meta"><div class="mini-slide" id="mini-slide"><div class="mini-t" id="mini-t"></div><div class="mini-s" id="mini-s"></div></div></div>
+    <button class="ib" data-act="devices" aria-label="Connect to a device"><svg class="i md"><use href="#i-devices"/></svg></button>
+    <button class="ib" id="mini-like" data-act="like-cur" aria-label="Add to Liked Songs"><svg class="i md"><use href="#i-heart"/></svg></button>
+    <button class="ib" data-act="toggle" aria-label="Play"><svg class="i" id="mini-pp" data-pp><use href="#i-play"/></svg></button>
+    <div class="mini-prog"><i id="mini-prog"></i></div>
+  </div>
+
+  <!-- Bottom navigation -->
+  <nav id="nav" role="tablist" aria-label="Main">
+    <button class="nav-tab on" data-act="tab" data-tab="home" role="tab" aria-selected="true"><svg class="i off-i"><use href="#i-home"/></svg><svg class="i on-i"><use href="#i-home-f"/></svg>Home</button>
+    <button class="nav-tab" data-act="tab" data-tab="search" role="tab" aria-selected="false"><svg class="i off-i"><use href="#i-search"/></svg><svg class="i on-i"><use href="#i-search-f"/></svg>Search</button>
+    <button class="nav-tab" data-act="tab" data-tab="library" role="tab" aria-selected="false"><svg class="i off-i"><use href="#i-lib"/></svg><svg class="i on-i"><use href="#i-lib-f"/></svg>Your Library</button>
+  </nav>
+
+  <!-- Now Playing -->
+  <section id="player" aria-label="Now Playing" aria-hidden="true">
+    <div class="fp-bg"></div>
+    <div class="fp-scroll" id="fp-scroll">
+      <div class="fp-main">
+        <div class="fp-top">
+          <button class="ib" data-act="close-player" aria-label="Close Now Playing"><svg class="i lg"><use href="#i-down"/></svg></button>
+          <button class="fp-from" data-act="open-ctx"><small id="fp-from-k">Now playing</small><b id="fp-from-n"></b></button>
+          <button class="ib" data-act="more-cur" aria-label="More options"><svg class="i"><use href="#i-more-v"/></svg></button>
+        </div>
+        <div class="fp-art-wrap"><img class="fp-art" id="fp-art" alt=""></div>
+        <div class="fp-meta">
+          <div class="meta"><div class="fp-title" id="fp-title"><span></span></div><button class="fp-artist" id="fp-artist" data-act="open-cur-artist"></button></div>
+          <button class="ib fp-like" id="fp-like" data-act="like-cur" aria-label="Add to Liked Songs"><svg class="i"><use href="#i-heart"/></svg></button>
+        </div>
+        <div class="scrub">
+          <input type="range" class="range" id="fp-range" min="0" max="1000" value="0" aria-label="Seek">
+          <div class="scrub-times"><span id="fp-cur">0:00</span><span id="fp-dur">0:00</span></div>
+        </div>
+        <div class="fp-ctrl">
+          <button class="ib side" id="fp-shuf" data-shuf data-act="shuffle" aria-label="Shuffle"><svg class="i"><use href="#i-shuffle"/></svg></button>
+          <button class="ib skip" data-act="prev" aria-label="Previous"><svg class="i"><use href="#i-prev"/></svg></button>
+          <button class="fp-play" data-act="toggle" aria-label="Play"><span class="spin"></span><svg class="i" id="fp-pp" data-pp><use href="#i-play"/></svg></button>
+          <button class="ib skip" data-act="next" aria-label="Next"><svg class="i"><use href="#i-next"/></svg></button>
+          <button class="ib side" id="fp-rep" data-rep data-act="repeat" aria-label="Repeat"><svg class="i"><use href="#i-repeat"/></svg><span class="rep1">1</span></button>
+        </div>
+        <div class="fp-bottom">
+          <div class="grp"><button class="ib" data-act="devices" aria-label="Connect to a device"><svg class="i"><use href="#i-devices"/></svg></button><span class="fp-dev" id="fp-dev"></span></div>
+          <div class="grp">
+            <button class="ib" id="fp-sleep" data-sleep-btn data-act="sleep" aria-label="Sleep timer"><svg class="i"><use href="#i-moon"/></svg></button>
+            <button class="ib" data-act="share-cur" aria-label="Share"><svg class="i"><use href="#i-share"/></svg></button>
+            <button class="ib" data-act="open-queue" aria-label="Queue"><svg class="i"><use href="#i-queue"/></svg></button>
+          </div>
+        </div>
+      </div>
+      <div class="fp-cards" id="fp-cards"></div>
+    </div>
+  </section>
+
+  <!-- Full-screen lyrics -->
+  <section id="lyrics" aria-label="Lyrics" aria-hidden="true">
+    <div class="lyr-h">
+      <button class="ib" data-act="close-lyrics" aria-label="Close lyrics"><svg class="i lg"><use href="#i-down"/></svg></button>
+      <div class="meta"><div class="t ell" id="ly-t"></div><div class="s" id="ly-s"></div></div>
+      <button class="ib" data-act="more-cur" aria-label="More options"><svg class="i"><use href="#i-more-v"/></svg></button>
+    </div>
+    <div class="lyr-body" id="ly-body"></div>
+    <div class="lyr-foot">
+      <input type="range" class="range" id="ly-range" min="0" max="1000" value="0" aria-label="Seek">
+      <div class="scrub-times"><span id="ly-cur">0:00</span><span id="ly-dur">0:00</span></div>
+      <div class="row-c"><button class="fp-play" data-act="toggle" aria-label="Play"><span class="spin"></span><svg class="i" id="ly-pp" data-pp><use href="#i-play"/></svg></button></div>
+    </div>
+  </section>
+
+  <!-- Queue -->
+  <section id="queue" aria-label="Queue" aria-hidden="true">
+    <div class="q-h">
+      <button class="ib" data-act="close-queue" aria-label="Close queue"><svg class="i lg"><use href="#i-down"/></svg></button>
+      <div class="meta"><div class="t">Queue</div><div class="s" id="q-from" style="justify-content:center"></div></div>
+      <div style="width:44px"></div>
+    </div>
+    <div class="q-body" id="q-body"></div>
+    <div class="q-foot">
+      <button class="ib" id="q-shuf" data-shuf data-act="shuffle" aria-label="Shuffle"><svg class="i"><use href="#i-shuffle"/></svg></button>
+      <button class="ib" data-act="prev" aria-label="Previous"><svg class="i lg"><use href="#i-prev"/></svg></button>
+      <button class="ib" data-act="toggle" aria-label="Play" style="color:#fff"><svg class="i lg" id="q-pp" data-pp><use href="#i-play"/></svg></button>
+      <button class="ib" data-act="next" aria-label="Next"><svg class="i lg"><use href="#i-next"/></svg></button>
+      <button class="ib" id="q-rep" data-rep data-act="repeat" aria-label="Repeat"><svg class="i"><use href="#i-repeat"/></svg><span class="rep1">1</span></button>
+    </div>
+  </section>
+
+  <div id="layers"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Axdio Debian AMOLED terminal boot overlay (log lines are written by mobile.js as startup really happens) -->
+  <div id="axdio-loading-overlay" style="position:fixed;inset:0;background:#000;z-index:999999;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;">
+    <div style="background:#000;border:1px solid #27272a;border-radius:8px;max-width:760px;width:100%;box-shadow:0 25px 60px rgba(0,0,0,0.9);overflow:hidden;font-family:'JetBrains Mono','Fira Code','DejaVu Sans Mono',monospace;">
+      <div style="background:#121215;padding:10px 16px;border-bottom:1px solid #27272a;display:flex;align-items:center;justify-content:center;user-select:none;">
+        <div style="font-size:0.75rem;color:#a1a1aa;letter-spacing:0.02em;">user@127.0.0.1:~ (axdio-engine)</div>
+      </div>
+      <div id="axdio-term-body" style="padding:18px 20px;font-size:0.78rem;line-height:1.65;color:#e4e4e7;height:340px;overflow-y:auto;box-sizing:border-box;background:#000;">
+        <div><span style="color:#22c55e;">user@127.0.0.1</span>:<span style="color:#38bdf8;">~</span>$ ./axdio --daemon --bind 0.0.0.0:7866</div>
+        <div id="axdio-term-logs" style="margin-top:6px;"></div>
+        <div style="display:flex;align-items:center;margin-top:6px;">
+          <span style="color:#22c55e;">user@127.0.0.1</span>:<span style="color:#38bdf8;">~</span>$&nbsp;<span class="axdio-cursor"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <style>
+    .axdio-cursor { display: inline-block; width: 8px; height: 16px; background: #22c55e; vertical-align: middle; animation: axdioBlink 1s step-end infinite; }
+    @keyframes axdioBlink { 50% { opacity: 0; } }
+    #axdio-term-body::-webkit-scrollbar { width: 6px; }
+    #axdio-term-body::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+  </style>
+  <script>
+    window.__axdioBootT0 = Date.now();
+    // Failsafe: never leave the overlay up if the app script can't load.
+    setTimeout(function () { var o = document.getElementById('axdio-loading-overlay'); if (o) o.remove(); }, 12000);
+  </script>
+  <script src="/web/app/core.js?v=3.2.0"></script>
+  <script src="/web/app/social.js?v=1.0.0"></script>
+  <script src="/web/mobile/mobile.js?v=3.2.0"></script>
+</body>
+</html>

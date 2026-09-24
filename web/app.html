@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <meta id="meta-robots" name="robots" content="noindex, nofollow">
+  <meta name="description" content="Axdio lossless audio streaming">
+  <meta property="og:title" content="Axdio">
+  <meta property="og:type" content="music.song">
+  <title>Axdio</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/web/fonts/fonts.css">
+  <link rel="stylesheet" href="/web/desktop/desktop.css?v=2.2.0">
+  <style id="axdio-custom-css"></style>
+</head>
+<body>
+  <!-- Two decks: the second buffers the next song for gapless playback and crossfades. -->
+  <audio id="audio" preload="auto"></audio>
+  <audio id="audio2" preload="auto"></audio>
+
+  <div id="shell" class="no-right">
+    <header id="top">
+      <div class="brand"><span class="brand-mark" id="brand-mark"><svg class="i"><use href="#i-note"/></svg></span><span id="brand-name">Axdio</span></div>
+      <div class="nav-arrows">
+        <button class="circle-btn" id="nav-back" data-act="hist-back" data-tip="Go back" aria-label="Go back" disabled><svg class="i md"><use href="#i-back"/></svg></button>
+        <button class="circle-btn" id="nav-fwd" data-act="hist-fwd" data-tip="Go forward" aria-label="Go forward" disabled><svg class="i md"><use href="#i-fwd"/></svg></button>
+      </div>
+      <div class="top-mid">
+        <button class="home-btn" id="home-btn" data-act="go" data-view="home" data-tip="Home" aria-label="Home"><svg class="i"><use href="#i-home-f"/></svg></button>
+        <div class="search-wrap" role="search">
+          <svg class="i"><use href="#i-search"/></svg>
+          <input id="q" type="search" placeholder="What do you want to play?" autocomplete="off" spellcheck="false" aria-label="Search">
+          <span class="q-kbd">Ctrl K</span>
+          <button class="q-clear" id="q-clear" aria-label="Clear search" hidden><svg class="i md"><use href="#i-close"/></svg></button>
+        </div>
+      </div>
+      <div class="top-right">
+        <button class="top-icon soc" id="btn-msgs" data-act="go" data-view="messages" data-tip="Messages" aria-label="Messages" hidden><svg class="i md"><use href="#i-chat"/></svg><span class="badge"></span></button>
+        <button class="top-icon soc" id="btn-friends" data-act="toggle-friends" data-tip="Friend Activity" aria-label="Friend Activity" hidden><svg class="i md"><use href="#i-people"/></svg><span class="badge"></span></button>
+        <button class="top-icon" data-act="go" data-view="downloads" data-tip="Downloads" aria-label="Downloads"><svg class="i md"><use href="#i-dl"/></svg></button>
+        <button class="top-icon" data-act="go" data-view="recent" data-tip="Recently played" aria-label="Recently played"><svg class="i md"><use href="#i-history"/></svg></button>
+        <button class="top-icon" data-act="go" data-view="settings" data-tip="Settings" aria-label="Settings"><svg class="i md"><use href="#i-gear"/></svg></button>
+        <button class="avatar-btn" data-act="me-menu" data-tip="Account" aria-label="Account menu"><span id="me-avatar"></span></button>
+      </div>
+    </header>
+
+    <aside id="side" class="panel" aria-label="Your Library"></aside>
+    <main id="main" class="panel"><div id="view" tabindex="-1"></div></main>
+    <aside id="right" class="panel" aria-label="Now playing"><div class="resizer" data-resize="right"></div><div id="rp" style="display:flex;flex-direction:column;height:100%"></div></aside>
+
+    <footer id="bar" class="idle">
+      <div class="pb-left">
+        <div class="pb-art" data-act="toggle-np" data-tip="Now playing view"><img id="pb-img" alt=""><span class="up"><svg class="i"><use href="#i-up"/></svg></span></div>
+        <div class="pb-meta"><div class="pb-t"><a class="lnk" id="pb-t" data-act="pb-album"></a></div><div class="pb-a" id="pb-a"></div></div>
+        <button class="icon-btn pb-like" data-act="like-cur" data-tip="Add to Liked Songs" aria-label="Add to Liked Songs"><svg class="i md"><use href="#i-heart"/></svg></button>
+      </div>
+      <div class="pb-center">
+        <div class="pb-ctrl">
+          <button class="icon-btn" data-shuf data-act="shuffle" data-tip="Shuffle" aria-label="Shuffle"><svg class="i"><use href="#i-shuffle"/></svg></button>
+          <button class="icon-btn skip" data-act="prev" data-tip="Previous" aria-label="Previous"><svg class="i"><use href="#i-prev"/></svg></button>
+          <button class="pb-play" id="pb-play" data-act="toggle" data-tip="Play" aria-label="Play"><span class="spin"></span><svg class="i" data-pp><use href="#i-play"/></svg></button>
+          <button class="icon-btn skip" data-act="next" data-tip="Next" aria-label="Next"><svg class="i"><use href="#i-next"/></svg></button>
+          <button class="icon-btn" data-rep data-act="repeat" data-tip="Repeat" aria-label="Repeat"><svg class="i"><use href="#i-repeat"/></svg><span class="rep1">1</span></button>
+        </div>
+        <div class="pb-prog"><span id="pb-cur">0:00</span><input type="range" class="range" id="pb-range" min="0" max="1000" value="0" aria-label="Seek"><span id="pb-dur">0:00</span></div>
+      </div>
+      <div class="pb-right">
+        <button class="icon-btn" id="btn-np" data-act="toggle-np" data-tip="Now playing view" aria-label="Now playing view"><svg class="i"><use href="#i-npv"/></svg></button>
+        <button class="icon-btn" id="btn-lyrics" data-act="lyrics" data-tip="Lyrics" aria-label="Lyrics"><svg class="i"><use href="#i-mic"/></svg></button>
+        <button class="icon-btn" id="btn-queue" data-act="toggle-queue" data-tip="Queue" aria-label="Queue"><svg class="i"><use href="#i-queue"/></svg></button>
+        <button class="icon-btn" id="btn-dev" data-act="devices" data-tip="Connect to a device" aria-label="Connect to a device"><svg class="i"><use href="#i-devices"/></svg></button>
+        <div class="vol" id="vol-wrap"><button class="icon-btn" id="btn-mute" data-act="mute" data-tip="Mute" aria-label="Mute"><svg class="i"><use href="#i-volume"/></svg></button><input type="range" class="range" id="vol" min="0" max="100" value="100" aria-label="Volume"></div>
+        <button class="icon-btn" id="btn-pip" data-act="pip" data-tip="Open miniplayer" aria-label="Open miniplayer"><svg class="i"><use href="#i-pip"/></svg></button>
+        <button class="icon-btn" data-act="fullscreen" data-tip="Full screen" aria-label="Full screen"><svg class="i"><use href="#i-full"/></svg></button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Full screen -->
+  <div id="fs" aria-hidden="true">
+    <div class="fs-bg" id="fs-bg"></div><div class="fs-shade"></div>
+    <div class="fs-top">
+      <span class="brand-mark"><svg class="i"><use href="#i-note"/></svg></span>
+      <div class="fs-ctx"><small>Playing from</small><span id="fs-ctx"></span></div>
+      <span class="flex1"></span>
+      <button class="icon-btn" id="fs-lyr-btn" data-act="fs-lyrics" data-tip="Lyrics" aria-label="Lyrics"><svg class="i"><use href="#i-mic"/></svg></button>
+      <button class="icon-btn" data-act="fullscreen" data-tip="Exit full screen" aria-label="Exit full screen"><svg class="i"><use href="#i-full-exit"/></svg></button>
+    </div>
+    <div class="fs-main"><img class="fs-art" id="fs-art" alt=""><div class="flex1"><div class="fs-title" id="fs-title"></div><div class="fs-artist" id="fs-artist"></div></div></div>
+    <div class="fs-lyrics" id="fs-lyrics" hidden><div class="fl" id="fs-lines"></div></div>
+    <div class="fs-bottom">
+      <div class="pb-prog"><span id="fs-cur">0:00</span><input type="range" class="range" id="fs-range" min="0" max="1000" value="0" aria-label="Seek"><span id="fs-dur">0:00</span></div>
+      <div class="fs-ctrl">
+        <button class="icon-btn" data-shuf data-act="shuffle" aria-label="Shuffle"><svg class="i"><use href="#i-shuffle"/></svg></button>
+        <button class="icon-btn" data-act="prev" aria-label="Previous"><svg class="i"><use href="#i-prev"/></svg></button>
+        <button class="pb-play" data-act="toggle" aria-label="Play"><span class="spin"></span><svg class="i" data-pp><use href="#i-play"/></svg></button>
+        <button class="icon-btn" data-act="next" aria-label="Next"><svg class="i"><use href="#i-next"/></svg></button>
+        <button class="icon-btn" data-rep data-act="repeat" aria-label="Repeat"><svg class="i"><use href="#i-repeat"/></svg><span class="rep1">1</span></button>
+        <div class="fs-side"><button class="icon-btn pb-like" data-act="like-cur" aria-label="Add to Liked Songs"><svg class="i"><use href="#i-heart"/></svg></button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="offline" role="status"><svg class="i"><use href="#i-cloud-off"/></svg>You're offline — only downloaded music will play</div>
+  <div class="remote-strip" id="remote-strip"></div>
+  <div id="toast" aria-live="polite"></div>
+  <div class="drag-ghost" id="drag-ghost"></div>
+
+  <!-- Axdio Debian AMOLED terminal boot overlay (log lines are written as startup really happens) -->
+  <div id="axdio-loading-overlay" style="position:fixed;inset:0;background:#000;z-index:999999;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;">
+    <div style="background:#000;border:1px solid #27272a;border-radius:8px;max-width:760px;width:100%;box-shadow:0 25px 60px rgba(0,0,0,0.9);overflow:hidden;font-family:'JetBrains Mono','Fira Code','DejaVu Sans Mono',monospace;">
+      <div style="background:#121215;padding:10px 16px;border-bottom:1px solid #27272a;display:flex;align-items:center;justify-content:center;user-select:none;">
+        <div style="font-size:0.75rem;color:#a1a1aa;letter-spacing:0.02em;">user@127.0.0.1:~ (axdio-engine)</div>
+      </div>
+      <div id="axdio-term-body" style="padding:18px 20px;font-size:0.8rem;line-height:1.65;color:#e4e4e7;height:340px;overflow-y:auto;box-sizing:border-box;background:#000;">
+        <div><span style="color:#22c55e;">user@127.0.0.1</span>:<span style="color:#38bdf8;">~</span>$ ./axdio --daemon --bind 0.0.0.0:7866</div>
+        <div id="axdio-term-logs" style="margin-top:6px;"></div>
+        <div style="display:flex;align-items:center;margin-top:6px;">
+          <span style="color:#22c55e;">user@127.0.0.1</span>:<span style="color:#38bdf8;">~</span>$&nbsp;<span class="axdio-cursor"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <style>
+    .axdio-cursor { display: inline-block; width: 8px; height: 16px; background: #22c55e; vertical-align: middle; animation: axdioBlink 1s step-end infinite; }
+    @keyframes axdioBlink { 50% { opacity: 0; } }
+    #axdio-term-body::-webkit-scrollbar { width: 6px; }
+    #axdio-term-body::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+  </style>
+  <script>
+    window.__axdioBootT0 = Date.now();
+    // Failsafe: never leave the overlay up if the app script can't load.
+    setTimeout(function () { var o = document.getElementById('axdio-loading-overlay'); if (o) o.remove(); }, 12000);
+  </script>
+  <script src="/web/app/core.js?v=3.2.0"></script>
+  <script src="/web/app/social.js?v=1.0.0"></script>
+  <script src="/web/desktop/desktop.js?v=2.2.0"></script>
+</body>
+</html>

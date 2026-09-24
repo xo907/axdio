@@ -1,0 +1,14 @@
+# Example deployment. Copy to docker-compose.yml, change the music path, then: docker compose up -d
+services:
+  axdio:
+    image: ghcr.io/xo907/axdio:latest   # or `build: .` to build from this folder
+    container_name: axdio
+    restart: unless-stopped
+    ports:
+      - "7865:7865"
+    volumes:
+      - /path/to/your/music:/music     # your library
+      - ./config:/app/config           # settings, accounts, caches and backups
+    environment:
+      - PUID=1000                      # owner of ./config (id -u)
+      - PGID=1000
