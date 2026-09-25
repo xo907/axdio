@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.0
+
+**Downloader**
+- Songs are saved only when a YouTube upload is the exact recording. Its fingerprint must match a preview of that recording on average and throughout, it must be closer to the recording than to the song's other versions (live, remix, instrumental), and its length must match. The old check let official instrumentals and some live performances through as the song, which measurements on real uploads showed. Those are now turned down.
+- Streaming links are read from the service's public pages: seconds instead of minutes, with a preview of the exact recording to compare against. Tags carry the linked title, all artists, album, track number, date and artwork. spotDL is now optional (artist links and playlists over 100 songs).
+- YouTube links are identified by their audio. Music videos with intros get the plain recording, a video of a featured-artist version gets that version, and covers, live takes and fan edits aren't saved as the original.
+- New option **Check songs I already have**. Copies that aren't the right recording (another song, an instrumental, a music-video cut) are replaced at the same path. The old file goes to quarantine. Copies that match are kept without downloading.
+- New setting **Save songs that can't be verified**, off by default. Before, such songs were saved silently.
+- Deezer's advanced search and ISRC lookups stopped working, so many downloads couldn't be checked. Catalog lookups now use the searches that still work, plus iTunes.
+- yt-dlp now installs with Deno, the JavaScript runtime YouTube requires. Existing installs get it automatically.
+- The library audit's repairs use the same stricter matching.
+
 ## 2.3.0
 
 - Library sharing between servers: admins exchange a share code to add each other's libraries. Sharing can be one-way or both ways, and either side can stop at any time. Shared albums show which server they come from, and their songs play (with seeking), download for offline listening and work in Subsonic apps through your own server.

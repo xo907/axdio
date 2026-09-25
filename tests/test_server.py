@@ -884,6 +884,8 @@ class TestPlugins(Base):
         cls.wheels = TMP / "wheels"
         cls.wheels.mkdir(exist_ok=True)
         make_wheel(cls.wheels, "yt-dlp", "1.0.0", {"yt_dlp/__init__.py": FAKE_YTDLP, "yt_dlp/version.py": "__version__ = '1.0.0'\n"})
+        make_wheel(cls.wheels, "deno", "2.9.0", {"deno/__init__.py": ""})              # the JavaScript runtime yt-dlp comes with
+        make_wheel(cls.wheels, "yt-dlp-ejs", "0.8.0", {"yt_dlp_ejs/__init__.py": ""})
         make_wheel(cls.wheels, "spotdl", "4.0.0", {"spotdl/__init__.py": FAKE_SPOTDL}, requires=["yt-dlp"], scripts={"spotdl": "spotdl:main"})
         cls.pip_args, server.PLUGIN_PIP_ARGS = server.PLUGIN_PIP_ARGS, ["--no-index", "--find-links", str(cls.wheels)]
         cls.latest, server.pypi_latest = server.pypi_latest, lambda pkg: {"yt-dlp": "2.0.0", "spotdl": "4.0.0"}[pkg]
@@ -915,6 +917,7 @@ class TestPlugins(Base):
 
         v = self.run_job(a, "yt-dlp", "install")
         self.assertEqual(v["yt-dlp"]["installed"], "1.0.0")
+        self.assertEqual(server.plugin_versions().get("deno"), "2.9.0")
         self.assertEqual(server.youtube_search("anything")[0]["title"], "Found with 1.0.0")
 
         # A newer version: found, installed, and used without restarting.
@@ -953,6 +956,479 @@ class TestPlugins(Base):
         self.assertFalse(server.PLUGIN_ENV.exists())
         with self.assertRaises(server.PluginMissing): server.youtube_search("anything")
         self.assertEqual(a.get("/api/admin/v2/system").get_json()["yt_dlp"], "")
+
+
+# --- Downloader: exact-recording matching ---------------------------------------------------------------------------
+# YouTube, the catalogs and the streaming pages are replaced by stand-ins, and fingerprints are synthetic with known
+# error patterns, so every rule is tested exactly. (The thresholds themselves were measured on real uploads.)
+import random
+
+FRAMES_PER_SEC = 1 / server.FP_ITEM_SEC
+
+
+def fp_song(seed, seconds):
+    rnd = random.Random(seed)
+    return [rnd.getrandbits(32) for _ in range(int(seconds * FRAMES_PER_SEC))]
+
+
+def fp_noisy(fp, rate, seed=1, bursts=None):
+    """Flip bits at `rate`; `bursts` = (fraction of the song, rate there) for differences in some passages only."""
+    rnd, out = random.Random(seed), []
+    for i, v in enumerate(fp):
+        r = rate
+        if bursts and (i // 40) % 10 < bursts[0] * 10: r = bursts[1]
+        mask = 0
+        for b in range(32):
+            if rnd.random() < r: mask |= 1 << b
+        out.append(v ^ mask)
+    return out
+
+
+class DownloaderRig(Base):
+    """Stand-ins for everything outside the server."""
+    def setUp(self):
+        super().setUp()
+        self.fps, self.previews, self.versions, self.search, self.videos, self.pages = {}, {}, [], {}, {}, {}
+        self.downloads = []
+        self.orig = {n: getattr(server, n) for n in ("audio_fingerprint", "reference_fingerprint", "catalog_versions", "youtube_search",
+                                                     "youtube_download", "youtube_info", "_stream_get", "fetch_bytes", "reference_metadata",
+                                                     "plugin_ready", "send_discord_notification")}
+        server.audio_fingerprint = self.fake_fp
+        server.reference_fingerprint = lambda ref: self.previews.get(ref.get("preview"), [])
+        server.catalog_versions = lambda title, artists: [dict(v, markers=server.version_markers(v["title"])) for v in self.versions
+                                                          if server.base_title(v["title"]) == server.base_title(title)]
+        server.youtube_search = lambda q, music=True, limit=5: [dict(c, music=music) for c in self.search.get((q, music), [])][:limit]
+        server.youtube_download = self.fake_download
+        server.youtube_info = lambda url: dict(self.videos[self.vid(url)]["info"])
+        server._stream_get = lambda url: (url, self.pages[url])
+        server.fetch_bytes = lambda url, **k: None
+        server.reference_metadata = lambda ref: {"title": ref["title"], "artists": [ref["artist"]], "album": ref.get("album") or "Album",
+                                                 "albumartist": ref["artist"], "date": "2020-03-20", "tracknumber": 9}
+        server.send_discord_notification = lambda *a, **k: None
+        server._catalog_cache.clear()
+        self.settings(downloader_allow_unverified=False)
+        self.clip = TMP / "clip.flac"
+        if not self.clip.exists():
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=3", str(self.clip)], check=True)
+        self.logs = []
+
+    def tearDown(self):
+        for n, f in self.orig.items(): setattr(server, n, f)
+        super().tearDown()
+
+    @staticmethod
+    def vid(url):
+        return re.search(r"(?:v=|/)([\w-]{11})(?:$|&)", url).group(1)
+
+    def fake_fp(self, path, max_seconds=None):
+        fp = self.fps.get(str(path)) or self.fps.get(Path(path).name) or []
+        return fp[:int(max_seconds * FRAMES_PER_SEC)] if max_seconds else fp
+
+    def fake_download(self, url, accept=None):
+        v = self.videos[self.vid(url)]
+        info = dict(v["info"])
+        if accept and not accept(info): return info, None
+        self.downloads.append(info["id"])
+        path = server.WORK_DIR / f"yt-{info['id']}-{len(self.downloads)}.flac"
+        server.WORK_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.clip, path)
+        self.fps[str(path)] = v["fp"]
+        return info, str(path)
+
+    def video(self, vid, fp, seconds, title, channel="Some Channel", **info):
+        self.videos[vid] = {"fp": fp, "info": dict({"id": vid, "title": title, "duration": seconds, "channel": channel}, **info)}
+        return {"id": vid, "title": title, "duration": seconds, "channel": channel}
+
+    def catalog(self, cid, title, artist, seconds, fp, **extra):
+        url = f"https://preview.example/{cid}.mp3"
+        self.previews[url] = fp[400:640]           # a 30 s clip from the middle
+        self.versions.append(dict({"source": "deezer", "id": cid, "title": title, "artist": artist, "album": "Album", "duration": seconds,
+                                   "preview": url, "isrc": f"ISRC{cid:08d}", "strong": True, "via": "search", "cover": "", "explicit": False}, **extra))
+
+    def run_download(self, url, **opts):
+        server.admin_dl_state.update(status="idle")
+        server._run_download_task(url, str(MUSIC), opts.get("include_extras", False), opts.get("check_existing", False))
+        self.logs = list(server.admin_dl_state["logs"])
+        return self.logs
+
+    def library_file(self, rel, fp, seconds, title, artist):
+        p = MUSIC / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(self.clip), "-metadata", f"title={title}", "-metadata", f"artist={artist}", str(p)], check=True)
+        self.fps[str(p)] = fp
+        server.refresh_library_entry(rel)
+        with server.library_cache_lock: server.library_cache_data[rel]["duration"] = seconds
+        return p
+
+    def embed_page(self, entity):
+        return '<html><script id="__NEXT_DATA__" type="application/json">%s</script></html>' % json.dumps(
+            {"props": {"pageProps": {"state": {"data": {"entity": entity}}}}})
+
+
+class StreamSong(DownloaderRig):
+    """A streaming link to one song, with the link's own preview."""
+    SID = "0VjIjW4GlUZAMYd2vXMi3b"
+
+    def setup_song(self, preview=True):
+        self.song = fp_song(1, 200)
+        track = {"type": "track", "name": "Glass Lights", "title": "Glass Lights", "uri": f"spotify:track:{self.SID}",
+                 "artists": [{"name": "Neon Harbor"}], "duration": 200040, "isExplicit": False,
+                 "releaseDate": {"isoString": "2020-03-20T00:00:00Z"},
+                 "audioPreview": {"url": "https://p.scdn.co/mp3-preview/glass"} if preview else None}
+        if preview: self.previews["https://p.scdn.co/mp3-preview/glass"] = self.song[800:1042]
+        self.pages[f"https://open.spotify.com/embed/track/{self.SID}"] = self.embed_page(track)
+        self.pages[f"https://open.spotify.com/track/{self.SID}"] = (
+            '<meta property="og:description" content="Neon Harbor · After Midnight · Song · 2020"/>'
+            '<meta name="music:album:track" content="9"/><meta name="music:release_date" content="2020-03-20"/>'
+            '<meta property="og:image" content="https://i.example/cover.jpg"/>')
+        self.link = f"https://open.spotify.com/track/{self.SID}?si=abc"
+
+    def saved(self, title="Glass Lights"):
+        return [rel for rel, v in server.library_cache_data.items() if v.get("title") == title]
+
+    def tearDown(self):
+        for rel in list(server.library_cache_data):
+            if rel.startswith(("Neon Harbor/", "Other/")):
+                (MUSIC / rel).unlink(missing_ok=True)
+                server.library_cache_data.pop(rel, None)
+        super().tearDown()
+
+class TestDownloaderMatching(StreamSong):
+    """Streaming links: the link's own preview is the recording; only an upload that is that recording is saved."""
+    def test_only_the_exact_recording_is_saved(self):
+        self.setup_song()
+        q = ("Neon Harbor Glass Lights", True)
+        self.search[q] = [
+            # An official instrumental: the same length, close on average, far off wherever the vocals are.
+            self.video("instrumntl1", fp_noisy(self.song, 0.01, 2, bursts=(0.2, 0.3)), 201, "Glass Lights"),
+            # A live-to-backing-track performance: close throughout, but not close enough.
+            self.video("livetakexx1", fp_noisy(self.song, 0.16, 3), 199, "Glass Lights"),
+            # The music video: the recording itself, but with an intro.
+            self.video("musicvideo1", [0] * 300 + self.song, 262, "Glass Lights"),
+            # The recording.
+            self.video("rightupload", fp_noisy(self.song, 0.03, 4), 201.5, "Glass Lights"),
+        ]
+        self.run_download(self.link)
+        log = "\n".join(self.logs)
+        self.assertIn("parts of it differ", log)
+        self.assertIn("different audio (bit error 0.16", log)
+        self.assertNotIn("musicvideo1", self.downloads)          # vetoed on length before downloading
+        rels = self.saved()
+        self.assertEqual(len(rels), 1, log)
+        tags = server.read_track_tags(MUSIC / rels[0])
+        self.assertEqual((tags["title"], tags["artists"], tags["album"], tags["tracknumber"]), ("Glass Lights", ["Neon Harbor"], "After Midnight", "9"))
+        self.assertIn("rightupload", tags["comment"])
+        self.assertEqual(server.audit_db[rels[0]]["status"], "ok")
+        self.assertIn("1 saved", log)
+
+    def test_nothing_is_saved_without_a_match(self):
+        self.setup_song()
+        self.search[("Neon Harbor Glass Lights", True)] = [
+            self.video("coverupload", fp_song(9, 200), 200, "Glass Lights"),             # a cover: other audio
+            self.video("sameaudiox1", fp_noisy(self.song, 0.02, 5), 230, "Glass Lights"),  # right audio, extended edit
+        ]
+        self.run_download(self.link)
+        self.assertEqual(self.saved(), [])
+        self.assertIn("No YouTube upload is this exact recording", "\n".join(self.logs))
+
+    def test_closer_to_another_version_is_rejected(self):
+        """The catalog knows the song's live version; an upload that sounds more like it isn't the studio recording."""
+        self.setup_song()
+        live = fp_noisy(self.song, 0.1, 6)
+        self.catalog(77, "Glass Lights (Live)", "Neon Harbor", 200, live)
+        self.search[("Neon Harbor Glass Lights", True)] = [self.video("liveupload1", fp_noisy(live, 0.01, 7), 200, "Glass Lights")]
+        self.run_download(self.link)
+        self.assertEqual(self.saved(), [])
+        self.assertIn("sounds like 'Glass Lights (Live)'", "\n".join(self.logs))
+
+    def test_catalog_entries_without_the_featured_artist_are_not_other_versions(self):
+        self.setup_song()
+        feat = {"type": "track", "name": "Glass Lights (feat. Kid Echo)", "title": "Glass Lights (feat. Kid Echo)", "uri": f"spotify:track:{self.SID}",
+                "artists": [{"name": "Neon Harbor"}, {"name": "Kid Echo"}], "duration": 200040, "audioPreview": {"url": "https://p.scdn.co/mp3-preview/glass"}}
+        self.pages[f"https://open.spotify.com/embed/track/{self.SID}"] = self.embed_page(feat)
+        self.catalog(88, "Glass Lights", "Neon Harbor", 200, self.song)            # the same recording, credited to one artist
+        self.search[("Neon Harbor Glass Lights (feat. Kid Echo)", True)] = [self.video("rightupload", fp_noisy(self.song, 0.03, 4), 201.5, "Glass Lights")]
+        self.run_download(self.link)
+        self.assertEqual(len(self.saved("Glass Lights (feat. Kid Echo)")), 1, "\n".join(self.logs))
+
+    def test_version_words_and_junk_are_never_candidates(self):
+        self.setup_song()
+        self.search[("Neon Harbor Glass Lights", True)] = [
+            self.video("remixupload", fp_noisy(self.song, 0.02, 8), 200, "Glass Lights (Club Remix)"),
+            self.video("nightcore01", fp_noisy(self.song, 0.02, 8), 200, "Glass Lights nightcore"),
+        ]
+        self.run_download(self.link)
+        self.assertEqual(self.downloads, [])
+        self.assertEqual(self.saved(), [])
+
+    def test_unverifiable_songs_wait_for_the_setting(self):
+        self.setup_song(preview=False)
+        self.search[("Neon Harbor Glass Lights", True)] = [
+            self.video("ytmusicupld", fp_song(3, 200), 200, "Glass Lights", track="Glass Lights", artists=["Neon Harbor"], album="After Midnight")]
+        self.run_download(self.link)
+        self.assertEqual(self.saved(), [])
+        self.assertIn("no preview of this recording", "\n".join(self.logs))
+        self.settings(downloader_allow_unverified=True)
+        self.run_download(self.link)
+        rels = self.saved()
+        self.assertEqual(len(rels), 1, "\n".join(self.logs))
+        self.assertEqual(server.audit_db[rels[0]]["status"], "unverified")
+
+    def test_album_link(self):
+        a, b = fp_song(21, 180), fp_song(22, 240)
+        album = {"type": "album", "name": "Two Songs", "subtitle": "Neon Harbor", "trackList": [
+            {"uri": "spotify:track:" + "A" * 22, "title": "First One", "subtitle": "Neon Harbor", "duration": 180000,
+             "audioPreview": {"url": "https://p.scdn.co/a"}, "isExplicit": True},
+            {"uri": "spotify:episode:" + "E" * 22, "title": "A podcast", "subtitle": "Someone", "duration": 999000},
+            {"uri": "spotify:track:" + "B" * 22, "title": "Second One (Instrumental)", "subtitle": "Neon Harbor", "duration": 240000,
+             "audioPreview": {"url": "https://p.scdn.co/b"}}]}
+        self.previews.update({"https://p.scdn.co/a": a[500:742], "https://p.scdn.co/b": b[500:742]})
+        self.pages["https://open.spotify.com/embed/album/" + "C" * 22] = self.embed_page(album)
+        self.pages["https://open.spotify.com/album/" + "C" * 22] = '<meta name="music:release_date" content="2021-01-01"/>'
+        for sid, name in (("A" * 22, "First One"), ("B" * 22, "Second One (Instrumental)")):
+            self.pages[f"https://open.spotify.com/embed/track/{sid}"] = "no data"      # falls back to the album's data
+            self.pages[f"https://open.spotify.com/track/{sid}"] = ""
+        self.search[("Neon Harbor First One", True)] = [self.video("firstupload", fp_noisy(a, 0.02, 9), 180.5, "First One")]
+        self.run_download("https://open.spotify.com/album/" + "C" * 22)
+        log = "\n".join(self.logs)
+        self.assertIn("1 song(s) in Two Songs", log)                       # the podcast episode isn't a song either
+        self.assertIn("Skipping alternate version: Neon Harbor - Second One (Instrumental)", log)
+        rel = self.saved("First One")
+        self.assertEqual(rel, ["Neon Harbor/Two Songs/01 - First One.flac"], log)
+        self.assertEqual(server.read_track_tags(MUSIC / rel[0])["date"], "2021-01-01")
+
+
+class TestDownloaderExisting(StreamSong):
+    """Songs already in the library: kept when they're the recording, replaced only when they clearly aren't."""
+    REL = "Neon Harbor/After Midnight/09 - Glass Lights.flac"
+
+    def setUp(self):
+        super().setUp()
+        self.setup_song()
+        self.search[("Neon Harbor Glass Lights", True)] = [self.video("rightupload", fp_noisy(self.song, 0.03, 4), 201.5, "Glass Lights")]
+
+    def quarantined(self):
+        return [q for q in server._load_json_file(server.QUARANTINE_INDEX, []) if q["rel_path"] == self.REL]
+
+    def test_existing_copies_are_left_alone_without_the_option(self):
+        self.library_file(self.REL, fp_song(99, 200), 200, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link)
+        self.assertIn("[SKIP] Already in the library", "\n".join(self.logs))
+        self.assertEqual(self.downloads, [])
+
+    def test_the_right_recording_is_kept_without_downloading(self):
+        self.library_file(self.REL, fp_noisy(self.song, 0.02, 11), 200.3, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link, check_existing=True)
+        self.assertIn("it's the right recording", "\n".join(self.logs))
+        self.assertEqual(self.downloads, [])
+
+    def test_a_different_song_is_replaced_and_quarantined(self):
+        before = self.quarantined()
+        self.library_file(self.REL, fp_song(99, 200), 200, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link, check_existing=True)
+        log = "\n".join(self.logs)
+        self.assertIn("not the right song: different audio", log)
+        self.assertIn(f"[REPLACED] {self.REL}", log)
+        self.assertEqual(self.saved(), [self.REL])                       # same path: likes and playlists keep working
+        self.assertEqual(len(self.quarantined()), len(before) + 1)
+        self.assertIn("rightupload", server.read_track_tags(MUSIC / self.REL)["comment"])
+        self.assertEqual(server.audit_db[self.REL]["status"], "fixed")
+
+    def test_the_wrong_cut_is_replaced(self):
+        self.library_file(self.REL, [0] * 300 + self.song, 262, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link, check_existing=True)
+        self.assertIn("another cut: 4:22 long", "\n".join(self.logs))
+        self.assertIn("[REPLACED]", "\n".join(self.logs))
+
+    def test_an_instrumental_is_replaced(self):
+        self.library_file(self.REL, fp_noisy(self.song, 0.03, 12, bursts=(0.5, 0.33)), 200, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link, check_existing=True)
+        self.assertIn("[REPLACED]", "\n".join(self.logs))
+
+    def test_an_instrumental_that_is_close_on_average_is_replaced(self):
+        # Right on average over the preview (vocals absent in only a fifth of it), far off where the vocals are.
+        self.library_file(self.REL, fp_noisy(self.song, 0.03, 17, bursts=(0.2, 0.35)), 200, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link, check_existing=True)
+        log = "\n".join(self.logs)
+        self.assertIn("another version: close in places but far off in others", log)
+        self.assertIn("[REPLACED]", log)
+
+    def test_unclear_copies_are_decided_by_the_whole_file(self):
+        # Close to the preview's 30 seconds, but most of the rest differs (an alternate edit).
+        existing = fp_noisy(self.song, 0.35, 14)
+        existing[800:1042] = fp_noisy(self.song[800:1042], 0.14, 15)
+        self.library_file(self.REL, existing, 200, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link, check_existing=True)
+        log = "\n".join(self.logs)
+        self.assertIn("unclear", log)                                    # not sure from the preview alone...
+        self.assertIn("[REPLACED]", log)                                 # ...but clearly different from the verified download
+
+    def test_close_calls_are_kept(self):
+        # Off over the preview's 30 seconds, close elsewhere: between "the same recording" and "clearly another".
+        before = self.quarantined()
+        existing = fp_noisy(self.song, 0.055, 13)
+        existing[800:1042] = fp_noisy(self.song[800:1042], 0.14, 18)
+        self.library_file(self.REL, existing, 200, "Glass Lights", "Neon Harbor")
+        self.run_download(self.link, check_existing=True)
+        log = "\n".join(self.logs)
+        self.assertIn("not different enough to be sure", log)
+        self.assertNotIn("[REPLACED]", log)
+        self.assertEqual(self.quarantined(), before)
+
+    def test_other_artists_songs_with_the_same_title_are_not_touched(self):
+        other = "Other/Else/Glass Lights.flac"
+        self.library_file(other, fp_song(50, 200), 200, "Glass Lights", "Somebody Else")
+        self.run_download(self.link, check_existing=True)
+        self.assertIn("[SAVED]", "\n".join(self.logs))
+        self.assertTrue((MUSIC / other).exists())
+
+
+class TestDownloaderYouTube(DownloaderRig):
+    """YouTube links: the video's audio says which recording it is."""
+    def setUp(self):
+        super().setUp()
+        self.song = fp_song(31, 215)
+        self.catalog(1, "Paper Tides", "Luna Vale", 215, self.song)
+        self.catalog(2, "Paper Tides (Live)", "Luna Vale", 240, fp_song(32, 240))
+        self.catalog(3, "Paper Tides (feat. Kid Echo)", "Luna Vale", 214, fp_noisy(self.song, 0.3, 33))
+
+    def tearDown(self):
+        for rel in list(server.library_cache_data):
+            if rel.startswith("Luna Vale/"):
+                (MUSIC / rel).unlink(missing_ok=True)
+                server.library_cache_data.pop(rel, None)
+        super().tearDown()
+
+    def saved(self):
+        return [(rel, v.get("title")) for rel, v in server.library_cache_data.items() if rel.startswith("Luna Vale/")]
+
+    def test_studio_upload_is_saved_with_catalog_details(self):
+        self.video("topicupload", fp_noisy(self.song, 0.02, 1), 215.5, "Paper Tides", channel="Luna Vale - Topic",
+                   track="Paper Tides", artists=["Luna Vale"], album="Tides")
+        self.run_download("https://music.youtube.com/watch?v=topicupload&si=x")
+        self.assertEqual(self.saved(), [("Luna Vale/Album/09 - Paper Tides.flac", "Paper Tides")], "\n".join(self.logs))
+
+    def test_music_video_gets_the_plain_recording(self):
+        self.video("officialvid", [0] * 250 + self.song, 246, "Luna Vale - Paper Tides (Official Video)", channel="Luna Vale")
+        self.search[("Luna Vale Paper Tides", True)] = [self.video("plainrecord", fp_noisy(self.song, 0.02, 2), 215, "Paper Tides")]
+        self.run_download("https://www.youtube.com/watch?v=officialvid")
+        log = "\n".join(self.logs)
+        self.assertIn("looking for the plain song", log)
+        self.assertEqual(len(self.saved()), 1, log)
+        self.assertIn("plainrecord", server.read_track_tags(MUSIC / self.saved()[0][0])["comment"])
+
+    def test_featured_version_is_told_apart(self):
+        self.video("featversion", fp_noisy(fp_noisy(self.song, 0.3, 33), 0.02, 3), 214, "Luna Vale - Paper Tides ft. Kid Echo", channel="Luna Vale")
+        self.run_download("https://www.youtube.com/watch?v=featversion")
+        self.assertEqual([t for _, t in self.saved()], ["Paper Tides (feat. Kid Echo)"], "\n".join(self.logs))
+
+    def test_covers_are_not_saved_as_the_song(self):
+        self.video("acovervideo", fp_song(40, 215), 215, "Luna Vale - Paper Tides (Cover)", channel="Sam Sings")
+        self.run_download("https://www.youtube.com/watch?v=acovervideo")
+        self.assertEqual(self.saved(), [])
+        self.assertIn("isn't any catalog recording", "\n".join(self.logs))
+
+    def test_unlabeled_versions_follow_the_setting_in_playlists(self):
+        # Titled as the song, but the audio is the live recording.
+        self.video("livevideo01", fp_noisy(fp_song(32, 240), 0.02, 4), 240, "Paper Tides", channel="Luna Vale")
+        self.assertTrue(server.identify_youtube({"url": "https://www.youtube.com/watch?v=livevideo01", "album": "", "artist": ""}, False,
+                                                self.logs.append) is None)
+        self.assertIn("alternate versions are turned off", "\n".join(self.logs))
+        found = server.identify_youtube({"url": "https://www.youtube.com/watch?v=livevideo01", "album": "", "artist": "", "single": True},
+                                        False, self.logs.append)
+        self.assertEqual(found["target"]["title"], "Paper Tides (Live)")
+
+
+class TestDownloaderParts(Base):
+    def test_titles_and_credits(self):
+        self.assertEqual(server.base_title("Levitating (Live From Mexico)"), "levitating")
+        self.assertEqual(server.base_title("Blinding Lights - Chromatics Remix"), "blindinglights")
+        self.assertEqual(server.base_title("Pt. 2 (Remastered 2011)"), "pt2")
+        self.assertEqual(server.base_title("Shake It Off (Taylor's Version)"), "shakeitofftaylorsversion")
+        self.assertTrue(server.same_credits(["Daft Punk", "Pharrell Williams", "Nile Rodgers"], "Get Lucky",
+                                            "Daft Punk", "Get Lucky (feat. Pharrell Williams & Nile Rodgers)"))
+        self.assertTrue(server.same_credits(["Dua Lipa"], "Levitating", "Dua Lipa", "Levitating"))
+        self.assertFalse(server.same_credits(["Dua Lipa"], "Levitating", "Dua Lipa", "Levitating (feat. DaBaby)"))
+        self.assertFalse(server.same_credits(["Adele"], "Hello", "Lionel Richie", "Hello"))
+        # Catalogs often leave the featured artist out: the same recording, but not a library copy of it.
+        self.assertTrue(server.same_credits(["The Weeknd", "Playboi Carti"], "Timeless (feat Playboi Carti)", "The Weeknd", "Timeless", strict=False))
+        self.assertFalse(server.same_credits(["The Weeknd", "Playboi Carti"], "Timeless (feat Playboi Carti)", "The Weeknd", "Timeless"))
+        self.assertFalse(server.same_credits(["Dua Lipa"], "Levitating", "Dua Lipa", "Levitating (feat. DaBaby)", strict=False))
+        self.assertTrue(server.same_credits(["Tyler, The Creator"], "EARFQUAKE", "Tyler, The Creator", "EARFQUAKE"))
+
+    def test_library_copies_need_the_same_artists(self):
+        with server.library_cache_lock:
+            saved = dict(server.library_cache_data)
+            server.library_cache_data.update({
+                "Dua Lipa/Future Nostalgia/Levitating.flac": {"title": "Levitating", "artist": "Dua Lipa"},
+                "Dua Lipa/Moonlight/Levitating (feat. DaBaby).flac": {"title": "Levitating (feat. DaBaby)", "artist": "Dua Lipa"},
+                "The Weeknd/Starboy/Starboy.flac": {"title": "Starboy", "artist": "The Weeknd"}})
+        try:
+            copies = lambda title, artists: server.library_copies({"title": title, "artists": artists})
+            self.assertEqual(copies("Levitating", ["Dua Lipa"]), ["Dua Lipa/Future Nostalgia/Levitating.flac"])
+            self.assertEqual(copies("Levitating (feat. DaBaby)", ["Dua Lipa", "DaBaby"]), ["Dua Lipa/Moonlight/Levitating (feat. DaBaby).flac"])
+            self.assertEqual(copies("Starboy", ["The Weeknd", "Daft Punk"]), ["The Weeknd/Starboy/Starboy.flac"])
+            self.assertEqual(copies("Levitating", ["Someone Else"]), [])
+            # A file tagged with both artists but no 'feat.' in its title is the other recording too.
+            rel = "Dua Lipa/Club/Levitating.flac"
+            (MUSIC / rel).parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=duration=1", "-metadata", "title=Levitating",
+                            "-metadata", "artist=Dua Lipa;DaBaby", str(MUSIC / rel)], check=True)
+            server.write_track_tags(MUSIC / rel, {"artists": ["Dua Lipa", "DaBaby"]})
+            with server.library_cache_lock: server.library_cache_data[rel] = {"title": "Levitating", "artist": "Dua Lipa"}
+            self.assertNotIn(rel, copies("Levitating", ["Dua Lipa"]))
+            self.assertIn(rel, copies("Levitating", ["Dua Lipa", "DaBaby"]))
+            (MUSIC / rel).unlink()
+        finally:
+            with server.library_cache_lock:
+                server.library_cache_data.clear()
+                server.library_cache_data.update(saved)
+
+    def test_page_details_in_any_attribute_order(self):
+        orig = server._stream_get
+        server._stream_get = lambda url: (url, '<meta content="Artist · The Album · Song · 2020" property="og:description"/>'
+                                               '<meta name="music:album:track" content="4"><meta property="og:image" content="https://i/x.jpg"/>')
+        try:
+            meta = server._page_meta("track", "x" * 22)
+            self.assertEqual((meta["og:description"][0], meta["music:album:track"][0], meta["og:image"][0]),
+                             ("Artist · The Album · Song · 2020", "4", "https://i/x.jpg"))
+        finally:
+            server._stream_get = orig
+
+    def test_video_titles(self):
+        guess = lambda title, channel="Dua Lipa": server._youtube_guess({"title": title, "channel": channel})
+        self.assertEqual(guess("Dua Lipa - Levitating (Official Lyrics Video)")["title"], "Levitating")
+        self.assertEqual(guess("Kendrick Lamar - HUMBLE. (Lyrics) [HD]")["title"], "HUMBLE.")
+        self.assertEqual(guess("Coldplay - Viva La Vida (Official Video)")["title"], "Viva La Vida")
+        self.assertEqual(guess("Adele - Hello (Acoustic Version)")["title"], "Hello (Acoustic Version)")     # a real version stays
+        self.assertEqual(guess("Blinding Lights", "The Weeknd - Topic")["artists"], ["The Weeknd"])
+
+    def test_links(self):
+        self.assertEqual(server.streaming_link("https://open.spotify.com/intl-de/track/0VjIjW4GlUZAMYd2vXMi3b?si=x"), ("track", "0VjIjW4GlUZAMYd2vXMi3b"))
+        self.assertEqual(server.streaming_link("spotify:album:4yP0hdKOZPNshxUOjY0cZj"), ("album", "4yP0hdKOZPNshxUOjY0cZj"))
+        self.assertTrue(server.is_streaming_link("https://spotify.link/abc"))
+        self.assertFalse(server.is_streaming_link("https://www.youtube.com/watch?v=abc"))
+        with self.assertRaises(ValueError): server.streaming_link("https://open.spotify.com/show/0VjIjW4GlUZAMYd2vXMi3b")
+
+    def test_judging_uploads(self):
+        song = fp_song(5, 200)
+        rec = [({"title": "S", "duration": 200}, song[400:640])]
+        score = lambda fp: server.score_audio(fp, rec, [])
+        self.assertTrue(server.judge_upload(score(fp_noisy(song, 0.04, 1)), 201, 200)[0])
+        self.assertFalse(server.judge_upload(score(fp_noisy(song, 0.04, 1)), 206, 200)[0])        # 6 s longer
+        self.assertFalse(server.judge_upload(score(fp_noisy(song, 0.15, 1)), 200, 200)[0])        # close, not close enough
+        self.assertFalse(server.judge_upload(score(fp_noisy(song, 0.03, 1, bursts=(0.5, 0.33))), 200, 200)[0])   # differs in places
+        self.assertFalse(server.judge_upload(score(fp_song(6, 200)), 200, 200)[0])                  # another song
+
+    def test_download_needs_a_link(self):
+        a = self.admin()
+        self.settings(downloader_enabled=True)
+        try:
+            server.plugin_ready, orig = (lambda pid: True), server.plugin_ready
+            self.assertEqual(a.post("/api/admin/download", json={"url": "Blinding Lights"}).status_code, 400)
+        finally:
+            server.plugin_ready = orig
+            self.settings(downloader_enabled=False)
 
 
 def tearDownModule():

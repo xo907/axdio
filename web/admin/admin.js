@@ -686,8 +686,8 @@ function pageNotifications(el) {
 
 /* Downloader (existing /api/admin/download endpoints) */
 const TAG_CLASS = [
-  [/\[(ACCEPT|SAVED|FINISH|FIXED|RESTORED|OK)\]/g, 'c-ok'], [/\[(SKIP|FILTER|PAUSED|STOPPED|VERIFY|UNVERIFIED|TAGS_WRONG|WRONG_VERSION|UNCERTAIN|WARN)\]/g, 'c-warn'],
-  [/\[((?:FATAL )?ERR(?:OR)?|MISMATCH|FAILED)\]/g, 'c-bad'], [/\[(INIT|FIX|PROGRESS|RESUMED|INFO)\]/g, 'c-info'], [/\[(DISCOVERY)\]/g, 'c-vio'],
+  [/\[(ACCEPT|SAVED|REPLACED|FINISH|FIXED|RESTORED|OK)\]/g, 'c-ok'], [/\[(SKIP|FILTER|PAUSED|STOPPED|VERIFY|UNVERIFIED|TAGS_WRONG|WRONG_VERSION|UNCERTAIN|WARN|KEEP)\]/g, 'c-warn'],
+  [/\[((?:FATAL )?ERR(?:OR)?|MISMATCH|FAILED)\]/g, 'c-bad'], [/\[(INIT|FIX|PROGRESS|RESUMED|INFO|CHECK|IDENTIFY)\]/g, 'c-info'], [/\[(DISCOVERY)\]/g, 'c-vio'],
   [/\[(CONFIG|REJECT|download|ExtractAudio)\]/g, 'c-dim'],
 ];
 function termLine(line) {
@@ -704,12 +704,13 @@ function pageDownloader(el) {
   const on = ST.values.downloader_enabled !== false;
   el.innerHTML = settingsCard('downloader', { title: false })
     + `<section class="card"><div class="card-h"><h2>Download music</h2><span class="badge" id="dl-badge">Idle</span></div>
-      <p class="desc">Paste a link to a track, album or playlist and it's saved to the library as FLAC. Every track is fingerprinted against the Deezer/iTunes catalog first, so a wrong YouTube match never enters the library.</p>
+      <p class="desc">Paste a link to a song, album or playlist on YouTube, YouTube Music or a music streaming service. Each song is saved as FLAC only after the audio of a YouTube upload has matched a preview of the exact recording: the link's own preview, or Deezer's and iTunes'. Uploads that are another version (an instrumental, a live take, a music video with an intro) are turned down, and when no upload matches, nothing is saved.</p>
       <p class="desc" style="color:var(--warn)">Only download music you own or have permission to copy. You're responsible for how this server is used.</p>
       <p class="desc" id="dl-plugins" hidden></p>
       <div class="card-b">${on ? '' : '<p class="muted" style="margin-bottom:12px">The downloader is turned off. Turn it on above to start new downloads.</p>'}
         <form class="row" id="dl-form"><input class="input grow" id="dl-url" placeholder="Paste a track, album or playlist link" aria-label="Link to download"${on ? '' : ' disabled'}><button class="btn primary" id="dl-start"${on ? '' : ' disabled'}>${ic('downloader')}Download</button></form>
-        <div class="row wrap" style="justify-content:space-between;margin-top:12px"><label class="check"><input type="checkbox" id="dl-extras"> Include instrumentals, a cappellas and alternate versions</label>
+        <div class="row wrap" style="justify-content:space-between;margin-top:12px"><div style="display:grid;gap:8px"><label class="check"><input type="checkbox" id="dl-extras"> Include instrumentals, a cappellas and alternate versions in albums and playlists</label>
+          <label class="check" title="Each song you already have is compared with the recording. Copies that are clearly another song, version or cut are replaced by the verified download at the same place in the library; the old file goes to quarantine (Library audit) and can be restored."><input type="checkbox" id="dl-check"> Check songs I already have, and replace them if they're not the right recording</label></div>
           <div class="row"><button class="btn ghost sm" id="dl-pause" disabled>Pause</button><button class="btn ghost sm" id="dl-resume" disabled>Resume</button><button class="btn danger sm" id="dl-stop" disabled>Stop</button></div></div>
         <div class="progress"><i id="dl-bar"></i></div>
         <div class="term-head"><span class="muted" id="dl-count">Nothing queued</span></div>
@@ -734,9 +735,11 @@ function pageDownloader(el) {
   $('#dl-form').addEventListener('submit', async e => {
     e.preventDefault();
     const url = $('#dl-url').value.trim(); if (!url) return;
-    try { await api('/api/admin/download', { url, include_extras: $('#dl-extras').checked }); $('#dl-url').value = ''; poll(); }
+    try { await api('/api/admin/download', { url, include_extras: $('#dl-extras').checked, check_existing: $('#dl-check').checked }); $('#dl-url').value = ''; poll(); }
     catch (err) { fail(err); }
   });
+  try { $('#dl-check').checked = localStorage.getItem('axdio-dl-check') === '1'; } catch (e) { /* storage unavailable */ }
+  $('#dl-check').addEventListener('change', e => { try { localStorage.setItem('axdio-dl-check', e.target.checked ? '1' : '0'); } catch (x) { /* ignore */ } });
   $('#dl-pause').onclick = () => api('/api/admin/download/pause', {}).then(poll, fail);
   $('#dl-resume').onclick = () => api('/api/admin/download/resume', {}).then(poll, fail);
   $('#dl-stop').onclick = () => api('/api/admin/download/stop', {}).then(poll, fail);
@@ -747,7 +750,7 @@ function pageDownloader(el) {
     n.hidden = yt.installed && sd.installed;
     n.innerHTML = !yt.installed
       ? `<span class="badge warn">yt-dlp isn't installed</span> The downloader needs it to find and download audio. Install it under <a class="link" href="#/plugins">Plugins</a>.`
-      : 'Links to playlists and albums on music streaming services also need spotDL, under <a class="link" href="#/plugins">Plugins</a>.';
+      : 'Artist links from music streaming services list only the 10 most popular songs without spotDL (optional, under <a class="link" href="#/plugins">Plugins</a>).';
   }).catch(() => {});
 }
 
