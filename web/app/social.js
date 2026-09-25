@@ -363,7 +363,9 @@ const Chat = {
   unreadTotal() { return this.list.reduce((n, c) => n + (c.unread || 0), 0); },
   async refresh() {
     if (!U.token || !feat('social') || !feat('chat')) { this.list = []; this.byId = new Map(); hook('chats'); return; }
-    if (this.loading) return this.loading;
+    // A change that arrives while a refresh is running gets a refresh of its own, or it would be missed until the next one.
+    if (this.loading) { this.again = true; return this.loading; }
+    this.again = false;
     this.loading = (async () => {
       try {
         const d = await api('/api/chat/conversations');
@@ -375,6 +377,7 @@ const Chat = {
         hook('chats');
         if (this.open && this.byId.has(this.open)) this.pull(this.open);
       } catch (e) { /* offline */ } finally { this.loading = null; }
+      if (this.again) return this.refresh();
     })();
     return this.loading;
   },

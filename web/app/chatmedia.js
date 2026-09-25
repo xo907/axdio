@@ -235,7 +235,7 @@ const seen = typeof IntersectionObserver === 'function' ? new IntersectionObserv
   showImage(e.target);
 }), { rootMargin: '300px' }) : null;
 function showImage(el) {
-  const m = meta.get(el.dataset.axm); if (!m) return;
+  const m = meta.get(el.dataset.cm); if (!m) return;
   fetchFile(m.cid, m.f).then(url => {
     if (el.querySelector('.axm-full')) return;
     const im = new Image(); im.className = 'axm-full'; im.alt = m.f.name || 'Photo'; im.src = url;
@@ -248,14 +248,14 @@ function showImage(el) {
 function hydrate(root) {
   if (!root) return;
   root.querySelectorAll('.axm[data-cm]').forEach(slot => {
-    const id = slot.dataset.axm, el = live.get(id);
+    const id = slot.dataset.cm, el = live.get(id);
     if (el && el !== slot) { slot.replaceWith(el); return; }
     if (slot.classList.contains('axm-img')) { if (seen) seen.observe(slot); else showImage(slot); }
   });
 }
 function ring(el, p) { const r = el.querySelector('.axm-ring'); if (!r) return; r.hidden = false; r.style.setProperty('--p', Math.round(p * 100)); }
 async function playVideo(el) {
-  const m = meta.get(el.dataset.axm); if (!m || el.querySelector('video')) return;
+  const m = meta.get(el.dataset.cm); if (!m || el.querySelector('video')) return;
   el.classList.add('loading'); ring(el, 0);
   try {
     const url = await fetchFile(m.cid, m.f, p => ring(el, p));
@@ -277,7 +277,7 @@ function duck(media) {
   media.addEventListener('pause', () => { if (media.ended) return; setTimeout(() => { if (media.paused && !media.ended) back(); }, 400); });
 }
 async function playVoice(el) {
-  const m = meta.get(el.dataset.axm); if (!m) return;
+  const m = meta.get(el.dataset.cm); if (!m) return;
   let a = el._audio;
   if (!a) {
     el.classList.add('loading');
@@ -302,7 +302,7 @@ function seekVoice(el, e) {
 
 /* ---- Full-screen viewer ---- */
 async function openViewer(el) {
-  const m = meta.get(el.dataset.axm); if (!m) return;
+  const m = meta.get(el.dataset.cm); if (!m) return;
   const url = await fetchFile(m.cid, m.f).catch(() => null);
   if (!url) { toast("Couldn't load this photo"); return; }
   const lb = document.createElement('div');

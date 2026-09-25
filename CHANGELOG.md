@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.7.1
+
+- Fixed: photos, videos and voice messages in chats never loaded and kept spinning, for both the sender and the recipient. This had been broken since 2.6.0.
+- Fixed: a new message could be missed until the next one arrived, if it came in while the app was already refreshing your chats.
+
 ## 2.7.0
 
 - **Axdio Daily.** Every day everyone on the server gets the same song, picked from what's popular there, and names it from a 1-second clip, then 2, 4, 7, 11 and 16 seconds.
