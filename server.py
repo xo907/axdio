@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.6.0"
+AXDIO_VERSION = "2.7.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -3783,6 +3783,18 @@ ADMIN_SCHEMA = [
         {"key": "feature_collab", "type": "bool", "label": "Collaborative playlists", "default": True, "help": "Playlist owners can invite friends to add, remove and reorder songs."},
         {"key": "feature_party", "type": "bool", "label": "Listening parties", "default": True,
          "help": "Listeners start a party and everyone who joins (with the code or link, or as a friend) hears the same song at the same moment, with a shared queue, reactions and chat."},
+        {"key": "feature_daily", "type": "bool", "label": "Axdio Daily", "default": True,
+         "help": "A daily game: everyone on the server gets the same song and names it from a 1-second clip, then longer ones. Streaks, a shareable result and friends' scores. Songs come from what's popular on this server."},
+        {"key": "feature_discover", "type": "bool", "label": "Discover", "default": True,
+         "help": "A feed of songs each listener has never played, one swipe at a time, each starting at its catchiest part. Mixes in what friends have on repeat (only friends who share their listening)."},
+        {"key": "feature_notes", "type": "bool", "label": "Music notes", "default": True,
+         "help": "Friends can leave a short note with a song for each other, shown above their chats for 24 hours. Replies go to their private messages."},
+        {"key": "feature_chart", "type": "bool", "label": "Friends Chart", "default": True,
+         "help": "A weekly top 20 of the songs a listener and their friends play most, with how each moved since last week. Only friends who share their listening count."},
+        {"key": "feature_capsule", "type": "bool", "label": "Time capsule", "default": True,
+         "help": "Shows listeners what they played on this day in earlier years (or a month ago), and favourites they haven't played in a while."},
+        {"key": "feature_achievements", "type": "bool", "label": "Levels and achievements", "default": True,
+         "help": "Listeners earn XP and levels from listening, keep a daily streak going and unlock badges (Night Owl, Explorer, Album Purist…). Friends see each other's level, streak and best badges when they share their listening."},
         {"key": "feature_rewind", "type": "bool", "label": "Rewind", "default": True,
          "help": "Each listener gets their month and year in music: minutes, top artists and songs, listening habits and a card to share. Only they can see their numbers."},
         {"key": "feature_smart", "type": "bool", "label": "Smart transitions", "default": True,
@@ -4084,6 +4096,10 @@ def db():
                          "n INTEGER NOT NULL DEFAULT 1, b INTEGER NOT NULL DEFAULT 0)")
         _db_conn.execute("CREATE INDEX IF NOT EXISTS plays_user_ts ON plays (user, ts)")
         _db_conn.execute("CREATE TABLE IF NOT EXISTS analysis (rel TEXT PRIMARY KEY, mtime REAL NOT NULL, data TEXT NOT NULL)")
+        _db_conn.execute("CREATE TABLE IF NOT EXISTS events (user TEXT NOT NULL, ts REAL NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '')")
+        _db_conn.execute("CREATE INDEX IF NOT EXISTS events_user_kind ON events (user, kind)")
+        _db_conn.execute("CREATE TABLE IF NOT EXISTS daily (user TEXT NOT NULL, day TEXT NOT NULL, tries TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, "
+                         "solved INTEGER NOT NULL DEFAULT 0, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user, day))")
         _chat_attach(_db_conn)
     return _db_conn
 
@@ -4413,7 +4429,7 @@ def get_public_settings():
                                   "registration", "require_login", "min_password_length") if c.get(k) is not None}
     out["features"] = {k: bool(c.get("feature_" + k, True)) for k in ("lyrics", "offline", "connect", "sharing", "transcoding", "subsonic", "scrobbling", "avatars", "social")}
     out["features"].update(chat=chat_on(), collab=collab_on(), discord_login=discord_login_ready(), discord_presence=discord_presence_ready(), party=party_on(),
-                           rewind=rewind_on(), smart=smart_on())
+                           rewind=rewind_on(), smart=smart_on(), daily=daily_on(), discover=discover_on(), achievements=achievements_on(), notes=notes_on(), chart=chart_on(), capsule=capsule_on())
     if chat_on():
         out["chat_media"] = {k: bool(c.get(key, True)) for k, key in MEDIA_KINDS.items()}
         out["chat_media"].update(max=media_max(), chunk=CHAT_CHUNK)
@@ -4479,6 +4495,14 @@ def admin_v2_gates():
             return jsonify({"error": "Collaborative playlists are turned off on this server.", "disabled": True}), 403
     if p.startswith("/api/party") and not c.get("feature_party", True):
         return jsonify({"error": "Listening parties are turned off on this server.", "disabled": True}), 403
+    if p.startswith("/api/timecapsule") and not c.get("feature_capsule", True):
+        return jsonify({"error": "The time capsule is turned off on this server.", "disabled": True}), 403
+    if p.startswith("/api/achievements") and not c.get("feature_achievements", True):
+        return jsonify({"error": "Achievements are turned off on this server.", "disabled": True}), 403
+    if p.startswith("/api/discover") and not c.get("feature_discover", True):
+        return jsonify({"error": "Discover is turned off on this server.", "disabled": True}), 403
+    if p.startswith("/api/daily") and not c.get("feature_daily", True):
+        return jsonify({"error": "Axdio Daily is turned off on this server.", "disabled": True}), 403
     if p.startswith("/api/rewind") and not c.get("feature_rewind", True):
         return jsonify({"error": "Rewind is turned off on this server.", "disabled": True}), 403
     if not c.get("feature_connect", True) and p.startswith("/api/devices/"):
@@ -6487,8 +6511,10 @@ def share_open(kind, sid):
     """Open a shared item in the web app (signing in first on a private server)."""
     item = _share_lookup(kind, sid)
     if not item: return _share_missing()
-    if cfg().get("require_login") and not get_current_user(): return redirect(f"/?next=/{kind}/{sid}/open")
-    return redirect(item["app"])
+    at = request.args.get("t", 0, type=int)
+    moment = f"&t={at}" if kind == "track" and 0 < at < 86400 else ""
+    if cfg().get("require_login") and not get_current_user(): return redirect(f"/?next=/{kind}/{sid}/open" + (f"?t={at}" if moment else ""))
+    return redirect(item["app"] + moment)
 
 
 # ============================================================
@@ -6690,6 +6716,8 @@ def social_profile(username):
                         counts[extract_primary_artist(meta.get("artist"), meta.get("album_artist"))] += h.get("count", 1)
             out["top_artists"] = [a for a, _ in counts.most_common(10) if a != "Unknown Artist"]
             if state == "friend" and mine["share_activity"]: out["blend"] = blend(users_data[u], rec)
+    if achievements_on() and state in ("friend", "self") and s["share_activity"]:
+        out["achievements"] = achievements_public(username)      # outside users_lock: it reads the database
     if collab_on():
         out["playlists"] = [pl_summary(pl) for pl in playlists_of(u) if username in pl_members(pl)] if state != "self" else []
     return jsonify(out)
@@ -6742,6 +6770,55 @@ def social_pulse():
 def social_version(u):
     """One number that changes whenever anything social changes for this account (sent with Connect heartbeats)."""
     return sum((_sv.get(u) or {}).values())
+
+# --- Music notes: a line and a song for friends, for 24 hours ---
+NOTE_TTL = 86400
+
+def notes_on(): return social_on() and bool(cfg().get("feature_notes", True))
+
+def note_view(u):
+    rec = users_data.get(u) or {}
+    n = rec.get("note")
+    if not n or n.get("until", 0) <= time.time(): return None
+    out = {"text": n.get("text") or "", "ts": n["ts"], "until": n["until"]}
+    meta = library_entry(n["rel"]) if n.get("rel") else None
+    if isinstance(meta, dict): out.update(rel=n["rel"], title=meta.get("title") or Path(n["rel"]).stem, artist=meta.get("artist") or "")
+    return out
+
+@app.route("/api/social/note", methods=["POST"])
+def social_note():
+    u = _me()
+    if not notes_on(): return jsonify({"error": "Notes are turned off on this server.", "disabled": True}), 403
+    d = _json()
+    text = re.sub(r"\s+", " ", str(d.get("text") or "")).strip()[:60]
+    rel = d.get("rel") if isinstance(d.get("rel"), str) and isinstance(library_entry(d.get("rel")), dict) else None
+    with users_lock:
+        rec = users_data[u]
+        if d.get("clear") or (not text and not rel): rec.pop("note", None)
+        else:
+            if not rate_ok(("note", u), 40, 3600): return jsonify({"error": "That's a lot of notes. Try again later."}), 429
+            rec["note"] = {"text": text, "rel": rel, "ts": time.time(), "until": time.time() + NOTE_TTL}
+        save_users(u)
+        friends = list(social_rec(rec)["friends"])
+        mine = note_view(u)
+    bump(friends + [u], "f")
+    return jsonify({"note": mine})
+
+@app.route("/api/social/notes")
+def social_notes():
+    """The listener's own note and their friends' current ones, newest first."""
+    u = _me()
+    if not notes_on(): return jsonify({"mine": None, "friends": [], "off": True})
+    out = []
+    with users_lock:
+        for f in social_rec(users_data[u])["friends"]:
+            rec = users_data.get(f)
+            if not rec or blocked_either(u, f): continue
+            n = note_view(f)
+            if n: out.append(dict(user_card(f, rec), note=n))
+        mine = note_view(u)
+    out.sort(key=lambda x: -x["note"]["ts"])
+    return jsonify({"mine": mine, "friends": out})
 
 # --- Collaborative playlists ---
 # The owner invites friends; everyone on it can add, remove and reorder songs. Edits are operations on song
@@ -6877,7 +6954,7 @@ def collab_unlink(a, b):
 # Conversation ids: "dm_" + a hash of the two usernames (so a pair has one chat), or "gr_" + a random id the
 # creating app picks (it signs the group's first event with it). Everything else a client sends is opaque:
 # base64url public keys, wrapped keys, IVs, ciphertext and signatures, which are size-checked and stored as is.
-CONV_ID_RE = re.compile(r"^(dm_[0-9a-f]{24}|gr_[0-9A-Za-z_-]{22})$")
+CONV_ID_RE = re.compile(r"^(dm_[0-9a-f]{24}|gr_[0-9A-Za-z_-]{22}|sc_[0-9A-Za-z_-]{22})$")
 MSG_ID_RE = re.compile(r"^[0-9A-Za-z_-]{16,32}$")
 _B64 = re.compile(r"^[0-9A-Za-z_-]*$")
 PUBKEY_LEN = 87          # a P-256 public key (65 bytes) in base64url
@@ -7088,6 +7165,55 @@ def chat_dm():
             return jsonify({"error": "This account no longer exists."}), 404
     return jsonify(conv_views(u, {cid})[0])
 
+# --- Secret chats: one device each ---
+# Like a direct message, but its keys are sealed to one device on each side instead of to the accounts: the device that
+# started it and the one the other person first opens it on. Other devices signed in to either account (and anyone who
+# learns a password or recovery key) can't read it. Each device key is vouched for by its account's signing key, which
+# the apps check, and the key changes in the chat must be signed by one of its two devices. The server records which
+# devices those are, once, and refuses keys from any other device of the same account.
+DEVICE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{16}$")
+
+def _device_ok(dev):
+    return (isinstance(dev, dict) and DEVICE_ID_RE.match(str(dev.get("id") or "")) and _b64(dev.get("enc"), PUBKEY_LEN, PUBKEY_LEN)
+            and _b64(dev.get("sig"), PUBKEY_LEN, PUBKEY_LEN) and _b64(dev.get("cert"), 40, 200) and len(str(dev.get("label") or "")) <= 80)
+
+def _device(dev):
+    return {k: str(dev.get(k) or "")[:200] for k in ("id", "enc", "sig", "cert", "label")}
+
+@app.route("/api/chat/secret", methods=["POST"])
+def chat_secret():
+    u = _me()
+    d = _json()
+    other = str(d.get("username") or "").lower()
+    if not _device_ok(d.get("device")): return jsonify({"error": "This device's keys aren't in the expected format."}), 400
+    with users_lock:
+        if other not in users_data or other == u: return jsonify({"error": "There's no one with that username."}), 404
+        if blocked_either(u, other): return jsonify({"error": "You can't message this person."}), 403
+        if relation(u, other) != "friend": return jsonify({"error": "You can start a secret chat once you're friends."}), 403
+    if not rate_ok(("secret", u), 30, 3600): return jsonify({"error": "You've started a lot of secret chats. Try again later."}), 429
+    cid = "sc_" + secrets.token_urlsafe(16)
+    with SOCIAL_LOCK:
+        c = {"id": cid, "kind": "secret", "members": sorted([u, other]), "created_by": u, "created": time.time(), "events": [], "keys": [],
+             "devices": {u: _device(d["device"])}}
+        conv_save(c)
+    bump([u, other], "c")
+    return jsonify(conv_views(u, {cid})[0])
+
+@app.route("/api/chat/<cid>/accept", methods=["POST"])
+def chat_secret_accept(cid):
+    """The other person opens a secret chat on the device that will be its only one on their side."""
+    u = _me()
+    dev = _json().get("device")
+    if not _device_ok(dev): return jsonify({"error": "This device's keys aren't in the expected format."}), 400
+    with SOCIAL_LOCK:
+        c = _conv_or_404(cid, u)
+        if c["kind"] != "secret": return jsonify({"error": "That isn't a secret chat."}), 400
+        if u in c["devices"]: return jsonify({"error": "This secret chat is already open on another of your devices.", "elsewhere": True}), 409
+        c["devices"][u] = _device(dev)
+        conv_save(c)
+    bump(c["members"], "c")
+    return jsonify(conv_views(u, {cid})[0])
+
 def _event_ok(ev, u, n):
     return (isinstance(ev, dict) and ev.get("by") == u and ev.get("n") == n and ev.get("t") in ("create", "add", "remove", "leave", "title")
             and _b64(ev.get("sig"), 40, 200) and _b64(ev.get("prev", ""), 0, 43) and isinstance(ev.get("ts"), int) and len(json.dumps(ev)) < 12000)
@@ -7162,7 +7288,14 @@ def chat_conv_key(cid):
                 and all(_sealed(w, 120) and _b64(w.get("e"), PUBKEY_LEN, PUBKEY_LEN) for w in wraps.values())
                 and all(re.fullmatch(r"[0-9a-f]{64}", str(f)) for f in fps.values())):
             return jsonify({"error": "That key couldn't be saved."}), 400
-        c["keys"].append({x: k[x] for x in ("v", "conv", "by", "ts", "ev", "members", "wraps", "fps", "sig")})
+        fields = ("v", "conv", "by", "ts", "ev", "members", "wraps", "fps", "sig")
+        if c["kind"] == "secret":
+            devs = c.get("devices") or {}
+            if set(devs) != set(members): return jsonify({"error": "Waiting for the other person to open this secret chat."}), 409
+            if k.get("dev") != devs[u]["id"] or not _b64(k.get("dsig"), 40, 200):
+                return jsonify({"error": "This secret chat is open on another of your devices.", "elsewhere": True}), 403
+            fields += ("dev", "dsig")
+        c["keys"].append({x: k[x] for x in fields})
         conv_save(c)
     bump(members, "c")
     return jsonify(conv_views(u, {cid})[0])
@@ -7186,7 +7319,7 @@ def chat_messages(cid):
         return jsonify({"messages": [_msg_out(*r) for r in rows], "more": after is None and len(rows) == limit})
     d = _json()
     latest = c["keys"][-1]["v"] if c["keys"] else 0
-    if c["kind"] == "dm":
+    if c["kind"] in ("dm", "secret"):
         other = next(m for m in c["members"] if m != u)
         with users_lock:
             if other in (c.get("gone") or []) or other not in users_data: return jsonify({"error": "This account no longer exists."}), 404
@@ -7285,7 +7418,7 @@ def chat_file_create(cid):
         return jsonify({"error": {"image": "Photos", "video": "Videos", "voice": "Voice messages"}[kind] + " are turned off on this server."}), 403
     if not isinstance(size, int) or size < 1: return jsonify({"error": "Bad size."}), 400
     if size > media_max(): return jsonify({"error": f"Attachments can be up to {media_max() // MB} MB on this server."}), 413
-    if c["kind"] == "dm":
+    if c["kind"] in ("dm", "secret"):
         other = next(m for m in c["members"] if m != u)
         with users_lock:
             if blocked_either(u, other): return jsonify({"error": "You can't message this person."}), 403
@@ -7441,7 +7574,10 @@ def social_forget(u):
             touched.update(c["members"])
     for k in [k for k, v in _links.items() if v["user"] == u]: _links.pop(k, None)
     _presence.pop(u, None)
-    with _db_lock: db().execute("DELETE FROM plays WHERE user = ?", (u,))
+    with _db_lock:
+        db().execute("DELETE FROM plays WHERE user = ?", (u,))
+        db().execute("DELETE FROM daily WHERE user = ?", (u,))
+        db().execute("DELETE FROM events WHERE user = ?", (u,))
     bump(touched, "f", "c", "p")
 
 def social_janitor():
@@ -8641,11 +8777,14 @@ def plugins_save(st):
 def plugin_versions(env=None):
     """{distribution name: version} for what's installed in the plugin environment."""
     out = {}
-    try:
-        for d in importlib.metadata.distributions(path=plugin_site_dirs(env)):
+    try: dists = list(importlib.metadata.distributions(path=plugin_site_dirs(env)))
+    except Exception: return out
+    for d in dists:
+        # One unreadable package (say, one pip is still writing) mustn't hide the others.
+        try:
             n = (d.metadata["Name"] or "").lower().replace("_", "-")
             if n: out[n] = d.version
-    except Exception: pass
+        except Exception: continue
     return out
 
 def plugin_version(pid):
@@ -9429,7 +9568,11 @@ def party_view(p, me):
     return {"id": p["id"], "code": p["code"], "name": p["name"], "host": p["host"], "me": me, "rev": p["rev"], "now": time.time(),
             "ended": p.get("ended", False), "visible": p["visible"],
             "perm": dict(p["perm"]), "can_control": host or p["perm"]["control"], "can_add": host or p["perm"]["add"], "is_host": host,
-            "members": [dict(user_card(u), host=u == p["host"], joined=m["joined"]) for u, m in sorted(p["members"].items(), key=lambda x: x[1]["joined"])],
+            "members": [dict(user_card(u), host=u == p["host"], joined=m["joined"], keys=e2ee_public(users_data.get(u) or {}))
+                        for u, m in sorted(p["members"].items(), key=lambda x: x[1]["joined"])],
+            # Party chat is end-to-end encrypted: the chat key, sealed for each member's private-message key.
+            "keyv": p.get("keyv", 0), "my_wrap": (p.get("wraps") or {}).get(p.get("keyv", 0), {}).get(me),
+            "wrapped": sorted((p.get("wraps") or {}).get(p.get("keyv", 0), {})),
             "state": dict(p["state"], pos=_party_pos(p), at=time.time()),
             "queue": p["queue"][:200], "queue_len": len(p["queue"]), "feed": list(p["feed"]), "reactions": PARTY_REACTIONS}
 
@@ -9482,7 +9625,7 @@ def party_home():
             d = _json()
             name = re.sub(r"\s+", " ", str(d.get("name") or "")).strip()[:60] or f"{_party_name(u)}'s party"
             pid = "pty_" + secrets.token_urlsafe(9)
-            p = {"id": pid, "code": _party_code(), "name": name, "host": u, "created": time.time(), "members": {}, "rev": 0,
+            p = {"id": pid, "code": _party_code(), "name": name, "host": u, "created": time.time(), "members": {}, "rev": 0, "keyv": 0, "wraps": {},
                  "perm": {"add": True, "control": False}, "visible": True, "queue": [], "played": [],
                  "feed": collections.deque(maxlen=80), "ended": False,
                  "state": {"rel": None, "item": None, "by": None, "playing": False, "pos": 0.0, "at": time.time(), "dur": 0.0}}
@@ -9496,6 +9639,7 @@ def party_home():
                 _party_start(p, p["queue"].pop(0))
                 if d.get("pos"): p["state"]["pos"] = max(0.0, float(d["pos"]))
             activity("party", f"Started a listening party ({name})", u)
+            events_add(u, "party_host", pid)
             return jsonify(party_view(p, u))
         mine = _parties.get(_party_of.get(u) or "")
         live = [{"id": p["id"], "code": p["code"], "name": p["name"], "host": user_card(p["host"]), "members": len(p["members"]),
@@ -9515,6 +9659,7 @@ def party_join():
         if not p: return jsonify({"error": "There's no live party with that code."}), 404
         try: _party_join(p, u)
         except ValueError as ex: return jsonify({"error": str(ex)}), 409
+        events_add(u, "party_join", p["id"])
         return jsonify(party_view(p, u))
 
 
@@ -9607,10 +9752,28 @@ def party_op(pid):
             if not rate_ok(("party-react", u), 8, 5): return jsonify({"error": "Slow down a little."}), 429
             _party_event(p, "react", u, emoji=emoji)
         elif op == "chat":
-            text = re.sub(r"\s+", " ", str(d.get("text") or "")).strip()[:300]
-            if not text: return jsonify({"error": "Say something first."}), 400
+            # Only ciphertext: the apps encrypt with the party's chat key, which the server never sees.
+            v = d.get("v")
+            if not (isinstance(v, int) and 1 <= v <= p.get("keyv", 0) and _sealed(d, 1600)):
+                return jsonify({"error": "Party chat is end-to-end encrypted. Update the app to join in."}), 400
             if not rate_ok(("party-chat", u), 6, 10): return jsonify({"error": "Slow down a little."}), 429
-            _party_event(p, "chat", u, text=text)
+            _party_event(p, "chat", u, v=v, iv=d["iv"], ct=d["ct"])
+        elif op == "keys":
+            # The chat key, sealed for members. A new key (the next version) comes from the host, or from anyone for the
+            # very first one; more members can be added to the current one by whoever already has it.
+            v, wraps = d.get("v"), d.get("wraps")
+            cur = p.get("keyv", 0)
+            ok = lambda w: isinstance(w, dict) and _sealed(w, 200) and _b64(w.get("e"), PUBKEY_LEN, PUBKEY_LEN) and _b64(w.get("sig"), 40, 200) and w.get("by") == u
+            if not (isinstance(wraps, dict) and wraps and all(k in p["members"] and ok(w) for k, w in wraps.items())):
+                return jsonify({"error": "Those keys aren't right."}), 400
+            if v == cur + 1 and (cur == 0 or u == p["host"]) and u in wraps:
+                p.setdefault("wraps", {})[v] = {k: {x: w[x] for x in ("e", "iv", "ct", "sig", "by")} for k, w in wraps.items()}
+                p["keyv"] = v
+            elif v == cur and cur:
+                have = p["wraps"][cur]
+                for k, w in wraps.items(): have.setdefault(k, {x: w[x] for x in ("e", "iv", "ct", "sig", "by")})
+            else:
+                return jsonify({"error": "The party's key just changed.", "stale": True}), 409
         elif op == "settings":
             for k in ("add", "control"):
                 if k in d: p["perm"][k] = bool(d[k])
@@ -9783,7 +9946,7 @@ def api_rewind():
 # and can even out loudness between songs. For that each song is measured once with ffmpeg's EBU R128 meter (a
 # loudness value every 100 ms), in the background at low priority, one song at a time. Results are cached in axdio.db
 # and redone only when the file changes.
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 SILENCE_LUFS = -50.0
 _an_queue = collections.deque()
 _an_waiting = set()
@@ -9804,7 +9967,7 @@ def measure_song(path):
     if not frames or not got: return None
     lufs, dur = float(got.group(1)), frames[-1][0]
     loud = [t for t, m in frames if m > SILENCE_LUFS]
-    if not loud: return {"v": ANALYSIS_VERSION, "lufs": lufs, "dur": dur, "start": 0, "end": dur, "intro": 0, "outro": dur}
+    if not loud: return {"v": ANALYSIS_VERSION, "lufs": lufs, "dur": dur, "start": 0, "end": dur, "intro": 0, "outro": dur, "hook": 0}
     body = [t for t, m in frames if m > lufs - 10]
     full = [t for t, m in frames if m > lufs - 3]      # the song at its usual level: after the last of it, a fade-out
     # Momentary loudness covers the 400 ms before each timestamp (one every 100 ms): the first window with sound ends
@@ -9813,8 +9976,17 @@ def measure_song(path):
     end = max(start, min(dur, loud[-1] - 0.15))
     intro = max(start, body[0] - 0.2) if body else start
     outro = min(end, max(intro, full[-1] - 0.2)) if full else end
+    # The hook: the most energetic 15 seconds, looked for between 15% and 75% of the way in (past the intro, before the outro).
+    hook, win = dur * .33, max(1, int(round(15 / max(.05, (frames[-1][0] - frames[0][0]) / max(1, len(frames) - 1)))))
+    if dur >= 40 and len(frames) > win:
+        energy = [0.0]
+        for _, m in frames: energy.append(energy[-1] + 10 ** (max(m, -70.0) / 10))
+        best = -1.0
+        for i in range(len(frames) - win):
+            t0 = frames[i][0] - 0.4
+            if dur * .15 <= t0 <= dur * .75 and energy[i + win] - energy[i] > best: best, hook = energy[i + win] - energy[i], t0
     return {"v": ANALYSIS_VERSION, "lufs": round(lufs, 1), "dur": round(dur, 2), "start": round(start, 2), "end": round(end, 2),
-            "intro": round(intro, 2), "outro": round(outro, 2)}
+            "intro": round(intro, 2), "outro": round(outro, 2), "hook": round(max(0.0, hook), 1)}
 
 def analysis_cached(rel):
     path = resolve_safe_music_file(rel)
@@ -9866,6 +10038,462 @@ def api_analysis():
             _an_wake.set()
     return jsonify({"analysis": out})
 
+# ============================================================
+# AXDIO DAILY: name today's song
+# ============================================================
+# One song a day for everyone on the server (by UTC date), picked from what's popular here. Listeners hear 1 second
+# of it, then 2, 4, 7, 11 and 16 as they guess or skip. The clips are cut once a day without tags, and a clip is only
+# handed out once a listener has used enough tries to unlock it, so the answer can't be read ahead of time.
+DAILY_STAGES = (1, 2, 4, 7, 11, 16)
+DAILY_EPOCH = datetime(2026, 9, 25).date()
+DAILY_DIR = CONFIG_DIR / "daily"
+_daily_lock = threading.RLock()
+
+def daily_on(): return bool(cfg().get("feature_daily", True))
+def daily_today(): return datetime.utcnow().date()
+def daily_number(day): return (day - DAILY_EPOCH).days + 1
+
+def _kv_get(key):
+    with _db_lock: row = db().execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+def _kv_set(key, value):
+    with _db_lock: db().execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", (key, value))
+
+def _title_key(title, artist):
+    t = re.sub(r"[\(\[].*?[\)\]]", " ", str(title or "")).casefold()
+    t = re.sub(r"\s-\s.*$", "", t)
+    a = extract_primary_artist(artist).casefold()
+    clean = lambda s: re.sub(r"[^\w]+", "", unicodedata.normalize("NFKD", s))
+    return clean(t) + "|" + clean(a)
+
+def daily_pick(day):
+    """Today's song: the same for everyone on this server, fixed once chosen."""
+    key = "daily:" + day.isoformat()
+    with _daily_lock:
+        got = _kv_get(key)
+        if got: return json.loads(got)
+        with library_cache_lock:
+            every = {rel: m for rel, m in library_cache_data.items() if isinstance(m, dict)}
+        songs = {rel: m for rel, m in every.items() if float(m.get("duration") or 0) >= 45}
+        if len(songs) < 5: songs = every          # a small library: any song will do
+        if not songs: return None
+        with _db_lock:
+            recent = {json.loads(v).get("rel") for (v,) in db().execute("SELECT value FROM kv WHERE key LIKE 'daily:%' AND key >= ?",
+                                                                            ("daily:" + (day - timedelta(days=120)).isoformat(),))}
+            popular = db().execute("SELECT rel, SUM(n), COUNT(DISTINCT user) FROM plays WHERE ts > ? GROUP BY rel",
+                                   (time.time() - 365 * 86400,)).fetchall()
+        # Songs people here know: played by several listeners or often, then a sprinkle of the rest of the library.
+        weights = {rel: 1.0 + min(n, 50) / 5 + (users - 1) * 4 for rel, n, users in popular if rel in songs and rel not in recent}
+        rng = random.Random(hashlib.sha256(f"{app.secret_key}|daily|{day.isoformat()}".encode()).digest())
+        pool = list(weights) if len(weights) >= 20 else [r for r in songs if r not in recent] or list(songs)
+        w = [weights.get(r, 1.0) * (1.5 if songs[r].get("has_cover") else 1) for r in pool]
+        rel = rng.choices(pool, weights=w, k=1)[0]
+        m = songs[rel]
+        pick = {"rel": rel, "title": m.get("title") or Path(rel).stem, "artist": m.get("artist") or "", "album": m.get("album") or "",
+                "key": _title_key(m.get("title") or Path(rel).stem, m.get("artist"))}
+        _kv_set(key, json.dumps(pick))
+        return pick
+
+def daily_clips(day, pick):
+    """Cut the six clips (once per day). Returns their folder, or None while that isn't possible."""
+    d = DAILY_DIR / day.isoformat()
+    if all((d / f"{i}.mp3").is_file() for i in range(len(DAILY_STAGES))): return d
+    with _daily_lock:
+        if all((d / f"{i}.mp3").is_file() for i in range(len(DAILY_STAGES))): return d
+        path = resolve_safe_music_file(pick["rel"])
+        if not path or not path.is_file(): return None
+        a, _ = analysis_cached(pick["rel"])
+        if not a:
+            try: a = measure_song(path)
+            except Exception: a = None
+        # Start where the song reaches its full level, so the first second is the song and not a fade-in.
+        start = max(0.0, float((a or {}).get("intro") or (a or {}).get("start") or 0) - 0.1)
+        d.mkdir(parents=True, exist_ok=True)
+        for i, secs in enumerate(DAILY_STAGES):
+            out = d / f"{i}.mp3"
+            cmd = ["nice", "-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", f"{start:.2f}", "-t", str(secs),
+                   "-i", str(path), "-map", "0:a:0", "-map_metadata", "-1", "-vn", "-ac", "2", "-ar", "44100",
+                   "-af", f"afade=t=out:st={max(0, secs - .25):.2f}:d=0.25", "-c:a", "libmp3lame", "-b:a", "160k", str(out) + ".tmp.mp3"]
+            if subprocess.run(cmd, capture_output=True, timeout=120).returncode != 0: return None
+            os.replace(str(out) + ".tmp.mp3", out)
+        return d
+
+def daily_loop():
+    """Have today's and tomorrow's songs ready ahead of time, and tidy old clips."""
+    time.sleep(20)
+    while True:
+        try:
+            if daily_on():
+                for day in (daily_today(), daily_today() + timedelta(days=1)):
+                    pick = daily_pick(day)
+                    if pick: daily_clips(day, pick)
+                if DAILY_DIR.is_dir():
+                    for old in DAILY_DIR.iterdir():
+                        if old.is_dir() and old.name < (daily_today() - timedelta(days=2)).isoformat(): shutil.rmtree(old, ignore_errors=True)
+        except Exception as ex:
+            print(f"[WARN] Axdio Daily: {ex}")
+        time.sleep(600)
+
+def _daily_row(u, day):
+    with _db_lock: row = db().execute("SELECT tries, done, solved FROM daily WHERE user = ? AND day = ?", (u, day.isoformat())).fetchone()
+    return {"tries": json.loads(row[0]), "done": bool(row[1]), "solved": bool(row[2])} if row else {"tries": [], "done": False, "solved": False}
+
+def daily_stats(u):
+    with _db_lock: rows = db().execute("SELECT day, solved, n FROM daily WHERE user = ? AND done = 1 ORDER BY day", (u,)).fetchall()
+    dist, streak, best, prev = [0] * len(DAILY_STAGES), 0, 0, None
+    for day, solved, n in rows:
+        d = datetime.fromisoformat(day).date()
+        if solved:
+            dist[max(0, min(len(DAILY_STAGES), n) - 1)] += 1
+            streak = streak + 1 if prev and (d - prev).days == 1 else 1
+        else: streak = 0
+        best, prev = max(best, streak), d
+    today = daily_today()
+    if prev and (today - prev).days > 1: streak = 0          # a missed day ends the streak
+    return {"played": len(rows), "wins": sum(1 for r in rows if r[1]), "streak": streak, "best": best, "dist": dist}
+
+def daily_view(u):
+    day = daily_today()
+    pick = daily_pick(day)
+    if not pick: return {"empty": True}
+    st = _daily_row(u, day)
+    ready = daily_clips(day, pick) is not None
+    out = {"number": daily_number(day), "day": day.isoformat(), "stages": DAILY_STAGES, "ready": ready, **st,
+           "stage": min(len(st["tries"]), len(DAILY_STAGES) - 1), "stats": daily_stats(u),
+           "next_in": int((datetime.combine(day + timedelta(days=1), datetime.min.time()) - datetime.utcnow()).total_seconds())}
+    if st["done"]:
+        out["answer"] = {k: pick[k] for k in ("rel", "title", "artist", "album")}
+    with users_lock:
+        friends = [f for f in social_rec(users_data[u])["friends"] if f in users_data]
+        cards = {f: user_card(f) for f in friends}
+    if friends:
+        marks = ",".join("?" * len(friends))
+        with _db_lock:
+            rows = db().execute(f"SELECT user, tries, done, solved FROM daily WHERE day = ? AND user IN ({marks})", [day.isoformat()] + friends).fetchall()
+        out["friends"] = [dict(cards[f], n=len(json.loads(t)), done=bool(dn), solved=bool(sv),
+                               grid=[x.get("r") for x in json.loads(t)]) for f, t, dn, sv in rows]
+    return out
+
+@app.route("/api/daily")
+def api_daily():
+    return jsonify(daily_view(_me()))
+
+@app.route("/api/daily/clip")
+def api_daily_clip():
+    u = _me()
+    day, stage = daily_today(), request.args.get("stage", 0, type=int)
+    if not 0 <= stage < len(DAILY_STAGES): abort(404)
+    st = _daily_row(u, day)
+    if not st["done"] and stage > len(st["tries"]): return jsonify({"error": "Guess or skip to hear more."}), 403
+    pick = daily_pick(day)
+    d = daily_clips(day, pick) if pick else None
+    if not d: return jsonify({"error": "Today's song isn't ready yet."}), 503
+    r = send_file(str(d / f"{stage}.mp3"), mimetype="audio/mpeg", conditional=True)
+    r.headers["Cache-Control"] = "private, max-age=3600"
+    return r
+
+@app.route("/api/daily/guess", methods=["POST"])
+def api_daily_guess():
+    u = _me()
+    d = _json()
+    day = daily_today()
+    pick = daily_pick(day)
+    if not pick: return jsonify({"error": "There's no song today."}), 404
+    with _daily_lock:
+        st = _daily_row(u, day)
+        if st["done"]: return jsonify(daily_view(u))
+        if d.get("skip"):
+            st["tries"].append({"r": "skip"})
+        else:
+            rel = str(d.get("rel") or "")
+            meta = library_entry(rel)
+            if not isinstance(meta, dict): return jsonify({"error": "Pick a song from the list."}), 400
+            right = rel == pick["rel"] or _title_key(meta.get("title") or Path(rel).stem, meta.get("artist")) == pick["key"]
+            st["tries"].append({"r": "right" if right else "wrong", "t": (meta.get("title") or Path(rel).stem)[:120],
+                                "a": (meta.get("artist") or "")[:120]})
+            if right: st["solved"] = True
+        st["done"] = st["solved"] or len(st["tries"]) >= len(DAILY_STAGES)
+        with _db_lock:
+            db().execute("INSERT OR REPLACE INTO daily (user, day, tries, done, solved, n) VALUES (?, ?, ?, ?, ?, ?)",
+                         (u, day.isoformat(), json.dumps(st["tries"]), int(st["done"]), int(st["solved"]), len(st["tries"])))
+    if st["done"]:
+        with users_lock: friends = list(social_rec(users_data[u])["friends"])
+        bump(friends, "f")
+    return jsonify(daily_view(u))
+
+# ============================================================
+# DISCOVER: a feed of songs you've never played
+# ============================================================
+# One swipe per song: each starts at its hook (the loudest 15 seconds, from Smart transitions' measurements). Picks mix
+# what friends have on repeat (only friends who share their listening), more from artists you love, and deep cuts.
+_disc_shown = {}            # username -> songs shown lately, so the feed doesn't repeat itself
+
+def events_add(u, kind, ref=""):
+    with _db_lock: db().execute("INSERT INTO events (user, ts, kind, ref) VALUES (?, ?, ?, ?)", (u, time.time(), kind, str(ref)[:1000]))
+
+def analysis_enqueue(rel):
+    with _an_lock:
+        if rel in _an_waiting or len(_an_queue) >= 40: return
+        _an_waiting.add(rel); _an_queue.append(rel); _an_wake.set()
+
+def discover_on(): return bool(cfg().get("feature_discover", True))
+
+@app.route("/api/discover")
+def api_discover():
+    u = _me()
+    n = max(1, min(30, request.args.get("n", 12, type=int)))
+    with users_lock:
+        rec = users_data[u]
+        friends = [f for f in social_rec(rec)["friends"] if f in users_data and social_rec(users_data[f])["share_activity"]]
+        names = {f: user_card(f)["display_name"] for f in friends}
+        likes = [x for x in rec.get("liked_songs") or [] if isinstance(x, str)]
+        known = {h.get("rel_path") for h in rec.get("history") or []} | set(likes)
+    with library_cache_lock:
+        every = {r: m for r, m in library_cache_data.items() if isinstance(m, dict) and not FED_REMOTE_RE.match(r)}
+    lib = {r: m for r, m in every.items() if float(m.get("duration") or 0) >= 30}
+    if len(lib) < 10: lib = every
+    artist = lambda m: extract_primary_artist(m.get("artist"), m.get("album_artist"))
+    fav = Counter()
+    for r in likes:
+        if r in every: fav[artist(every[r])] += 3
+    with _db_lock:
+        mine = db().execute("SELECT rel, SUM(n) FROM plays WHERE user = ? GROUP BY rel", (u,)).fetchall()
+        hot = []
+        if friends:
+            marks = ",".join("?" * len(friends))
+            hot = db().execute(f"SELECT user, rel, SUM(n) s FROM plays WHERE user IN ({marks}) AND b = 0 AND ts > ? GROUP BY user, rel HAVING s >= 3",
+                               friends + [time.time() - 90 * 86400]).fetchall()
+    for r, c in mine:
+        known.add(r)
+        if r in every: fav[artist(every[r])] += c
+    fav.pop("Unknown Artist", None)
+    loved = {a for a, _ in fav.most_common(25)}
+    by_friend = {}
+    for f, r, c in hot:
+        if r not in by_friend or c > by_friend[r][1]: by_friend[r] = (f, c)
+    shown = _disc_shown.setdefault(u, collections.deque(maxlen=800))
+    seen = set(shown)
+    pool = [r for r in lib if r not in known and r not in seen]
+    if len(pool) < n:           # heard or seen everything: go round again
+        shown.clear()
+        pool = [r for r in lib if r not in known] or list(lib)
+    rng, scored = random.Random(), []
+    for r in pool:
+        a = artist(lib[r])
+        if r in by_friend: w, why = 6.0, {"kind": "friend", "text": f"{names[by_friend[r][0]]} has it on repeat", "user": by_friend[r][0]}
+        elif a in loved: w, why = 4.0, {"kind": "artist", "text": f"More from {a}"}
+        else: w, why = 1.0, {"kind": "new", "text": "Something new for you"}
+        scored.append((rng.random() ** (1 / w), r, a, why))     # a weighted draw without replacement
+    scored.sort(reverse=True)
+    out, per_artist = [], Counter()
+    for _, r, a, why in scored:
+        if per_artist[a] >= 2: continue
+        per_artist[a] += 1
+        m, (an, _) = lib[r], analysis_cached(r)
+        dur = float(m.get("duration") or (an or {}).get("dur") or 0)
+        hook = (an or {}).get("hook")
+        if hook is None: analysis_enqueue(r)
+        out.append({"rel": r, "title": m.get("title") or Path(r).stem, "artist": m.get("artist") or "", "album": m.get("album") or "",
+                    "dur": dur, "hook": hook if hook is not None else round(dur * .33, 1), "why": why})
+        shown.append(r)
+        if len(out) >= n: break
+    return jsonify({"items": out})
+
+@app.route("/api/discover/log", methods=["POST"])
+def api_discover_log():
+    """What a listener did with a Discover pick (for their own stats and achievements)."""
+    u = _me()
+    d = _json()
+    if d.get("action") not in ("like", "queue", "full"): return jsonify({"error": "Unknown action."}), 400
+    if not rate_ok(("disc", u), 300, 3600): return jsonify({"ok": True})
+    events_add(u, "discover_" + d["action"], d.get("rel") or "")
+    return jsonify({"ok": True})
+
+# ============================================================
+# LEVELS, STREAKS AND ACHIEVEMENTS
+# ============================================================
+# Worked out from what's already here (the listening log, Daily results, Discover likes, friends, likes and parties), so
+# there's nothing extra to store. XP: one point per minute listened, plus bonuses for Daily wins and Discover finds.
+# A listener sees all of theirs; friends see the level, streak and best badges, and only when activity is shared.
+BADGES = [  # id, name, icon, what it counts, bronze / silver / gold
+    ("night_owl", "Night Owl", "moon", "Songs played between midnight and 5 am", (10, 50, 200)),
+    ("early_bird", "Early Bird", "spark", "Songs played between 5 and 8 am", (10, 50, 200)),
+    ("explorer", "Explorer", "compass", "Different artists played", (25, 100, 300)),
+    ("devoted", "Devoted", "note", "Plays of your favourite artist", (50, 250, 1000)),
+    ("on_repeat", "On Repeat", "repeat", "Plays of one song in a single day", (5, 10, 25)),
+    ("marathon", "Marathon", "timer", "Minutes listened in one day", (120, 240, 480)),
+    ("streaker", "Unstoppable", "flame", "Days in a row with music (best streak)", (7, 30, 100)),
+    ("album_purist", "Album Purist", "album", "Albums played from start to finish (every track)", (1, 10, 50)),
+    ("collector", "Collector", "heart", "Liked songs", (50, 250, 1000)),
+    ("crate_digger", "Crate Digger", "compass", "Songs liked from Discover", (5, 25, 100)),
+    ("tune_master", "Name That Tune", "trophy", "Axdio Daily wins", (5, 25, 100)),
+    ("perfect_pitch", "Perfect Pitch", "trophy", "Axdio Daily solved from one second", (1, 5, 20)),
+    ("daily_streak", "Daily Devotee", "flame", "Axdio Daily wins in a row (best)", (3, 10, 30)),
+    ("social", "Social Butterfly", "people", "Friends", (3, 10, 25)),
+    ("party", "Party Starter", "party", "Listening parties hosted or joined", (1, 10, 50)),
+]
+_ach_cache = {}
+_album_map = {"t": 0, "albums": []}
+
+def xp_level(xp):
+    """Level n needs 60·(n-1)^1.5 XP in total: an hour a day gets you to level 10 in about a month."""
+    lvl = 1
+    while 60 * lvl ** 1.5 <= xp: lvl += 1
+    return lvl, int(60 * (lvl - 1) ** 1.5), int(60 * lvl ** 1.5)
+
+def _albums():
+    if time.time() - _album_map["t"] > 600:
+        groups = collections.defaultdict(set)
+        with library_cache_lock:
+            for rel, m in library_cache_data.items():
+                if isinstance(m, dict) and m.get("album"): groups[(m["album"], m.get("album_artist") or m.get("artist") or "")].add(rel)
+        _album_map.update(t=time.time(), albums=[s for s in groups.values() if len(s) >= 4])
+    return _album_map["albums"]
+
+def achievements(u, tz=0):
+    key = (u, tz)
+    hit = _ach_cache.get(key)
+    if hit and time.time() - hit[0] < 60: return hit[1]
+    local = lambda ts: datetime.utcfromtimestamp(ts - tz * 60)
+    with _db_lock:
+        conn = db()
+        plays = conn.execute("SELECT ts, rel, secs, n, b FROM plays WHERE user = ?", (u,)).fetchall()
+        daily_rows = conn.execute("SELECT day, solved, n FROM daily WHERE user = ? AND done = 1 ORDER BY day", (u,)).fetchall()
+        ev = dict(conn.execute("SELECT kind, COUNT(*) FROM events WHERE user = ? GROUP BY kind", (u,)).fetchall())
+    with users_lock:
+        rec = users_data.get(u) or {}
+        friends = len(social_rec(rec)["friends"])
+        liked = len([x for x in rec.get("liked_songs") or [] if isinstance(x, str)])
+    minutes, night, early, artists, per_artist = 0.0, 0, 0, set(), Counter()
+    day_mins, day_song, days, played = Counter(), Counter(), set(), set()
+    for ts, rel, secs, n, b in plays:
+        minutes += secs * n / 60
+        played.add(rel)
+        meta = library_entry(rel)
+        if isinstance(meta, dict):
+            a = extract_primary_artist(meta.get("artist"), meta.get("album_artist"))
+            if a != "Unknown Artist": artists.add(a); per_artist[a] += n
+        if b: continue
+        d = local(ts)
+        if d.hour < 5: night += n
+        elif d.hour < 8: early += n
+        day_mins[d.date()] += secs * n / 60
+        day_song[(d.date(), rel)] += n
+        days.add(d.date())
+    today = local(time.time()).date()
+    streak, best, run, prev = 0, 0, 0, None
+    for d in sorted(days):
+        run = run + 1 if prev and (d - prev).days == 1 else 1
+        best, prev = max(best, run), d
+    if prev and (today - prev).days <= 1: streak = run
+    wins = sum(1 for r in daily_rows if r[1])
+    firsts = sum(1 for r in daily_rows if r[1] and r[2] == 1)
+    dbest = drun = 0; dprev = None
+    for day, solved, n in daily_rows:
+        dd = datetime.fromisoformat(day).date()
+        drun = drun + 1 if solved and dprev and (dd - dprev).days == 1 and drun else (1 if solved else 0)
+        dbest, dprev = max(dbest, drun), dd
+    albums_done = sum(1 for s in _albums() if s <= played)
+    values = {"night_owl": night, "early_bird": early, "explorer": len(artists), "devoted": max(per_artist.values(), default=0),
+              "on_repeat": max(day_song.values(), default=0), "marathon": round(max(day_mins.values(), default=0)), "streaker": best,
+              "album_purist": albums_done, "collector": liked, "crate_digger": ev.get("discover_like", 0), "tune_master": wins,
+              "perfect_pitch": firsts, "daily_streak": dbest, "social": friends, "party": ev.get("party_host", 0) + ev.get("party_join", 0)}
+    badges = []
+    for bid, name, icon, what, tiers in BADGES:
+        v = values[bid]
+        tier = sum(1 for t in tiers if v >= t)
+        badges.append({"id": bid, "name": name, "icon": icon, "what": what, "value": v, "tier": tier,
+                       "next": tiers[tier] if tier < 3 else None, "prev": tiers[tier - 1] if tier else 0})
+    xp = int(minutes) + wins * 25 + firsts * 50 + ev.get("discover_like", 0) * 10 + ev.get("party_host", 0) * 30
+    lvl, lo, hi = xp_level(xp)
+    out = {"xp": xp, "level": lvl, "level_from": lo, "level_to": hi, "streak": streak, "best_streak": best,
+           "played_today": today in days, "minutes": round(minutes), "badges": badges}
+    _ach_cache[key] = (time.time(), out)
+    return out
+
+def achievements_public(u):
+    """What friends see: level, streak and the best badges."""
+    a = achievements(u)
+    top = sorted([b for b in a["badges"] if b["tier"]], key=lambda b: (-b["tier"], -b["value"]))[:4]
+    return {"level": a["level"], "streak": a["streak"], "badges": [{k: b[k] for k in ("id", "name", "icon", "tier")} for b in top]}
+
+def achievements_on(): return bool(cfg().get("feature_achievements", True))
+
+@app.route("/api/achievements")
+def api_achievements():
+    u = _me()
+    return jsonify(achievements(u, max(-900, min(900, request.args.get("tz", 0, type=int)))))
+
+# ============================================================
+# FRIENDS CHART AND TIME CAPSULE
+# ============================================================
+# The chart: the week's most played songs among a listener and their friends who share their listening, with where each
+# song was the week before. The time capsule: what a listener played on this day in earlier years (or a month ago), and
+# favourites they haven't played in a while. Both only ever read the listening log of people who share it.
+def chart_on(): return social_on() and bool(cfg().get("feature_chart", True))
+def capsule_on(): return bool(cfg().get("feature_capsule", True))
+
+def _song(rel, **extra):
+    m = library_entry(rel) or {}
+    return dict(rel=rel, title=m.get("title") or Path(rel).stem, artist=m.get("artist") or "", **extra)
+
+def _chart(people, start, end):
+    marks = ",".join("?" * len(people))
+    with _db_lock:
+        rows = db().execute(f"SELECT user, rel, SUM(n) FROM plays WHERE b = 0 AND ts >= ? AND ts < ? AND user IN ({marks}) GROUP BY user, rel",
+                            [start, end] + people).fetchall()
+    per = {}
+    for user, rel, n in rows:
+        if not isinstance(library_entry(rel), dict): continue
+        e = per.setdefault(rel, {"plays": 0, "users": {}})
+        e["plays"] += n
+        e["users"][user] = e["users"].get(user, 0) + n
+    # Songs several people play rank above one person's loop.
+    return sorted(per.items(), key=lambda kv: -(kv[1]["plays"] * (1 + .6 * (len(kv[1]["users"]) - 1))))
+
+@app.route("/api/social/chart")
+def social_chart():
+    u = _me()
+    if not chart_on(): return jsonify({"off": True, "items": []})
+    with users_lock:
+        friends = [f for f in social_rec(users_data[u])["friends"]
+                   if f in users_data and social_rec(users_data[f])["share_activity"] and not blocked_either(u, f)]
+        people = [u] + friends
+        cards = {p: user_card(p) for p in people}
+    now, week = time.time(), 7 * 86400
+    before = {rel: i + 1 for i, (rel, _) in enumerate(_chart(people, now - 2 * week, now - week)[:100])}
+    items = []
+    for i, (rel, e) in enumerate(_chart(people, now - week, now)[:20]):
+        who = sorted(e["users"], key=lambda x: -e["users"][x])
+        items.append(_song(rel, rank=i + 1, prev=before.get(rel), plays=e["plays"], listeners=[cards[x] for x in who[:5]], n_listeners=len(who)))
+    return jsonify({"items": items, "friends": len(friends), "from": now - week, "to": now})
+
+@app.route("/api/timecapsule")
+def api_timecapsule():
+    u = _me()
+    if not capsule_on(): return jsonify({"off": True})
+    tz = max(-900, min(900, request.args.get("tz", 0, type=int)))
+    local = lambda ts: datetime.utcfromtimestamp(ts - tz * 60)
+    today = local(time.time()).date()
+    last_month = today.replace(day=1) - timedelta(days=1)
+    month_ago = last_month.replace(day=min(today.day, last_month.day))
+    with _db_lock: rows = db().execute("SELECT ts, rel, n FROM plays WHERE user = ?", (u,)).fetchall()
+    years, month, totals, last = collections.defaultdict(Counter), Counter(), Counter(), {}
+    for ts, rel, n in rows:
+        totals[rel] += n
+        last[rel] = max(last.get(rel, 0), ts)
+        d = local(ts).date()
+        if (d.month, d.day) == (today.month, today.day) and d.year < today.year: years[d.year][rel] += n
+        elif d == month_ago: month[rel] += n
+    keep = lambda c: [r for r, _ in c.most_common() if isinstance(library_entry(r), dict)]
+    out = {"today": today.isoformat(),
+           "years": [{"year": y, "ago": today.year - y, "songs": [_song(r) for r in keep(years[y])[:12]]} for y in sorted(years, reverse=True)],
+           "month": {"date": month_ago.isoformat(), "songs": [_song(r) for r in keep(month)[:12]]} if month else None,
+           "rediscover": [_song(r, plays=totals[r]) for r in keep(totals) if totals[r] >= 4 and time.time() - last[r] > 45 * 86400][:40]}
+    out["years"] = [y for y in out["years"] if y["songs"]]
+    return jsonify(out)
+
 # --- Startup ---
 load_users()
 threading.Thread(target=library_scanner, daemon=True, name="library-scanner").start()
@@ -9876,6 +10504,7 @@ threading.Thread(target=social_janitor, daemon=True, name="social-janitor").star
 threading.Thread(target=chat_expiry, daemon=True, name="chat-expiry").start()
 threading.Thread(target=analysis_worker, daemon=True, name="song-analysis").start()
 threading.Thread(target=rewind_backfill, daemon=True, name="rewind-backfill").start()
+threading.Thread(target=daily_loop, daemon=True, name="daily").start()
 threading.Thread(target=fed_sync_loop, daemon=True, name="library-sharing").start()
 threading.Thread(target=plugins_loop, daemon=True, name="plugins").start()
 threading.Thread(target=updates_loop, daemon=True, name="updates").start()

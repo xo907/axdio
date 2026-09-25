@@ -177,3 +177,6 @@ body.has-bar .foot { padding-bottom: 100px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* A shared moment */
+.moment { display: inline-block; margin: 6px 0 0; padding: 4px 12px; border-radius: 99px; background: rgba(34,197,94,.18); color: #86efac; font-size: 14px; font-weight: 800; }

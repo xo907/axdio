@@ -12,6 +12,8 @@
   const mainBtn = $('play'), barBtn = $('bar-play');
   const rows = [...document.querySelectorAll('.row[data-i]')];
   let idx = -1, dragging = false, toastTimer = 0;
+  // A shared moment (?t=73): start there, and carry it into the app.
+  const startAt = D.kind === 'track' ? Math.max(0, parseInt(new URLSearchParams(location.search).get('t') || '0', 10) || 0) : 0;
 
   const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   const toast = msg => {
@@ -43,6 +45,7 @@
     idx = i;
     const t = tracks[i];
     audio.src = t.src;
+    if (startAt && i === 0) audio.addEventListener('loadedmetadata', () => { try { audio.currentTime = Math.min(startAt, Math.max(0, audio.duration - 2)); } catch (e) { /* not seekable */ } }, { once: true });
     if (dur) dur.textContent = fmt(t.d);
     if (bar) {
       $('bar-t').textContent = t.t; $('bar-a').textContent = t.a;
@@ -69,6 +72,11 @@
     if (audio.paused) start(); else audio.pause();
   }
   const toggle = () => playAt(idx < 0 ? 0 : idx);
+  if (startAt) {
+    document.querySelectorAll('a[href$="/open"]').forEach(a => { a.href += '?t=' + startAt; });
+    const h = document.querySelector('h1');
+    if (h) h.insertAdjacentHTML('afterend', `<p class="moment">▶ From ${fmt(startAt)}</p>`);
+  }
 
   if (mainBtn) mainBtn.addEventListener('click', toggle);
   if (barBtn) barBtn.addEventListener('click', toggle);

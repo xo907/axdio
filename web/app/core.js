@@ -61,6 +61,12 @@ const ICONS = {
   spark: '<path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/>',
   image: '<path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>',
   timer: '<path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42C16.07 4.74 14.12 4 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>',
+  'chevron-right': '<path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>',
+  trophy: '<path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>',
+  flame: '<path d="M12 12.9l-2.13 2.09c-.56.56-.87 1.29-.87 2.07C9 18.68 10.35 20 12 20s3-1.32 3-2.94c0-.78-.31-1.52-.87-2.07L12 12.9zM16 6l-.44.55C14.38 8.02 12 7.19 12 5.3V2S4 6 4 13c0 2.92 1.56 5.47 3.89 6.86-.56-.79-.89-1.76-.89-2.8 0-1.32.52-2.56 1.47-3.5L12 10.1l3.53 3.47c.95.93 1.47 2.17 1.47 3.5 0 1.02-.31 1.96-.85 2.75 1.89-1.15 3.29-3.06 3.71-5.3.66-3.55-1.07-6.9-3.86-8.52z"/>',
+  compass: '<path d="M12 10.9c-.61 0-1.1.49-1.1 1.1s.49 1.1 1.1 1.1c.61 0 1.1-.49 1.1-1.1s-.49-1.1-1.1-1.1zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm2.19 12.19L6 18l3.81-8.19L18 6l-3.81 8.19z"/>',
+  chart: '<path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/>',
+  karaoke: '<path d="M9.22 7H4.78C4.3 6.47 4 5.77 4 5c0-1.66 1.34-3 3-3s3 1.34 3 3c0 .77-.3 1.47-.78 2zM16.5 2c-1.93 0-3.5 1.57-3.5 3.5V18c0 1.1-.9 2-2 2s-2-.9-2-2v-5.5h1.5L10 8H5l.5 4.5H7V18c0 2.21 1.79 4 4 4s4-1.79 4-4V5.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5V17h2V5.5C20 3.57 18.43 2 16.5 2z"/>',
   party: '<path d="M12 3a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h3v-8H5v-2a7 7 0 0 1 14 0v2h-4v8h3a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z"/>',
   home: '<path d="M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/>',
   'home-f': '<path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>',
@@ -706,7 +712,11 @@ async function presenceSetup() {
   return d;
 }
 async function presenceOff() { await api('/api/user/presence', undefined, 'DELETE'); U.presence = false; }
+// Modules that keep per-account secrets on this device clean up here (social.js: secret chats' device keys).
+const SIGNOUT = [];
 function signOut(silent) {
+  const was = U.username;
+  SIGNOUT.forEach(f => { try { f(was); } catch (e) { /* keep signing out */ } });
   U.token = ''; LS.del(K.token); LS.del(K.userCache);
   loadLocalUser();
   UI.refresh();
@@ -1106,7 +1116,18 @@ const eqLabel = () => S.eqOn ? (EQ_PRESETS[S.eqPreset] ? EQ_PRESETS[S.eqPreset][
 // The visuals (immersive.js) set `viz` and read the analyser tapped off the end of the chain.
 const FX = {
   ctx: null, srcs: [], input: null, eq: [], comp: null, gain: null, limit: null, analyser: null, viz: false,
-  needed() { return this.viz || S.boost > 1 || S.normalize || (S.eqOn && S.eq.some(v => v)); },
+  needed() { return this.viz || S.karaoke || S.boost > 1 || S.normalize || (S.eqOn && S.eq.some(v => v)); },
+  // Sing along (web/app/karaoke.js): left minus right cancels whatever sits dead centre, usually the lead vocal;
+  // the bass (also centred) comes back through a low-pass so the beat stays.
+  karaoke() {
+    if (this.kara) return this.kara;
+    const c = this.ctx, up = c.createGain(), split = c.createChannelSplitter(2), side = c.createGain(), inv = c.createGain(), low = c.createBiquadFilter(), out = c.createGain();
+    // Two channels in, always: a mono song is spread to both sides first (and then cancels, as everything in it is centred).
+    up.channelCount = 2; up.channelCountMode = 'explicit'; up.channelInterpretation = 'speakers';
+    inv.gain.value = -1; low.type = 'lowpass'; low.frequency.value = 150; low.Q.value = .7; out.gain.value = 1.25;
+    up.connect(split); split.connect(side, 0); split.connect(inv, 1); inv.connect(side); side.connect(out); low.connect(out);
+    return (this.kara = { up, split, side, inv, low, out });
+  },
   ensure() {
     if (this.ctx) return true;
     if (!this.needed()) return false;
@@ -1130,9 +1151,10 @@ const FX = {
   },
   apply() {
     if (!this.ctx) { if (this.needed() && !audio.paused) this.ensure(); return; }
-    [this.input, ...this.eq, this.comp, this.gain, this.limit].forEach(n => { try { n.disconnect(); } catch (e) { /* not connected */ } });
+    [this.input, ...this.eq, this.comp, this.gain, this.limit, this.kara && this.kara.out].forEach(n => { try { if (n) n.disconnect(); } catch (e) { /* not connected */ } });
     let n = this.input;
     this.eq.forEach((b, i) => { b.gain.value = S.eqOn ? S.eq[i] : 0; n.connect(b); n = b; });
+    if (S.karaoke) { const k = this.karaoke(); n.connect(k.up); n.connect(k.low); n = k.out; }
     if (S.normalize) { n.connect(this.comp); n = this.comp; }
     this.gain.gain.value = S.boost * (S.normalize ? 1.35 : 1);
     n.connect(this.gain); n = this.gain;
@@ -1168,6 +1190,9 @@ const audio = new Proxy({}, {
   get(_, k) { const el = D.a; const v = el[k]; return typeof v === 'function' ? v.bind(el) : v; },
   set(_, k, v) { D.a[k] = v; return true; },
 });
+// Feature cards on Home (Daily, Discover, Rewind…): modules add a function returning a card's HTML, or ''.
+const HOME_CARDS = [];
+function homeCards() { const h = HOME_CARDS.map(f => { try { return f() || ''; } catch (e) { return ''; } }).join(''); return h ? `<div class="hcards">${h}</div>` : ''; }
 // While in a listening party (web/app/party.js), the player's controls act on the party instead.
 const PartyHook = { h: null };
 function setPartyHook(h) { PartyHook.h = h; }
@@ -2257,7 +2282,7 @@ window.AX = {
   addToPlaylist, removeFromPlaylist, reorderPlaylist, plCreate, plRename, plDelete, pushLibrary, pushPrefs, Collab,
   RECENTS, touchRecent, recentTs, SEARCHES, rememberSearch, forgetSearch, clearSearches,
   Off, ring, dlBadge, dlChanged, updateDlButton, toggleCtxDownload, EQ_BANDS, EQ_PRESETS, eqLabel, FX, setBoost, toggleNormalize, toggleEq, setEqPreset, setEqBand,
-  audio, D, P, CTX, SM, makeCtx, setPartyHook, regCtx, curTrack, ctxPlaying, isPlaying, buildOrder, playCtx, playTrackAlone, load, play, pause, togglePlay, shuffleAll, next, prev,
+  SIGNOUT, HOME_CARDS, homeCards, audio, D, P, CTX, SM, makeCtx, setPartyHook, regCtx, curTrack, ctxPlaying, isPlaying, buildOrder, playCtx, playTrackAlone, load, play, pause, togglePlay, shuffleAll, next, prev,
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, applyVolume, stageTrack,
   SL, setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
   LY, lyMsg, syncLyrics, Connect, share, shareId, trackLink, albumLink, artistLink, setOnline,

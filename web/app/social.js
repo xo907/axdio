@@ -107,8 +107,8 @@ const IDB = {
   db: null,
   open() {
     if (!this.db) this.db = new Promise((res, rej) => {
-      const r = indexedDB.open('axdio-e2ee', 1);
-      r.onupgradeneeded = () => { r.result.createObjectStore('ids'); r.result.createObjectStore('pins'); };
+      const r = indexedDB.open('axdio-e2ee', 2);
+      r.onupgradeneeded = () => { ['ids', 'pins', 'dev'].forEach(s => { if (!r.result.objectStoreNames.contains(s)) r.result.createObjectStore(s); }); };
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
     });
@@ -307,6 +307,39 @@ const E2EE = {
   sign(data) { return subtle().sign(SIGN, this.me.sig.privateKey, te.encode(data)).then(b64u); },
 };
 
+/* This device's own keys, for secret chats. The private halves can't be exported (not even by this app) and never
+   leave the device: not to the server and not into the recovery backup. The account's signing key vouches for the
+   public halves, so the other person's device can tell they're really this account's. Signing out deletes them. */
+const devFp = (enc, sig) => sha(concat(te.encode('axdio-dev-v1'), unb64u(enc), unb64u(sig))).then(hex);
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows PC' : /Linux/.test(ua) ? 'Linux computer' : 'device';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'browser';
+  return `${os} (${br})`;
+}
+const Device = {
+  me: null,
+  async get() {
+    if (this.me && this.me.user === U.username) return this.me;
+    let d = await IDB.get('dev', U.username).catch(() => null);
+    if (!d) {
+      const enc = await subtle().generateKey(ECDH, false, ['deriveBits']), sig = await subtle().generateKey(ECDSA, false, ['sign', 'verify']);
+      d = { id: b64u(rand(12)), enc, sig, created: now(),
+            pub: { enc: b64u(new Uint8Array(await subtle().exportKey('raw', enc.publicKey))), sig: b64u(new Uint8Array(await subtle().exportKey('raw', sig.publicKey))) } };
+      await IDB.put('dev', U.username, d);
+    }
+    d.fp = await devFp(d.pub.enc, d.pub.sig);
+    d.user = U.username;
+    this.me = d;
+    return d;
+  },
+  certData(user, dev) { return canon({ t: 'device', user, id: dev.id, enc: dev.enc, sig: dev.sig }); },
+  async card() { const d = await this.get(), c = { id: d.id, enc: d.pub.enc, sig: d.pub.sig, label: deviceLabel() }; c.cert = await E2EE.sign(this.certData(U.username, c)); return c; },
+  async trusted(user, dev) { return !!(dev && dev.cert) && await E2EE.check(user, dev.cert, this.certData(user, dev)) === 'ok'; },
+  async sign(data) { const d = await this.get(); return b64u(await subtle().sign(SIGN, d.sig.privateKey, te.encode(data))); },
+  async forget(user) { await IDB.del('dev', user).catch(() => {}); this.me = null; },
+};
+
 /* ======================================================================
    4. Conversations and messages
    ====================================================================== */
@@ -320,7 +353,7 @@ const Chat = {
     return p || Social.cards.get(name) || { username: name, display_name: name ? 'Deleted account' : 'Someone', avatar: '', gone: true };
   },
   others(c) { return (c.st ? c.st.members : c.members).filter(m => m !== U.username); },
-  peer(c) { return c.kind === 'dm' ? c.members.find(m => m !== U.username) : ''; },
+  peer(c) { return c.kind === 'dm' || c.kind === 'secret' ? c.members.find(m => m !== U.username) : ''; },
   title(c) {
     if (c.kind === 'dm') return this.card(c, this.peer(c)).display_name;
     if (c.st && c.st.name) return c.st.name;
@@ -335,7 +368,7 @@ const Chat = {
       try {
         const d = await api('/api/chat/conversations');
         const list = [];
-        for (const c of d.conversations || []) list.push(await this.prep(c));
+        for (const c of d.conversations || []) { const p = await this.prep(c); if (!(p.secret && p.st.elsewhere)) list.push(p); }
         this.list = list;
         this.byId = new Map(list.map(c => [c.id, c]));
         this.ready = true;
@@ -350,7 +383,8 @@ const Chat = {
       Social.cards.set(name, { username: name, display_name: p.display_name, avatar: p.avatar });
       if (p.keys && E2EE.state === 'ready') await E2EE.pin(name, p.keys);
     }
-    c.st = c.kind === 'group' ? await this.groupState(c) : { members: c.members.slice(), ok: c.members.length === 2 && c.members.includes(U.username), problem: '' };
+    if (c.kind === 'secret') { c.secret = true; c.kind = 'dm'; }
+    c.st = c.secret ? await this.secretState(c) : c.kind === 'group' ? await this.groupState(c) : { members: c.members.slice(), ok: c.members.length === 2 && c.members.includes(U.username), problem: '' };
     if (c.gone && c.gone.length) c.st.problem = 'This account no longer exists.';
     if (c.kind === 'group' && c.st.title && E2EE.state === 'ready') {
       try { c.st.name = td.decode(await unseal(await this.key(c, c.st.title.v), c.st.title.title, `axdio-title-v1|${c.id}|${c.st.title.n}`)).slice(0, 100); } catch (e) { /* not ours to read */ }
@@ -366,6 +400,7 @@ const Chat = {
   },
   merge(c) {
     return this.prep(c).then(p => {
+      if (p.secret && p.st.elsewhere) { this.list = this.list.filter(x => x.id !== p.id); this.byId.delete(p.id); hook('chats'); return p; }
       const i = this.list.findIndex(x => x.id === p.id);
       if (i >= 0) this.list[i] = p; else this.list.unshift(p);
       this.byId.set(p.id, p);
@@ -400,10 +435,50 @@ const Chat = {
     st.admin = st.members[0] || '';
     return st;
   },
+  // A secret chat: which device holds each side, and whether this is one of them.
+  async secretState(c) {
+    const me = U.username, other = c.members.find(m => m !== me), devs = c.devices || {}, name = this.card(c, other).display_name;
+    const st = { members: c.members.slice(), ok: true, problem: '', peer: other };
+    const d = E2EE.state === 'ready' ? await Device.get().catch(() => null) : null;
+    st.here = !!(d && devs[me] && devs[me].id === d.id);
+    st.invite = !devs[me];
+    st.elsewhere = !!devs[me] && !st.here;
+    st.waiting = !devs[other];
+    if (E2EE.state === 'ready') for (const u of Object.keys(devs)) if (!(await Device.trusted(u, devs[u]))) { st.ok = false; st.problem = "This secret chat's device keys can't be verified, so it isn't safe to use."; return st; }
+    st.quiet = st.invite || (st.here && st.waiting);     // the chat's own banner says it (web/app/chatmedia.js)
+    if (st.invite) { st.ok = false; st.problem = `${name} started a secret chat. Open it on this device to read and reply.`; }
+    else if (st.elsewhere) { st.ok = false; st.problem = 'This secret chat is open on another of your devices.'; }
+    else if (st.waiting) { st.ok = false; st.problem = `Waiting for ${name} to open this secret chat on their device.`; }
+    return st;
+  },
+  dkeyData(rec) { return canon({ t: 'dkey', key: this.keyData(rec), dev: rec.dev }); },
+  // Secret chats: the key is sealed to this device's own key, and must be signed by one of the chat's two devices.
+  async secretKey(c, v, rec) {
+    const me = U.username, d = await Device.get(), devs = c.devices || {}, signer = rec && devs[rec.by];
+    if (!rec || !rec.wraps[me] || !devs[me] || devs[me].id !== d.id) throw new Error('nokey');
+    if (rec.fps[me] !== d.fp) throw new Error('oldkey');
+    if (!signer || rec.dev !== signer.id || !(await Device.trusted(rec.by, signer)) || !(await verifySig(signer.sig, rec.dsig, this.dkeyData(rec)))) throw new Error('decrypt');
+    const w = rec.wraps[me];
+    const raw = await unseal(await ecdh(d.enc.privateKey, w.e, `${c.id}|${v}`, 'axdio-convkey-v1'), w, `axdio-convkey-v1|${c.id}|${v}|${me}`);
+    const key = await subtle().importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+    this.keys.set(c.id + '|' + v, key);
+    return key;
+  },
+  async secret(username) {
+    if (E2EE.state !== 'ready') throw new Error('Unlock private messages on this device first.');
+    return this.merge(await api('/api/chat/secret', { username, device: await Device.card() }));
+  },
+  async acceptSecret(cid) {
+    if (E2EE.state !== 'ready') throw new Error('Unlock private messages on this device first.');
+    const c = await this.merge(await api(`/api/chat/${cid}/accept`, { device: await Device.card() }));
+    hook('thread', cid);
+    return c;
+  },
   async key(c, v) {
     const k = c.id + '|' + v;
     if (this.keys.has(k)) return this.keys.get(k);
     const rec = (c.keys || []).find(x => x.v === v), me = U.username;
+    if (c.secret) return this.secretKey(c, v, rec);
     if (!rec || !rec.wraps[me] || !E2EE.me) throw new Error('nokey');
     if (rec.fps[me] !== E2EE.me.pub.fp) throw new Error('oldkey');
     const w = rec.wraps[me];
@@ -428,6 +503,13 @@ const Chat = {
     const problem = await this.sendProblem(c);
     if (problem) throw new Error(problem === 'locked' ? 'Unlock private messages on this device first.' : problem);
     const members = c.st.members, last = (c.keys || [])[c.keys.length - 1];
+    if (c.secret) {
+      const devs = c.devices || {};
+      if (last && devs[last.by] && last.dev === devs[last.by].id && (await Promise.all(members.map(async m => last.fps[m] === await devFp(devs[m].enc, devs[m].sig)))).every(Boolean)) {
+        try { return { v: last.v, key: await this.key(c, last.v) }; } catch (e) { /* make a new one */ }
+      }
+      return this.rotate(c, members);
+    }
     if (last && sameSet(last.members, members)) {
       const pins = await Promise.all(members.map(m => E2EE.pin(m)));
       const fresh = members.every((m, i) => pins[i] && last.fps[m] === pins[i].fp);
@@ -441,14 +523,17 @@ const Chat = {
     const raw = rand(32), last = (c.keys || [])[c.keys.length - 1], v = (last ? last.v : 0) + 1;
     const wraps = {}, fps = {};
     for (const m of members) {
-      const pin = await E2EE.pin(m);
+      // Secret chats seal the key to each side's one device; everything else to the people's account keys.
+      const pin = c.secret ? c.devices[m] : await E2EE.pin(m);
+      if (c.secret && !(await Device.trusted(m, pin))) throw new Error("This secret chat's device keys can't be verified.");
       const eph = await subtle().generateKey(ECDH, false, ['deriveBits']);
       wraps[m] = Object.assign({ e: b64u(await subtle().exportKey('raw', eph.publicKey)) },
         await seal(await ecdh(eph.privateKey, pin.enc, `${c.id}|${v}`, 'axdio-convkey-v1'), raw, `axdio-convkey-v1|${c.id}|${v}|${m}`));
-      fps[m] = pin.fp;
+      fps[m] = c.secret ? await devFp(pin.enc, pin.sig) : pin.fp;
     }
     const rec = { conv: c.id, v, by: U.username, ts: Date.now(), ev: (c.events || []).length, members: members.slice().sort(), wraps, fps };
     rec.sig = await E2EE.sign(this.keyData(rec));
+    if (c.secret) { rec.dev = (await Device.get()).id; rec.dsig = await Device.sign(this.dkeyData(rec)); }
     const conv = await api(`/api/chat/${c.id}/keys`, { key: rec });
     this.keys.set(c.id + '|' + v, await subtle().importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']));
     const fresh = await this.merge(conv);
@@ -683,7 +768,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && So
 // What a message attachment points to, resolved against this library.
 function attachment(a) {
   if (!a) return null;
-  if (a.k === 'track') { const t = L.byRel.get(a.rel); return t ? { k: 'track', t, id: t.id, title: t.title, sub: t.artist } : { k: 'missing', title: a.title, sub: a.sub || 'Song' }; }
+  if (a.k === 'track') { const t = L.byRel.get(a.rel), at = Math.max(0, Math.min(86400, +a.at || 0)); return t ? { k: 'track', t, id: t.id, title: t.title, sub: t.artist, at } : { k: 'missing', title: a.title, sub: a.sub || 'Song' }; }
   if (a.k === 'album') { const al = L.albumByKey.get(a.key); return al ? { k: 'album', al, id: al.id, title: al.title, sub: 'Album • ' + AX.albumArtist(al) } : { k: 'missing', title: a.title, sub: 'Album' }; }
   if (a.k === 'artist') { const ar = L.artistByKey.get(a.key); return ar ? { k: 'artist', ar, id: ar.id, title: ar.name, sub: 'Artist' } : { k: 'missing', title: a.title, sub: 'Artist' }; }
   if (a.k === 'cpl') { const p = Collab.get(a.id); return p ? { k: 'cpl', p, id: p.id, title: p.name, sub: 'Collaborative playlist' } : { k: 'missing', title: a.title, sub: 'Playlist' }; }
@@ -709,7 +794,8 @@ function ago(ms) {
 }
 function previewText(c) {
   const m = c.preview;
-  if (!m) return c.kind === 'dm' ? 'Say hello' : 'New group';
+  if (c.secret && c.st && c.st.invite) return 'Started a secret chat with you';
+  if (!m) return c.secret ? 'Secret chat' : c.kind === 'dm' ? 'Say hello' : 'New group';
   const who = m.mine ? 'You: ' : c.kind === 'group' ? Chat.card(c, m.from).display_name.split(' ')[0] + ': ' : '';
   if (m.deleted) return who + 'Unsent a message';
   if (m.err === 'locked') return 'Encrypted message';
@@ -718,9 +804,31 @@ function previewText(c) {
   const f = m.body.f;
   if (f && !m.body.t) return who + (f.kind === 'voice' ? 'Sent a voice message' : f.kind === 'video' ? 'Sent a video' : 'Sent a photo');
   const a = m.body.a;
-  if (a && !m.body.t) return who + 'Sent ' + (a.k === 'track' ? 'a song' : a.k === 'album' ? 'an album' : a.k === 'artist' ? 'an artist' : 'a playlist');
+  if (a && !m.body.t) return who + 'Sent ' + (a.k === 'track' ? (a.at ? 'a moment' : 'a song') : a.k === 'album' ? 'an album' : a.k === 'artist' ? 'an artist' : 'a playlist');
   return who + m.body.t;
 }
 
-Object.assign(AX, { Social, Chat, E2EE, REACTIONS, attachment, attachTrack, attachAlbum, attachArtist, personAvatar, ago, agoText, previewText, rkDecode });
+// Signing out ends this device's secret chats: its device keys are deleted, so nobody signing in here later can open them.
+if (AX.SIGNOUT) AX.SIGNOUT.push(user => { if (user) Device.forget(user); Chat.keys.clear(); });
+// Building blocks for other modules that seal things for people, like the party chat key (web/app/party.js).
+const Sealer = {
+  ready: () => E2EE.state === 'ready',
+  newKey: () => rand(32),
+  async wrap(user, keys, raw, ctx) {
+    const pin = await E2EE.pin(user, keys);
+    const eph = await subtle().generateKey(ECDH, false, ['deriveBits']);
+    const w = Object.assign({ e: b64u(await subtle().exportKey('raw', eph.publicKey)), by: U.username },
+      await seal(await ecdh(eph.privateKey, pin.enc, ctx, 'axdio-party-v1'), raw, `axdio-party-v1|${ctx}|${user}`));
+    w.sig = await E2EE.sign(canon({ t: 'pkey', ctx, to: user, e: w.e, iv: w.iv, ct: w.ct }));
+    return w;
+  },
+  async unwrap(w, ctx) {
+    if (!E2EE.me) throw new Error('locked');
+    if (await E2EE.check(w.by, w.sig, canon({ t: 'pkey', ctx, to: U.username, e: w.e, iv: w.iv, ct: w.ct })) !== 'ok') throw new Error('unverified');
+    return unseal(await ecdh(E2EE.me.enc.privateKey, w.e, ctx, 'axdio-party-v1'), w, `axdio-party-v1|${ctx}|${U.username}`);
+  },
+  async encrypt(raw, text, aad) { return seal(await subtle().importKey('raw', raw, 'AES-GCM', false, ['encrypt']), text, aad); },
+  async decrypt(raw, box, aad) { return td.decode(await unseal(await subtle().importKey('raw', raw, 'AES-GCM', false, ['decrypt']), box, aad)); },
+};
+Object.assign(AX, { Sealer, Device, Social, Chat, E2EE, REACTIONS, attachment, attachTrack, attachAlbum, attachArtist, personAvatar, ago, agoText, previewText, rkDecode });
 })();

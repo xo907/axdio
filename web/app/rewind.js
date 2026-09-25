@@ -20,8 +20,8 @@ function homeCard() {
   if (!on() || totalPlays() < 10) return '';
   const now = new Date(), top = [...(U.history || [])].sort((a, b) => (b.count || 1) - (a.count || 1)).map(h => L.byRel.get(h.rel_path)).filter(t => t && t.hc);
   const covers = [...new Set(top.map(t => coverUrl(t.rel)))].slice(0, 3).reverse();   // the most played ends up on top
-  return `<div class="rw-card" data-rw="open" role="button" aria-label="Open your Rewind"><div class="rw-card-art">${covers.map((c, k) => `<img src="${esc(c)}" alt="" style="--k:${k}" loading="lazy">`).join('')}</div>`
-    + `<div class="rw-card-t"><small>Rewind</small><b>Your ${MONTHS[now.getMonth()]} so far</b><span>Top songs, artists and listening habits, and a card to share</span></div><span class="rw-card-go">${ic('play')}</span></div>`;
+  return `<div class="hcard rw-hc" data-rw="open" role="button" aria-label="Open your Rewind"><div class="rw-card-art">${covers.map((c, k) => `<img src="${esc(c)}" alt="" style="--k:${k}" loading="lazy">`).join('')}</div>`
+    + `<div class="hcard-t"><small>Rewind</small><b>Your ${MONTHS[now.getMonth()]} so far</b><span>Top songs, artists, habits and a card to share</span></div><span class="hcard-go">${ic('play')}</span></div>`;
 }
 
 /* ---- Numbers and colours ---- */
@@ -275,6 +275,7 @@ async function poster(d) {
 }
 
 document.addEventListener('click', e => { const c = e.target.closest('[data-rw="open"]'); if (c) { e.preventDefault(); open(); } });
+if (AX.HOME_CARDS) AX.HOME_CARDS.push(homeCard);
 
 document.head.appendChild(Object.assign(document.createElement('style'), { textContent: `
 html.rw-open { overflow: hidden; }
@@ -370,16 +371,20 @@ html.rw-open { overflow: hidden; }
 .rw-friend span { display: flex; flex-direction: column; }
 .rw-friend small { opacity: .7; }
 .rw.paused .rw-bg i { animation-play-state: paused; }
-.rw-card { display: flex; align-items: center; gap: 16px; padding: 14px 16px; margin: 16px 0 8px; border-radius: 14px; cursor: pointer; color: #fff; position: relative; overflow: hidden;
-  background: linear-gradient(115deg, #5b21b6, #be185d 55%, #0e7490); }
-.rw-card::after { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at 85% 20%, rgba(255,255,255,.25), transparent 45%); pointer-events: none; }
+.rw-hc { background: linear-gradient(115deg, #5b21b6, #be185d 55%, #0e7490); }
 .rw-card-art { position: relative; width: 84px; height: 64px; flex-shrink: 0; }
 .rw-card-art img { position: absolute; top: 0; left: calc(var(--k) * 12px); width: 60px; height: 60px; border-radius: 6px; object-fit: cover; box-shadow: 0 6px 16px rgba(0,0,0,.4); transform: rotate(calc((var(--k) - 1) * 6deg)); }
-.rw-card-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.rw-card-t small { font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; opacity: .85; }
-.rw-card-t b { font-size: 19px; font-weight: 900; letter-spacing: -.02em; }
-.rw-card-t span { font-size: 13px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rw-card-go { width: 44px; height: 44px; border-radius: 50%; background: #fff; color: #000; display: grid; place-items: center; flex-shrink: 0; position: relative; z-index: 1; }
+/* Home feature cards (shared by Daily, Discover and Rewind) */
+.hcard { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 14px; cursor: pointer; color: #fff; position: relative; overflow: hidden; min-width: 0; }
+.hcard::after { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at 85% 15%, rgba(255,255,255,.22), transparent 45%); pointer-events: none; }
+.hcard-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; position: relative; z-index: 1; }
+.hcard-t small { font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hcard-t b { font-size: 18px; font-weight: 900; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hcard-t span { font-size: 13px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hcard-go { width: 42px; height: 42px; border-radius: 50%; background: #fff; color: #000; display: grid; place-items: center; flex-shrink: 0; position: relative; z-index: 1; }
+.hcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin: 16px 0 8px; }
+@media (max-width: 700px) { .hcards { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; margin: 18px -16px 4px; padding: 0 16px; }
+  .hcards::-webkit-scrollbar { display: none; } .hcards > .hcard { flex: 0 0 min(86%, 340px); scroll-snap-align: center; } .hcards > .hcard:only-child { flex-basis: 100%; } }
 @media (prefers-reduced-motion: reduce) { .rw-bg i, .rw-slide.in > *, .rw-list li, .rw-clock line, .rw-slide.in .rw-photo { animation: none !important; opacity: 1 !important; transform: none !important; } }
 ` }));
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.7.0
+
+- **Axdio Daily.** Every day everyone on the server gets the same song, picked from what's popular there, and names it from a 1-second clip, then 2, 4, 7, 11 and 16 seconds.
+  - It has streaks, win stats and a result to share, plus how your friends did.
+  - The clips are cut once a day without tags, and each one is handed out only once you've used enough tries to earn it, so there's no peeking.
+- **Discover.** A full-screen feed of songs you've never played, one swipe at a time, each starting at its most energetic part.
+  - It mixes what your friends have on repeat, more from artists you love, and deep cuts.
+  - Double-tap to like, add to the queue, or play the whole song.
+- **Levels, streaks and achievements.** You earn XP for every minute you listen, plus bonuses for Daily wins, Discover finds and hosting parties.
+  - Keep a daily listening streak going, and unlock 15 badges in bronze, silver and gold (Night Owl, Explorer, Album Purist, Name That Tune…) with a celebration when you do.
+  - Friends see your level, streak and best badges on your profile.
+- **Music notes.** Leave a short line and a song for your friends for 24 hours, shown above their chats. Replies and reactions arrive as end-to-end encrypted messages.
+- **Friends Chart.** This week's top 20 among you and your friends, with how each song moved and who's been playing it.
+- **Time capsule.** What you were playing on this day in earlier years (or a month ago), and forgotten favourites you haven't played in a while.
+- **Sing along.** Turn the vocals down live and sing to big lyrics that fill as they're sung.
+  - On desktop and Android the lead vocal is taken out of the song itself, by cancelling what's in the centre of the mix and keeping the bass. iPhones keep the vocals but get the lyrics.
+- **Moments.** Share a song from an exact second ("listen from 1:13"), as a link or straight into a chat. Links open the share page and the app at that second.
+- **Secret chats.** Chats that only work on one device on each side: the one that started it and the one the other person opens it on.
+  - The chat's key is sealed to those two devices' own keys, which never leave them and aren't part of the recovery backup.
+  - Your other signed-in devices, and anyone who gets your password or recovery key, can't read them or even see them.
+  - Only the two devices can change the chat's key.
+  - Signing out ends this device's secret chats.
+  - Start one from a chat's menu.
+- **Listening parties** got a roomier, clearer panel, which widens on desktop while you're in a party, and **party chat is now end-to-end encrypted**:
+  - the host's app makes a chat key and seals it for each member's private-message key;
+  - removing someone changes the key;
+  - the server only relays ciphertext.
+- The home screen has a row of cards for all of this. Admins can turn each feature off under **Features**.
+- Fixed: the collaborative playlists switch under **Features** blocks their API again.
+
 ## 2.6.0
 
 - **Listening parties.** Start a party from the headphones button in the player (desktop) or Now Playing (phones). Everyone who joins hears the same moment of the same song, wherever they are, typically within a few hundredths of a second of each other.

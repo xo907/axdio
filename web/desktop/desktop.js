@@ -193,7 +193,7 @@ VIEWS.home = el => {
   const chips = [['all', 'All'], ['mixes', 'Made for you'], ['albums', 'Albums'], ['artists', 'Artists']]
     .map(([k, l]) => `<button class="chip${f === k ? ' on' : ''}" data-act="home-filter" data-f="${k}">${l}</button>`).join('');
   let h = `<div class="vbg soft" id="home-bg"></div><div class="content home-top"><div class="chips">${chips}</div>`;
-  if (f === 'all') h += `<h1 class="page-title" style="padding-top:28px;font-size:28px">${greet}</h1><div class="quick">${quick.map(quickHtml).join('')}</div>${window.AX.Rewind ? window.AX.Rewind.homeCard() : ''}`;
+  if (f === 'all') h += `<h1 class="page-title" style="padding-top:28px;font-size:28px">${greet}</h1><div class="quick">${quick.map(quickHtml).join('')}</div>${window.AX.homeCards ? window.AX.homeCards() : ''}`;
   const tops = topArtists(12);
   const jump = RECENTS.map(r => itFromKey(r.k)).filter(it => it && !quick.some(q => q.ck === it.ck)).slice(0, 12);
   if (f === 'all' && jump.length >= 3) h += shelf('Jump back in', jump);
@@ -774,7 +774,9 @@ function routeKey() {
 function markSideActive() { const k = routeKey(); $$('#side .li').forEach(li => li.classList.toggle('active', !!k && li.dataset.ck === k)); }
 function layout() {
   shell.style.setProperty('--side-w', (S.sideMin ? 72 : clamp(S.sideW, SIDE_MIN_W, 480)) + 'px');
-  shell.style.setProperty('--right-w', S.rightW + 'px');
+  // While in a party its panel gets more room (the listener's own width still wins if it's wider).
+  const partyWide = RP.mode === 'party' && window.AX.Party && window.AX.Party.v;
+  shell.style.setProperty('--right-w', (partyWide ? Math.max(S.rightW, Math.min(500, Math.round(innerWidth * .34))) : S.rightW) + 'px');
   shell.classList.toggle('side-min', !!S.sideMin);
   shell.classList.toggle('no-right', !RP.mode);
   byId('btn-np').classList.toggle('on', RP.mode === 'np');
@@ -829,7 +831,7 @@ function renderNP(rp) {
   syncLyrics(true);
 }
 function renderPartyPanel(rp) {
-  if (!rp.querySelector('#party-mount')) rp.innerHTML = `<div class="rp-h"><b>Listening party</b><button class="icon-btn" data-act="close-panel" data-tip="Close">${ic('close', 'md')}</button></div><div class="rp-body"><div id="party-mount" style="padding:4px 16px 20px"></div></div>`;
+  if (!rp.querySelector('#party-mount')) rp.innerHTML = `<div class="rp-h"><b>Listening party</b><button class="icon-btn" data-act="close-panel" data-tip="Close">${ic('close', 'md')}</button></div><div class="rp-body"><div id="party-mount" style="padding:4px 16px 16px"></div></div>`;
   if (window.AX.Party) window.AX.Party.render(byId('party-mount'));
 }
 function renderQueuePanel(rp) {
@@ -1517,6 +1519,7 @@ function renderFriendsPanel(rp) {
   if (!Social.activityAt || now() - Social.activityAt > 20000) Social.loadActivity();
   const reqs = Social.me.incoming || [], friends = Social.friends();
   let h = `<div class="rp-h"><b>Friend Activity</b><button class="icon-btn" data-act="go" data-view="friends" data-tip="Find friends">${ic('person-add', 'md')}</button><button class="icon-btn" data-act="close-panel" data-tip="Close">${ic('close', 'md')}</button></div><div class="rp-body fa">`;
+  if (friends.length && window.AX.Notes) h += window.AX.Notes.strip();
   if (reqs.length) h += `<div class="q-sec"><span>Friend requests</span></div>` + reqs.map(c => `<div class="fa-row req">${personAvatar(c, 'fa-av')}<div class="flex1" data-act="open-user" data-u="${esc(c.username)}"><b class="ell">${esc(c.display_name)}</b><div class="fa-ctx ell">@${esc(c.username)}</div></div><button class="btn light sm" data-act="friend-act" data-a="accept" data-u="${esc(c.username)}">Accept</button><button class="icon-btn" data-act="friend-act" data-a="decline" data-u="${esc(c.username)}" data-tip="Decline">${ic('close', 'sm')}</button></div>`).join('');
   if (!friends.length) {
     h += `<div class="fa-empty">${ic('people')}<b>See what your friends are playing</b><p>Add friends on ${esc(SITE.site_title || 'Axdio')} and their listening shows up here.</p><button class="btn light sm" data-act="go" data-view="friends">Find friends</button></div>`;
@@ -1598,6 +1601,7 @@ VIEWS.user = (el, p) => {
       const t = L.byRel.get(pr.now.rel);
       if (t) h += `<section class="sec"><div class="sec-h"><h2>${pr.now.live ? 'Listening now' : 'Last played'}</h2></div><div class="now-card" data-act="fa-play" data-rel="${esc(t.rel)}">${img(coverUrl(t.rel))}<div class="flex1"><b>${esc(t.title)}</b><span>${esc(t.artist)} • ${esc(albumOf(t).title)}</span></div>${pr.now.live ? `<span class="fa-eq">${EQB}</span>` : `<span class="muted">${agoText(pr.now.t * 1000)}</span>`}<button class="big-play" style="width:44px;height:44px" aria-label="Play">${ic('play')}</button></div></section>`;
     }
+    if (window.AX.Achieve) h += window.AX.Achieve.profileHtml(pr);
     if (window.AX.ChatMedia) h += window.AX.ChatMedia.blendHtml(pr);
     if (tops.length) h += shelf('Top artists', tops.map(itArtist), { kicker: 'From their listening' });
     if (recent.length) { const ctx = vctx('list', 'user:' + u, `${pr.display_name}'s recent songs`, recent); h += `<section class="sec"><div class="sec-h"><h2>Recently played</h2></div>${tableShell(ctx, { noHead: true })}</section>`; }
@@ -1660,8 +1664,8 @@ function drawChatList() {
   box.closest('.msg-view').classList.toggle('none', Chat.ready && !Chat.list.length);
   const cur = V.route.params.c;
   if (!Chat.ready) { box.innerHTML = '<div class="ml-row"><div class="sk" style="width:48px;height:48px;border-radius:50%"></div><div class="flex1"><div class="sk" style="height:14px;width:60%"></div></div></div>'.repeat(4); return; }
-  box.innerHTML = Chat.list.length ? Chat.list.map(c => `<div class="ml-row${c.id === cur ? ' on' : ''}${c.unread ? ' unread' : ''}" data-act="open-chat" data-c="${c.id}">${convAvatar(c, 'ml-av')}<div class="flex1"><div class="ml-top"><b class="ell">${esc(Chat.title(c))}</b><span class="ml-t">${c.preview ? ago(c.preview.ts) : ''}</span></div><div class="ml-sub"><span class="ell">${esc(previewText(c))}</span>${c.unread ? `<span class="ml-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div></div></div>`).join('')
-    : `<div class="fa-empty">${ic('chat')}<b>No messages yet</b><p>Start a conversation with a friend, or make a group.</p><button class="btn light sm" data-act="new-chat">New message</button></div>`;
+  box.innerHTML = (window.AX.Notes ? window.AX.Notes.strip() : '') + (Chat.list.length ? Chat.list.map(c => `<div class="ml-row${c.id === cur ? ' on' : ''}${c.unread ? ' unread' : ''}" data-act="open-chat" data-c="${c.id}">${convAvatar(c, 'ml-av')}<div class="flex1"><div class="ml-top">${c.secret ? `<span class="ml-lock">${ic('lock', 'sm')}</span>` : ''}<b class="ell">${esc(Chat.title(c))}</b><span class="ml-t">${c.preview ? ago(c.preview.ts) : ''}</span></div><div class="ml-sub"><span class="ell">${esc(previewText(c))}</span>${c.unread ? `<span class="ml-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div></div></div>`).join('')
+    : `<div class="fa-empty">${ic('chat')}<b>No messages yet</b><p>Start a conversation with a friend, or make a group.</p><button class="btn light sm" data-act="new-chat">New message</button></div>`);
 }
 const THREAD = { cid: null, stick: true };
 const dayLabel = ms => { const d = new Date(ms), t = new Date(); const y = new Date(); y.setDate(t.getDate() - 1); return d.toDateString() === t.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: d.getFullYear() === t.getFullYear() ? undefined : 'numeric' }); };
@@ -1670,7 +1674,7 @@ const linkify = s => s.replace(/(https?:\/\/[^\s<]+[^\s<.,:;"')\]!?])/g, '<a hre
 function attCard(a) {
   if (a.k === 'missing') return `<div class="att missing">${ic('note')}<div class="att-meta"><b class="ell">${esc(a.title || 'Something')}</b><span>${esc(a.sub || '')} • not in this library</span></div></div>`;
   const cover = a.k === 'track' ? img(coverUrl(a.t.rel)) : a.k === 'album' ? img(coverUrl(a.al.cover)) : a.k === 'artist' ? img(coverUrl(a.ar.cover)) : plCover(Collab.rels(a.id));
-  return `<div class="att${a.k === 'artist' ? ' round' : ''}" data-act="att-open" data-k="${a.k}" data-id="${esc(a.id)}"><div class="att-art">${cover}</div><div class="att-meta"><b class="ell">${esc(a.title)}</b><span class="ell">${esc(a.sub)}</span></div><button class="att-play" data-act="att-play" data-k="${a.k}" data-id="${esc(a.id)}" aria-label="Play">${ic('play')}</button></div>`;
+  return `<div class="att${a.k === 'artist' ? ' round' : ''}" data-act="att-open" data-k="${a.k}" data-id="${esc(a.id)}"><div class="att-art">${cover}</div><div class="att-meta"><b class="ell">${esc(a.title)}</b><span class="ell">${esc(a.sub)}${a.at ? `<span class="att-at">${ic('play', 'sm')}${fmt(a.at)}</span>` : ''}</span></div><button class="att-play" data-act="att-play" data-k="${a.k}" data-id="${esc(a.id)}" data-at="${a.at || 0}" aria-label="Play">${ic('play')}</button></div>`;
 }
 function reactChips(r) {
   if (!r || !r.size) return '';
@@ -1719,7 +1723,7 @@ async function threadBanner(c) {
     if (pin && pin.changed && !pin.changed.seen) bits.push(`<div class="mt-warn">${ic('shield', 'sm')}<span class="flex1">${esc(Chat.card(c, m).display_name)}'s security code changed. This happens when they reset their keys${pin.changed.wasVerified ? ', and you had verified the old one' : ''}.</span><button class="btn ghost sm" data-act="safety" data-u="${esc(m)}">Check</button>${pin.changed.wasVerified ? '' : `<button class="btn ghost sm" data-act="code-seen" data-u="${esc(m)}">OK</button>`}</div>`);
   }
   const problem = await Chat.sendProblem(c);
-  if (problem && problem !== 'locked' && !bits.length) bits.push(`<div class="mt-warn">${ic('lock', 'sm')}<span class="flex1">${esc(problem)}</span></div>`);
+  if (problem && problem !== 'locked' && !bits.length && !(c.st && c.st.quiet)) bits.push(`<div class="mt-warn">${ic('lock', 'sm')}<span class="flex1">${esc(problem)}</span></div>`);
   return { html: bits.join(''), problem };
 }
 async function updateThread() {
@@ -1780,8 +1784,9 @@ async function updateThread() {
 }
 function chatExtras(c) {
   const CM = window.AX.ChatMedia;
-  return CM ? [{ label: c.ttl ? `Disappearing messages: ${CM.ttlName(c.ttl)}` : 'Disappearing messages', icon: 'timer', act: () => CM.ttlDialog(c.id) },
-    feat('party') && window.AX.Party ? { label: 'Start a listening party here', icon: 'party', act: () => CM.partyInvite(c.id) } : null] : [];
+  const secret = c.kind === 'dm' && !c.secret && E2EE.state === 'ready' ? [{ label: 'Start a secret chat', icon: 'lock', act: async () => { try { const s = await Chat.secret(Chat.peer(c)); go('messages', { c: s.id }); } catch (e) { toast(e.message); } } }] : [];
+  return secret.concat(CM ? [{ label: c.ttl ? `Disappearing messages: ${CM.ttlName(c.ttl)}` : 'Disappearing messages', icon: 'timer', act: () => CM.ttlDialog(c.id) },
+    feat('party') && window.AX.Party ? { label: 'Start a listening party here', icon: 'party', act: () => CM.partyInvite(c.id) } : null] : []);
 }
 function chatMenu(c) {
   if (c.kind === 'dm') {
@@ -2090,7 +2095,7 @@ const ACT = {
     collabOn() ? { label: 'Collaborative playlist', icon: 'people', act: () => newCollabDialog() } : null,
     (P.cur != null) ? { label: 'Playlist from queue', icon: 'queue', act: () => createPlaylistDlg(uniq([P.cur, ...P.queue, ...upcoming(100).map(u => u.id)]), 'My queue') } : null]),
   'me-menu': b => menuAt(b, U.token
-    ? [{ head: U.name || U.username }, { label: 'Profile', icon: 'person', act: () => go('profile') }, socialOn() ? { label: 'Friends', icon: 'people', act: () => go('friends') } : null, chatOn() ? { label: 'Messages', icon: 'chat', act: () => go('messages') } : null, { label: 'Settings', icon: 'gear', act: () => go('settings') }, { label: 'Downloads', icon: 'dl', act: () => go('downloads') }, feat('rewind') && window.AX.Rewind ? { label: 'Your Rewind', icon: 'spark', act: () => window.AX.Rewind.open() } : null, { label: 'Keyboard shortcuts', icon: 'keyboard', act: shortcutsDialog }, { sep: true }, { label: 'Mobile site', icon: 'phone', act: () => { location.href = '/mobile'; } }, { label: 'Log out', icon: 'logout', act: ACT.logout }]
+    ? [{ head: U.name || U.username }, { label: 'Profile', icon: 'person', act: () => go('profile') }, socialOn() ? { label: 'Friends', icon: 'people', act: () => go('friends') } : null, chatOn() ? { label: 'Messages', icon: 'chat', act: () => go('messages') } : null, { label: 'Settings', icon: 'gear', act: () => go('settings') }, { label: 'Downloads', icon: 'dl', act: () => go('downloads') }, feat('daily') && window.AX.Daily ? { label: 'Axdio Daily', icon: 'note', act: () => window.AX.Daily.open() } : null, feat('discover') && window.AX.Discover ? { label: 'Discover', icon: 'compass', act: () => window.AX.Discover.open() } : null, feat('achievements') && window.AX.Achieve ? { label: 'Achievements', icon: 'trophy', act: () => window.AX.Achieve.open() } : null, socialOn() && feat('chart') && window.AX.Chart ? { label: 'Friends Chart', icon: 'chart', act: () => window.AX.Chart.open() } : null, feat('capsule') && window.AX.Capsule ? { label: 'Time capsule', icon: 'history', act: () => window.AX.Capsule.open() } : null, feat('rewind') && window.AX.Rewind ? { label: 'Your Rewind', icon: 'spark', act: () => window.AX.Rewind.open() } : null, { label: 'Keyboard shortcuts', icon: 'keyboard', act: shortcutsDialog }, { sep: true }, { label: 'Mobile site', icon: 'phone', act: () => { location.href = '/mobile'; } }, { label: 'Log out', icon: 'logout', act: ACT.logout }]
     : [{ label: 'Log in or sign up', icon: 'person', act: () => go('profile') }, { label: 'Settings', icon: 'gear', act: () => go('settings') }, { label: 'Keyboard shortcuts', icon: 'keyboard', act: shortcutsDialog }, { sep: true }, { label: 'Mobile site', icon: 'phone', act: () => { location.href = '/mobile'; } }]),
   'toggle-np': () => setPanel('np'),
   'toggle-friends': () => setPanel('friends'),
@@ -2124,6 +2129,7 @@ const ACT = {
   },
   'att-play': b => {
     const k = b.dataset.k, id = b.dataset.id;
+    if (k === 'track' && +b.dataset.at && window.AX.Moments) { window.AX.Moments.play(L.tracks[+id], +b.dataset.at); return; }
     if (k === 'track') { playTrackAlone(+id); return; }
     const ctx = itemCtx(k, id); if (ctx) playCtx(ctx, -1);
   },
@@ -2157,6 +2163,8 @@ const ACT = {
   pip: togglePip,
   fullscreen: () => (FS.open ? closeFs() : openFs()),
   'fs-lyrics': () => { FS.lyr = !FS.lyr; renderFsLyrics(); },
+  karaoke: () => { if (window.AX.Karaoke) window.AX.Karaoke.open(); },
+  moment: () => { if (window.AX.Moments) window.AX.Moments.open(); },
   'fs-viz': () => { if (!window.AX.Vis) return; window.AX.Vis.toggle(); fsViz(); toast(window.AX.Vis.on ? 'Visuals on' : 'Visuals off'); },
   'q-clear': queueClear,
   'q-remove': b => queueRemove(+b.dataset.qi),
@@ -2301,9 +2309,10 @@ function handleDeepLink() {
   if (!rel) return;
   const t = L.byRel.get(rel);
   if (!t) { toast("That song isn't in the library anymore"); go('home', {}, { replace: true }); return; }
-  stageTrack(t);
+  const at = Math.max(0, +q.get('t') || 0);
+  stageTrack(t, at);
   go('album', { key: albumOf(t).key }, { replace: true, force: true });
-  toast(`Ready to play "${t.title}"`, { action: 'Play', onAction: play });
+  toast(at ? `Ready to play "${t.title}" from ${fmt(at)}` : `Ready to play "${t.title}"`, { action: 'Play', onAction: play });
 }
 function showMobileHint() {
   if (!MOBILE_UA || sessionStorage.getItem('axdio_hide_mobile_hint')) return;
@@ -2349,7 +2358,7 @@ async function boot() {
 }
 
 Object.assign(UI, {
-  party(v) { const b = byId('btn-party'); if (b) b.classList.toggle('on', !!v); },
+  party(v) { const b = byId('btn-party'); if (b) b.classList.toggle('on', !!v); if (RP.mode === 'party') layout(); },
   openParty() { if (RP.mode !== 'party') setPanel('party'); },
   track: onTrack, playState: onPlayState, queue: onQueue, progress: onProgress, volume: onVolume, lyrics: onLyrics, lyricLine: onLyricLine,
   remote: onRemote, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, online: () => { if (V.route) render(view.scrollTop); }, social: onSocial,
@@ -2361,7 +2370,7 @@ boot().catch(err => { console.error(err); Boot.log('WARN', 'Startup error: ' + e
 
 // A page cached from an older version may not load the shared scripts yet: fetch whatever is missing first.
 (function bootstrap() {
-  const need = [!window.AX && '/web/app/core.js?v=3.2.0', !(window.AX && window.AX.Social) && '/web/app/social.js?v=1.0.0', !(window.AX && window.AX.Party) && '/web/app/party.js?v=1.0.0', !(window.AX && window.AX.Vis) && '/web/app/immersive.js?v=1.0.0', !(window.AX && window.AX.ChatMedia) && '/web/app/chatmedia.js?v=1.0.0', !(window.AX && window.AX.Rewind) && '/web/app/rewind.js?v=1.0.0'].filter(Boolean);
+  const need = [!window.AX && '/web/app/core.js?v=3.2.0', !(window.AX && window.AX.Social) && '/web/app/social.js?v=1.0.0', !(window.AX && window.AX.Party) && '/web/app/party.js?v=1.0.0', !(window.AX && window.AX.Vis) && '/web/app/immersive.js?v=1.0.0', !(window.AX && window.AX.ChatMedia) && '/web/app/chatmedia.js?v=1.0.0', !(window.AX && window.AX.Rewind) && '/web/app/rewind.js?v=1.0.0', !(window.AX && window.AX.Daily) && '/web/app/daily.js?v=1.0.0', !(window.AX && window.AX.Discover) && '/web/app/discover.js?v=1.0.0', !(window.AX && window.AX.Achieve) && '/web/app/achieve.js?v=1.0.0', !(window.AX && window.AX.Notes) && '/web/app/notes.js?v=1.0.0', !(window.AX && window.AX.Chart) && '/web/app/charts.js?v=1.0.0', !(window.AX && window.AX.Karaoke) && '/web/app/karaoke.js?v=1.0.0', !(window.AX && window.AX.Moments) && '/web/app/moments.js?v=1.0.0'].filter(Boolean);
   const next = () => {
     const src = need.shift();
     if (!src) { axdioDesktop(); return; }

@@ -16,7 +16,15 @@ Created by [xo.st](https://xo.st).
 - Private messages: end-to-end encrypted chats and group chats between friends, with photos, videos and voice messages (encrypted on your device before upload), disappearing messages, songs, albums and artists you can play right from the conversation, reactions and read receipts
 - Blend: see how well your taste matches a friend's, and play a mix of the music you both love
 - Collaborative playlists: invite friends to add, remove and reorder songs together
-- Listening parties: friends listen together in sync, with a shared queue, live reactions and party chat
+- Listening parties: friends listen together in sync, with a shared queue, live reactions and end-to-end encrypted party chat
+- Secret chats: end-to-end encrypted chats that only work on one device on each side, so even your other signed-in devices can't read them
+- Axdio Daily: a daily game where everyone on the server names the same song from a 1-second clip, then longer ones, with streaks and a shareable result
+- Discover: a swipeable feed of songs you've never played, each starting at its catchiest part
+- Levels, streaks and achievements: XP for listening, a daily streak, and 15 badges in bronze, silver and gold
+- Music notes: a short line and a song for your friends, shown above their chats for 24 hours
+- Friends Chart and Time capsule: this week's top 20 among you and your friends, what you played on this day in earlier years, and forgotten favourites
+- Sing along: turn the vocals down live and sing to big synced lyrics
+- Moments: share a song from an exact second, as a link or in a chat
 - Immersive Now Playing: visuals painted from the album cover that react to the music, plus an ambient full-screen mode for TVs
 - Rewind: your month or year in music as story cards (minutes, top artists and songs, your listening clock, streaks and new finds), with a card to save, share or send to a friend
 - Smart transitions: silence between songs is skipped, crossfades follow each song's own fade-out, albums that run into the next track stay gapless, and volume can be matched from song to song

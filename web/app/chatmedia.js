@@ -459,10 +459,18 @@ function ttlDialog(cid) {
   });
   document.body.appendChild(w);
 }
+function secretBanner(c) {
+  if (!c || !c.secret || !c.st) return '';
+  const other = c.st.peer, name = esc(Chat.card(c, other).display_name), dev = (c.devices || {})[other];
+  if (c.st.invite) return `<div class="axm-secret invite">${ic('lock', 'sm')}<span>A secret chat works on one device on each side. Open it here and it will only ever be readable on this device.</span><button data-cm-act="secret-accept" data-cid="${esc(c.id)}">Open here</button></div>`;
+  if (!c.st.here) return '';
+  return `<div class="axm-secret">${ic('lock', 'sm')}<span>Secret chat · only on this device${dev ? ` and ${name}'s ${esc(dev.label || 'device')}` : `. ${name} hasn't opened it yet`}. Your other devices can't read it.</span></div>`;
+}
 function banner(c) {
-  if (!c || !(c.ttl > 0)) return '';
+  const sb = secretBanner(c);
+  if (!c || !(c.ttl > 0)) return sb;
   const log = (c.ttl_log || [])[(c.ttl_log || []).length - 1], who = log ? (log.by === U.username ? 'you' : Chat.card(c, log.by).display_name) : '';
-  return `<div class="axm-ttl" data-cm-act="ttl" data-cid="${esc(c.id)}" role="button">${ic('timer', 'sm')}<span>Messages disappear after ${ttlName(c.ttl)}${who ? ` · set by ${esc(who)}` : ''}</span></div>`;
+  return sb + `<div class="axm-ttl" data-cm-act="ttl" data-cid="${esc(c.id)}" role="button">${ic('timer', 'sm')}<span>Messages disappear after ${ttlName(c.ttl)}${who ? ` · set by ${esc(who)}` : ''}</span></div>`;
 }
 // Drop disappearing messages from open threads once their time is up.
 setInterval(() => {
@@ -506,6 +514,7 @@ document.addEventListener('click', e => {
   else if (act === 'voice') playVoice(b.closest('.axm-voice'));
   else if (act === 'ttl') ttlDialog(cid);
   else if (act === 'blend') playBlend(b.dataset.u);
+  else if (act === 'secret-accept') Chat.acceptSecret(cid).then(() => toast('Opened here. This secret chat now lives on this device')).catch(e => toast(e.message));
   else if (act === 'cancel' || act === 'dismiss') { const it = (pending.get(cid) || []).find(x => x.lid === b.dataset.lid); if (it) { it.ctl.abort(); drop(cid, it); } }
   else return;
   e.preventDefault(); e.stopPropagation();
@@ -615,6 +624,10 @@ form.axm-recording { position: relative; }
 .axm-blend-play { width: 48px; height: 48px; flex-shrink: 0; border-radius: 50%; border: 0; background: var(--accent, #22c55e); color: #000; display: grid; place-items: center; cursor: pointer; }
 .axm-blend-play .i { width: 24px; height: 24px; }
 @media (max-width: 520px) { .axm-blend { gap: 12px; padding: 12px; } .axm-blend-art { width: 56px; height: 56px; } .axm-blend-meta b { font-size: 17px; } .axm-match { width: 54px; height: 54px; } .axm-blend-play { display: none; } }
+.axm-secret { display: flex; align-items: center; gap: 10px; margin: 8px 12px 0; padding: 10px 14px; border-radius: 12px; font-size: 13px; font-weight: 600; line-height: 1.4; background: rgba(34,197,94,.12); color: #bbf7d0; }
+.axm-secret .i { width: 18px; height: 18px; flex-shrink: 0; color: #4ade80; }
+.axm-secret span { flex: 1; }
+.axm-secret button { flex-shrink: 0; height: 34px; padding: 0 14px; border-radius: 99px; border: 0; background: #22c55e; color: #000; font: inherit; font-weight: 800; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .axm-spin, .axm-rec-dot { animation: none; } }
 ` }));
 

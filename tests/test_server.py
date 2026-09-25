@@ -1622,8 +1622,18 @@ class TestParties(Social):
         self.assertLess(time.time() - t0, 3)
         self.assertEqual(w["feed"][-1]["emoji"], "🔥")
         self.assertEqual(self.op(pid, hb, op="react", emoji="🍕").status_code, 400)
-        self.op(pid, hb, op="chat", text="  great   song ")
-        self.assertEqual(self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=ha).get_json()["feed"][-1]["text"], "great song")
+        # Chat is end-to-end encrypted: only ciphertext, under a key the members seal for each other.
+        wrap = lambda by: dict(sealed(), e=b64(87), sig=b64(86), by=by)
+        self.assertEqual(self.op(pid, hb, op="chat", text="great song").status_code, 400)                     # plain text: no
+        self.assertEqual(self.op(pid, hb, op="chat", v=1, **sealed()).status_code, 400)                        # no key yet
+        self.assertEqual(self.op(pid, hb, op="keys", v=1, wraps={"host1": wrap("host1")}).status_code, 400)    # sealed by someone else
+        self.assertEqual(self.op(pid, ha, op="keys", v=1, wraps={"host1": wrap("host1"), "guest1": wrap("host1")}).status_code, 200)
+        self.assertEqual(self.op(pid, hb, op="keys", v=2, wraps={"guest1": wrap("guest1")}).status_code, 409)  # only the host starts a new key
+        seen = self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=hb).get_json()
+        self.assertEqual((seen["keyv"], seen["wrapped"], seen["my_wrap"]["by"]), (1, ["guest1", "host1"], "host1"))
+        self.assertEqual(self.op(pid, hb, op="chat", v=1, **sealed()).status_code, 200)
+        last = self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=ha).get_json()["feed"][-1]
+        self.assertEqual((last["kind"], last["v"], last["ct"], last.get("text")), ("chat", 1, sealed()["ct"], None))
         # The server moves on by itself at the end of the song.
         with server._party_cv:
             p = server._parties[pid]
@@ -1907,6 +1917,222 @@ class TestSmartTransitions(Base):
             self.assertTrue(self.c.get("/api/analysis", query_string={"rel": rel}).get_json()["off"])
         finally:
             self.settings(feature_smart=True)
+
+
+class TestDaily(Social):
+    def test_a_day_of_guessing(self):
+        ha, hb = self.friends("vera", "walt")
+        v = self.c.get("/api/daily", headers=ha).get_json()
+        self.assertEqual((v["number"], v["stage"], v["tries"], v["done"]), ((server.daily_today() - server.DAILY_EPOCH).days + 1, 0, [], False))
+        self.assertTrue(v["ready"])
+        self.assertNotIn("answer", v)
+        answer = server.daily_pick(server.daily_today())
+        self.assertEqual(server.daily_pick(server.daily_today()), answer)          # fixed for the day
+        clip = self.c.get("/api/daily/clip?stage=0", headers=ha)
+        self.assertEqual((clip.status_code, clip.mimetype), (200, "audio/mpeg"))
+        clip.close()
+        self.assertEqual(self.c.get("/api/daily/clip?stage=1", headers=ha).status_code, 403)   # not unlocked yet
+        wrong = next(r for r in (self.rel("Opening"), self.rel("Second Song"), self.rel("Something Else")) if r != answer["rel"])
+        v = self.c.post("/api/daily/guess", json={"rel": wrong}, headers=ha).get_json()
+        self.assertEqual((v["stage"], v["tries"][0]["r"]), (1, "wrong"))
+        self.assertEqual(self.c.get("/api/daily/clip?stage=1", headers=ha).status_code, 200)
+        self.assertEqual(self.c.post("/api/daily/guess", json={"rel": "nope.flac"}, headers=ha).status_code, 400)
+        self.c.post("/api/daily/guess", json={"skip": True}, headers=ha)
+        v = self.c.post("/api/daily/guess", json={"rel": answer["rel"]}, headers=ha).get_json()
+        self.assertTrue(v["done"] and v["solved"])
+        self.assertEqual(v["answer"]["rel"], answer["rel"])
+        self.assertEqual((v["stats"]["streak"], v["stats"]["wins"], v["stats"]["dist"][2]), (1, 1, 1))
+        again = self.c.post("/api/daily/guess", json={"skip": True}, headers=ha).get_json()
+        self.assertEqual(len(again["tries"]), 3)                                    # finished: nothing changes
+        for _ in range(6): v = self.c.post("/api/daily/guess", json={"skip": True}, headers=hb).get_json()
+        self.assertTrue(v["done"] and not v["solved"])
+        self.assertEqual(v["stats"]["streak"], 0)
+        self.assertEqual(self.c.get("/api/daily/clip?stage=5", headers=hb).status_code, 200)
+        mine = self.c.get("/api/daily", headers=ha).get_json()["friends"][0]
+        self.assertEqual((mine["username"], mine["n"], mine["solved"], mine["grid"]), ("walt", 6, False, ["skip"] * 6))
+
+    def test_streaks_and_switch(self):
+        h = self.user("xena")
+        today = server.daily_today()
+        with server._db_lock:
+            for k, solved in ((3, 1), (2, 1), (1, 1)):
+                server.db().execute("INSERT INTO daily (user, day, tries, done, solved, n) VALUES ('xena', ?, '[]', 1, ?, 2)",
+                                    ((today - server.timedelta(days=k)).isoformat(), solved))
+        self.assertEqual(self.c.get("/api/daily", headers=h).get_json()["stats"]["streak"], 3)
+        with server._db_lock: server.db().execute("DELETE FROM daily WHERE user = 'xena' AND day = ?", ((today - server.timedelta(days=1)).isoformat(),))
+        self.assertEqual(self.c.get("/api/daily", headers=h).get_json()["stats"]["streak"], 0)   # yesterday missed
+        try:
+            self.settings(feature_daily=False)
+            self.assertEqual(self.c.get("/api/daily", headers=h).status_code, 403)
+        finally:
+            self.settings(feature_daily=True)
+
+
+class TestDiscover(Social):
+    def test_finding_the_hook(self):
+        f = TMP / "hook.flac"
+        # Quiet verses, a loud chorus from 30 s to 45 s, quiet again.
+        expr = "sin(2*PI*330*t)*if(between(t,30,45),0.8,0.08)"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "aevalsrc=" + expr.replace(",", "\\,") + ":s=44100:d=70", str(f)], check=True)
+        a = server.measure_song(f)
+        self.assertAlmostEqual(a["hook"], 30, delta=1.5)
+
+    def test_a_feed_of_new_songs(self):
+        ha, hb = self.friends("yuri", "zoe")
+        one, two, three = self.rel("Opening"), self.rel("Second Song"), self.rel("Something Else")
+        self.c.post("/api/user/record_play", json={"rel_path": one}, headers=ha)
+        for _ in range(3): self.c.post("/api/user/record_play", json={"rel_path": three}, headers=hb)
+        items = self.c.get("/api/discover?n=5", headers=ha).get_json()["items"]
+        rels = [i["rel"] for i in items]
+        self.assertNotIn(one, rels)                                   # already played
+        self.assertEqual(sorted(rels), sorted([two, three]))
+        pick = next(i for i in items if i["rel"] == three)
+        self.assertEqual((pick["why"]["kind"], pick["why"]["user"]), ("friend", "zoe"))
+        self.assertIn("has it on repeat", pick["why"]["text"])
+        self.assertGreaterEqual(pick["hook"], 0)
+        again = [i["rel"] for i in self.c.get("/api/discover?n=5", headers=ha).get_json()["items"]]
+        self.assertEqual(sorted(again), sorted([two, three]))         # everything seen: it goes round again
+        self.assertEqual(self.c.post("/api/discover/log", json={"action": "like", "rel": two}, headers=ha).status_code, 200)
+        self.assertEqual(self.c.post("/api/discover/log", json={"action": "hack"}, headers=ha).status_code, 400)
+        with server._db_lock:
+            self.assertEqual(server.db().execute("SELECT COUNT(*) FROM events WHERE user = 'yuri' AND kind = 'discover_like'").fetchone()[0], 1)
+        self.c.post("/api/social/settings", json={"share_activity": False}, headers=hb)
+        pick = next(i for i in self.c.get("/api/discover?n=5", headers=ha).get_json()["items"] if i["rel"] == three)
+        self.assertNotEqual(pick["why"]["kind"], "friend")            # zoe keeps her listening to herself now
+        self.c.post("/api/social/settings", json={"share_activity": True}, headers=hb)
+
+
+class TestAchievements(Social):
+    def test_levels_streaks_and_badges(self):
+        ha, hb = self.friends("abe", "bo")
+        one, two = self.rel("Opening"), self.rel("Something Else")
+        for _ in range(5): self.c.post("/api/user/record_play", json={"rel_path": one}, headers=ha)
+        self.c.post("/api/user/record_play", json={"rel_path": two}, headers=ha)
+        night = time.time() - time.time() % 86400 + 2 * 3600       # 2 am UTC today
+        with server._db_lock:
+            server.db().execute("INSERT INTO plays (user, ts, rel, secs, n, b) VALUES ('abe', ?, ?, 600, 10, 0)", (night, one))
+            server.db().execute("INSERT INTO daily (user, day, tries, done, solved, n) VALUES ('abe', '2026-01-01', '[]', 1, 1, 1)")
+        server.events_add("abe", "party_host", "pty_x")
+        server._ach_cache.clear()
+        a = self.c.get("/api/achievements?tz=0", headers=ha).get_json()
+        badge = {b["id"]: b for b in a["badges"]}
+        self.assertEqual(len(a["badges"]), len(server.BADGES))
+        self.assertEqual((a["streak"], a["played_today"]), (1, True))
+        self.assertGreaterEqual(a["xp"], 100 + 25 + 50 + 30)             # 100 night minutes, a Daily win from 1 s, a party
+        self.assertEqual(a["level"], server.xp_level(a["xp"])[0])
+        self.assertEqual((badge["night_owl"]["value"], badge["night_owl"]["tier"], badge["night_owl"]["next"]), (10, 1, 50))
+        self.assertEqual((badge["on_repeat"]["value"], badge["on_repeat"]["tier"], badge["explorer"]["value"]), (15, 2, 2))   # 5 + the 10 at night, same day
+        self.assertEqual((badge["perfect_pitch"]["tier"], badge["party"]["tier"], badge["social"]["value"]), (1, 1, 1))
+        prof = self.c.get("/api/social/users/abe", headers=hb).get_json()["achievements"]
+        self.assertEqual(prof["level"], a["level"])
+        self.assertTrue(prof["badges"] and all(b["tier"] for b in prof["badges"]))
+        self.c.post("/api/social/settings", json={"share_activity": False}, headers=ha)
+        self.assertNotIn("achievements", self.c.get("/api/social/users/abe", headers=hb).get_json())
+        self.c.post("/api/social/settings", json={"share_activity": True}, headers=ha)
+
+    def test_level_curve(self):
+        self.assertEqual(server.xp_level(0)[0], 1)
+        self.assertEqual(server.xp_level(60)[0], 2)
+        self.assertEqual(server.xp_level(59)[0], 1)
+        self.assertEqual(server.xp_level(1620)[0], 10)
+
+
+class TestNotes(Social):
+    def test_notes_for_friends(self):
+        ha, hb = self.friends("cleo", "dex")
+        hc = self.user("eli")
+        rel = self.rel("Opening")
+        r = self.c.post("/api/social/note", json={"text": "  this  song  on repeat all day long, no regrets at all whatsoever  ", "rel": rel}, headers=ha).get_json()
+        self.assertEqual(len(r["note"]["text"]), 60)
+        self.assertEqual((r["note"]["rel"], r["note"]["title"]), (rel, "Opening"))
+        got = self.c.get("/api/social/notes", headers=hb).get_json()
+        self.assertEqual([f["username"] for f in got["friends"]], ["cleo"])
+        self.assertIsNone(got["mine"])
+        self.assertEqual(self.c.get("/api/social/notes", headers=hc).get_json()["friends"], [])       # not a friend
+        self.c.post("/api/social/note", json={"text": "hi", "rel": "nope.flac"}, headers=hb)
+        self.assertNotIn("rel", self.c.get("/api/social/notes", headers=hb).get_json()["mine"])     # unknown songs are dropped
+        with server.users_lock: server.users_data["cleo"]["note"]["until"] = time.time() - 1
+        self.assertEqual(self.c.get("/api/social/notes", headers=hb).get_json()["friends"], [])       # 24 hours are up
+        self.c.post("/api/social/note", json={"clear": True}, headers=hb)
+        self.assertIsNone(self.c.get("/api/social/notes", headers=hb).get_json()["mine"])
+        try:
+            self.settings(feature_notes=False)
+            self.assertEqual(self.c.post("/api/social/note", json={"text": "x"}, headers=ha).status_code, 403)
+        finally:
+            self.settings(feature_notes=True)
+
+
+class TestChartAndCapsule(Social):
+    def test_friends_chart(self):
+        ha, hb = self.friends("fae", "gil")
+        hc = self.user("hal2")
+        one, two, three = self.rel("Opening"), self.rel("Second Song"), self.rel("Something Else")
+        play = lambda h, rel, n: [self.c.post("/api/user/record_play", json={"rel_path": rel}, headers=h) for _ in range(n)]
+        play(ha, one, 3); play(hb, one, 2); play(hb, two, 4); play(hc, three, 9)       # hal2 isn't a friend
+        with server._db_lock:                                                            # last week, two was on top
+            server.db().execute("INSERT INTO plays (user, ts, rel, secs, n, b) VALUES ('gil', ?, ?, 60, 20, 0)", (time.time() - 10 * 86400, two))
+        ch = self.c.get("/api/social/chart", headers=ha).get_json()
+        self.assertEqual([i["rel"] for i in ch["items"]], [one, two])                    # 5 plays by two people beat 4 by one
+        top = ch["items"][0]
+        self.assertEqual((top["rank"], top["prev"], top["plays"], top["n_listeners"]), (1, None, 5, 2))
+        self.assertEqual(ch["items"][1]["prev"], 1)
+        self.assertEqual(top["listeners"][0]["username"], "fae")
+        self.c.post("/api/social/settings", json={"share_activity": False}, headers=hb)
+        self.assertEqual([i["rel"] for i in self.c.get("/api/social/chart", headers=ha).get_json()["items"]], [one])
+        self.c.post("/api/social/settings", json={"share_activity": True}, headers=hb)
+
+    def test_time_capsule(self):
+        h = self.user("ida")
+        one, two = self.rel("Opening"), self.rel("Second Song")
+        now = time.time()
+        with server._db_lock:
+            server.db().execute("INSERT INTO plays (user, ts, rel, secs, n, b) VALUES ('ida', ?, ?, 60, 2, 0)", (now - 365 * 86400, one))
+            server.db().execute("INSERT INTO plays (user, ts, rel, secs, n, b) VALUES ('ida', ?, ?, 60, 6, 1)", (now - 90 * 86400, two))
+        tc = self.c.get("/api/timecapsule?tz=0", headers=h).get_json()
+        if tc["years"]:                                                                   # (not when last year had no 29 February)
+            self.assertEqual((tc["years"][0]["ago"], tc["years"][0]["songs"][0]["rel"]), (1, one))
+        self.assertEqual([s["rel"] for s in tc["rediscover"]], [two])                   # 6 plays, none for 90 days
+        self.assertEqual(tc["rediscover"][0]["plays"], 6)
+
+
+class TestSecretChats(Social):
+    def dev(self, i): return {"id": (i * 16)[:16], "enc": b64(87, "E"), "sig": b64(87, "S"), "cert": b64(86), "label": "Phone"}
+
+    def test_one_device_each(self):
+        ha, hb = self.friends("jo", "kai")
+        for h, tag in ((ha, "A"), (hb, "C")): self.c.post("/api/chat/keys", json=fake_keys(tag), headers=h)
+        self.assertEqual(self.c.post("/api/chat/secret", json={"username": "kai", "device": {"id": "x"}}, headers=ha).status_code, 400)
+        self.assertEqual(self.c.post("/api/chat/secret", json={"username": "lu", "device": self.dev("a")}, headers=ha).status_code, 404)
+        c = self.c.post("/api/chat/secret", json={"username": "kai", "device": self.dev("a")}, headers=ha).get_json()
+        cid = c["id"]
+        self.assertTrue(cid.startswith("sc_"))
+        self.assertEqual((c["kind"], list(c["devices"])), ("secret", ["jo"]))
+        key = lambda by, dev, v=1: {"v": v, "conv": cid, "by": by, "ts": 1, "ev": 0, "members": ["jo", "kai"], "sig": b64(86), "dev": dev, "dsig": b64(86),
+                                    "wraps": {m: dict(sealed(), e=b64(87)) for m in ("jo", "kai")}, "fps": {m: "a" * 64 for m in ("jo", "kai")}}
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/keys", json={"key": key("jo", "a" * 16)}, headers=ha).status_code, 409)   # kai hasn't opened it
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/accept", json={"device": self.dev("b")}, headers=ha).status_code, 409)   # jo's side is taken
+        acc = self.c.post(f"/api/chat/{cid}/accept", json={"device": self.dev("b")}, headers=hb).get_json()
+        self.assertEqual(acc["devices"]["kai"]["id"], "b" * 16)
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/accept", json={"device": self.dev("c")}, headers=hb).status_code, 409)   # once only
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/keys", json={"key": key("jo", "z" * 16)}, headers=ha).status_code, 403)   # another device of jo's
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/keys", json={"key": key("jo", "a" * 16)}, headers=ha).status_code, 200)
+        stored = self.c.get(f"/api/chat/{cid}", headers=hb).get_json()["keys"][0]
+        self.assertEqual((stored["dev"], stored["dsig"]), ("a" * 16, b64(86)))
+        msg = dict(sealed(), id="s" * 20, v=1, sig=b64(86))
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/messages", json=msg, headers=hb).status_code, 200)
+        self.assertEqual(len(self.c.get(f"/api/chat/{cid}/messages", headers=ha).get_json()["messages"]), 1)
+        self.assertEqual(self.c.get(f"/api/chat/{cid}", headers=self.user("mo")).status_code, 404)                                # not in it
+
+
+class TestMoments(Base):
+    def test_shared_moment_opens_at_that_second(self):
+        rel = self.rel("Opening")
+        sid = server.share_id("t", rel)
+        r = self.c.get(f"/track/{sid}/open?t=73")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers["Location"].endswith("&t=73"), r.headers["Location"])
+        self.assertNotIn("t=", self.c.get(f"/track/{sid}/open").headers["Location"])
+        self.assertNotIn("t=", self.c.get(f"/track/{sid}/open?t=999999").headers["Location"])   # nonsense ignored
 
 
 def tearDownModule():

@@ -807,6 +807,7 @@ span.mt-av { width: 28px; flex-shrink: 0; }
 #view.fixed > .msg-view { position: absolute; inset: 0; z-index: 1; }
 .msg-view { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; }
 .msg-view.none { grid-template-columns: 1fr; }
+.ml-lock { display: inline-flex; color: #4ade80; margin-right: 4px; } .ml-lock .i { width: 15px; height: 15px; }
 .msg-view.none .msg-list { display: none; }
 .msg-list { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
 .ml-h { display: flex; align-items: center; justify-content: space-between; padding: 20px 16px 12px 20px; }

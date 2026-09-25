@@ -576,8 +576,8 @@ body.fp-open #toast { top: calc(var(--sat) + 62px); bottom: auto; }
 .prof-hero { padding: calc(var(--sat) + 64px) 16px 10px; display: flex; flex-direction: column; align-items: center; text-align: center; }
 .prof-hero h1 { font-size: 28px; font-weight: 800; letter-spacing: -.03em; margin-top: 16px; }
 .prof-hero .muted { font-size: 13px; margin-top: 6px; }
-.rw-wrap:not(:empty) { padding: 0 16px; }
-.rw-wrap .rw-card { margin: 18px 0 4px; }
+.hc-wrap:not(:empty) { padding: 0 16px; }
+.ml-lock { display: inline-flex; color: #4ade80; margin-right: 4px; vertical-align: -2px; } .ml-lock .i { width: 15px; height: 15px; }
 .axm-blend-wrap:not(:empty) { padding: 8px 16px 4px; }
 .prof-stats { display: flex; justify-content: center; gap: 28px; margin: 18px 0 6px; }
 .prof-stats div { text-align: center; }
