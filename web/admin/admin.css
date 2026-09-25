@@ -82,6 +82,8 @@ a { color: inherit; }
 .card-b { padding: 16px 22px 20px; }
 .card-b.flush { padding: 8px 0 6px; }
 .card > .desc { padding: 4px 22px 0; color: var(--text-2); font-size: 13px; max-width: 760px; }
+.card > .desc:last-child { padding-bottom: 18px; }
+.card-b p code, .card > .desc code { white-space: nowrap; }
 .grid { display: grid; gap: 20px; }
 .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.two > .card { margin-bottom: 0; }

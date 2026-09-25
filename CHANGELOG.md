@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.1
+
+- Admin panel: cards that end with a line of text, like the Updates card when you're up to date, no longer cut that line off at the bottom.
+- Commands shown inline in the admin panel no longer break across lines.
+
 ## 2.5.0
 
 - **Updates from the admin panel.** A new **Updates** page shows when a new version of Axdio is out and what's new in it. With the Docker socket mounted, **Update now** installs it: the new image is downloaded, and Axdio is recreated from it with the same settings. If the new version doesn't start properly, the previous one comes back by itself. Updates can also be installed automatically at a chosen hour. New versions are announced by notification too.
