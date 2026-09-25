@@ -47,12 +47,13 @@
 
   <!-- Now Playing -->
   <section id="player" aria-label="Now Playing" aria-hidden="true">
-    <div class="fp-bg"></div>
+    <div class="fp-bg"></div><canvas class="viz" id="fp-viz"></canvas>
     <div class="fp-scroll" id="fp-scroll">
       <div class="fp-main">
         <div class="fp-top">
           <button class="ib" data-act="close-player" aria-label="Close Now Playing"><svg class="i lg"><use href="#i-down"/></svg></button>
           <button class="fp-from" data-act="open-ctx"><small id="fp-from-k">Now playing</small><b id="fp-from-n"></b></button>
+          <button class="ib" id="fp-viz-btn" data-act="viz" aria-label="Visuals"><svg class="i"><use href="#i-spark"/></svg></button>
           <button class="ib" data-act="more-cur" aria-label="More options"><svg class="i"><use href="#i-more-v"/></svg></button>
         </div>
         <div class="fp-art-wrap"><img class="fp-art" id="fp-art" alt=""></div>
@@ -72,7 +73,7 @@
           <button class="ib side" id="fp-rep" data-rep data-act="repeat" aria-label="Repeat"><svg class="i"><use href="#i-repeat"/></svg><span class="rep1">1</span></button>
         </div>
         <div class="fp-bottom">
-          <div class="grp"><button class="ib" data-act="devices" aria-label="Connect to a device"><svg class="i"><use href="#i-devices"/></svg></button><span class="fp-dev" id="fp-dev"></span></div>
+          <div class="grp"><button class="ib" data-act="devices" aria-label="Connect to a device"><svg class="i"><use href="#i-devices"/></svg></button><button class="ib" data-act="party" aria-label="Listening party"><svg class="i"><use href="#i-party"/></svg></button><span class="fp-dev" id="fp-dev"></span></div>
           <div class="grp">
             <button class="ib" id="fp-sleep" data-sleep-btn data-act="sleep" aria-label="Sleep timer"><svg class="i"><use href="#i-moon"/></svg></button>
             <button class="ib" data-act="share-cur" aria-label="Share"><svg class="i"><use href="#i-share"/></svg></button>
@@ -147,6 +148,10 @@
   </script>
   <script src="/web/app/core.js?v=3.2.0"></script>
   <script src="/web/app/social.js?v=1.0.0"></script>
+  <script src="/web/app/party.js?v=1.0.0"></script>
+  <script src="/web/app/immersive.js?v=1.0.0"></script>
+  <script src="/web/app/chatmedia.js?v=1.0.0"></script>
+  <script src="/web/app/rewind.js?v=1.0.0"></script>
   <script src="/web/mobile/mobile.js?v=3.2.0"></script>
 </body>
 </html>

@@ -387,6 +387,10 @@ body.is-playing .eqb i { animation: eqb .9s ease-in-out infinite; }
 .fp-art { width: 100%; max-height: 100%; width: min(100cqw, 100cqh); aspect-ratio: 1; border-radius: 8px; object-fit: cover; box-shadow: 0 20px 60px rgba(0,0,0,.5);
   background: var(--elev-2); transition: transform .3s var(--ease), opacity .3s; touch-action: pan-y; }
 body:not(.is-playing) .fp-art { transform: scale(.92); }
+#player .viz { z-index: 0; }
+#player.viz .fp-bg { opacity: 0; transition: opacity .8s; }
+#player.viz .fp-art { width: min(84cqw, 84cqh); }
+#fp-viz-btn.on { color: var(--accent); }
 .fp-meta { display: flex; align-items: center; gap: 12px; flex-shrink: 0; margin-top: 4px; }
 .fp-meta .meta { overflow: hidden; }
 .fp-title { font-size: 22px; font-weight: 800; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; }
@@ -572,6 +576,9 @@ body.fp-open #toast { top: calc(var(--sat) + 62px); bottom: auto; }
 .prof-hero { padding: calc(var(--sat) + 64px) 16px 10px; display: flex; flex-direction: column; align-items: center; text-align: center; }
 .prof-hero h1 { font-size: 28px; font-weight: 800; letter-spacing: -.03em; margin-top: 16px; }
 .prof-hero .muted { font-size: 13px; margin-top: 6px; }
+.rw-wrap:not(:empty) { padding: 0 16px; }
+.rw-wrap .rw-card { margin: 18px 0 4px; }
+.axm-blend-wrap:not(:empty) { padding: 8px 16px 4px; }
 .prof-stats { display: flex; justify-content: center; gap: 28px; margin: 18px 0 6px; }
 .prof-stats div { text-align: center; }
 .prof-stats b { display: block; font-size: 18px; font-weight: 800; }
@@ -765,6 +772,10 @@ body.in-chat #nav, body.in-chat #mini { display: none !important; }
 .steps a { text-decoration: underline; }
 .steps-done { margin: 4px 0 8px; color: var(--text-2); font-size: 14px; line-height: 1.5; }
 .auth-card .ax-discord { margin-top: 10px; }
+
+/* Listening parties */
+.party-page { padding: calc(var(--sat, 0px) + 72px) 16px calc(var(--nav-h, 64px) + var(--mini-h, 64px) + 24px); }
+[data-act="party"].on { color: var(--accent); }
 
 /* Keys, codes */
 .sn { display: grid; gap: 10px; margin: 18px 0 8px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 21px; letter-spacing: .05em; }

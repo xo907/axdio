@@ -193,7 +193,7 @@ VIEWS.home = el => {
   const chips = [['all', 'All'], ['mixes', 'Made for you'], ['albums', 'Albums'], ['artists', 'Artists']]
     .map(([k, l]) => `<button class="chip${f === k ? ' on' : ''}" data-act="home-filter" data-f="${k}">${l}</button>`).join('');
   let h = `<div class="vbg soft" id="home-bg"></div><div class="content home-top"><div class="chips">${chips}</div>`;
-  if (f === 'all') h += `<h1 class="page-title" style="padding-top:28px;font-size:28px">${greet}</h1><div class="quick">${quick.map(quickHtml).join('')}</div>`;
+  if (f === 'all') h += `<h1 class="page-title" style="padding-top:28px;font-size:28px">${greet}</h1><div class="quick">${quick.map(quickHtml).join('')}</div>${window.AX.Rewind ? window.AX.Rewind.homeCard() : ''}`;
   const tops = topArtists(12);
   const jump = RECENTS.map(r => itFromKey(r.k)).filter(it => it && !quick.some(q => q.ck === it.ck)).slice(0, 12);
   if (f === 'all' && jump.length >= 3) h += shelf('Jump back in', jump);
@@ -497,6 +497,8 @@ VIEWS.settings = el => {
     + setRow({ act: 'set-autoplay', title: 'Autoplay', sub: 'Keep listening to similar songs when your music ends', ctl: tog(S.autoplay) })
     + setRow({ title: 'Crossfade songs', sub: 'Blend the end of one song into the start of the next', ctl: `<div class="slider-row"><input type="range" class="range" id="set-xf" min="0" max="12" step="1" value="${S.crossfade}" style="--pct:${S.crossfade / 12 * 100}%"><span id="set-xf-v">${S.crossfade ? S.crossfade + ' s' : 'Off'}</span></div>` })
     + setRow({ act: 'set-gapless', title: 'Gapless playback', sub: 'Buffer the next song early so albums and DJ mixes flow without silence', ctl: tog(S.gapless) })
+    + (feat('smart') ? setRow({ act: 'set-smart', title: 'Smart transitions', sub: 'Skip silence between songs, stretch crossfades over a song\'s own fade-out, and keep albums that flow together gapless', ctl: tog(S.smart !== false) })
+      + setRow({ act: 'set-matchvol', title: 'Match volume between songs', sub: 'Bring loud recordings down to the level of the rest, so nothing jumps out', ctl: tog(!!S.matchVol) }) : '')
     + setRow({ title: 'Sleep timer', sub: 'Pause playback after a set time', ctl: `<span class="val" data-sleep-val>${esc(sleepLabel())}</span><button class="btn ghost sm" data-act="sleep-menu">Set</button>` });
   h += `<div class="set-sec">Audio</div>`
     + (SITE.features && SITE.features.transcoding ? setRow({ title: 'Streaming quality', sub: 'Lossless sounds best; smaller streams start faster and use less data. Downloads are always lossless.',
@@ -578,7 +580,7 @@ VIEWS.profile = el => {
       if (!u || !pw) { err.textContent = 'Enter your username and password.'; return; }
       if (r && pw.length < minPassword()) { err.textContent = `Use at least ${minPassword()} characters for your password.`; return; }
       btn.disabled = true; err.textContent = '';
-      try { const who = await signIn(u, pw, r, n ? n.value.trim() : '', inv ? inv.value.trim().toUpperCase() : undefined); toast(`Welcome, ${who}!`); refreshAll(); renderMe(); Social.start(); }
+      try { const who = await signIn(u, pw, r, n ? n.value.trim() : '', inv ? inv.value.trim().toUpperCase() : undefined); toast(`Welcome, ${who}!`); refreshAll(); renderMe(); Social.start(); if (window.AX.Party) window.AX.Party.start(); }
       catch (ex) { err.textContent = ex.message; btn.disabled = false; }
     });
     return;
@@ -801,6 +803,7 @@ function renderPanel() {
   Social.activityOpen = RP.mode === 'friends';
   if (!RP.mode) { rp.innerHTML = ''; return; }
   if (RP.mode === 'friends') { if (socialOn()) renderFriendsPanel(rp); else setPanel('friends'); }
+  else if (RP.mode === 'party') renderPartyPanel(rp);
   else if (RP.mode === 'queue') renderQueuePanel(rp); else renderNP(rp);
 }
 const ctxLabel = () => {
@@ -824,6 +827,10 @@ function renderNP(rp) {
     + (up ? `<div class="np-card"><div class="np-card-h"><span>Next in queue</span><button data-act="toggle-queue">Open queue</button></div><div style="padding:0 8px 8px">${qrow(up, P.queue.length ? 'user' : 'ctx', P.queue.length ? 0 : (upcoming(1)[0] || {}).pos)}</div></div>` : '')
     + '</div>';
   syncLyrics(true);
+}
+function renderPartyPanel(rp) {
+  if (!rp.querySelector('#party-mount')) rp.innerHTML = `<div class="rp-h"><b>Listening party</b><button class="icon-btn" data-act="close-panel" data-tip="Close">${ic('close', 'md')}</button></div><div class="rp-body"><div id="party-mount" style="padding:4px 16px 20px"></div></div>`;
+  if (window.AX.Party) window.AX.Party.render(byId('party-mount'));
 }
 function renderQueuePanel(rp) {
   const t = curTrack();
@@ -919,16 +926,45 @@ function notify(t) {
   try { new Notification(t.title, { body: `${t.artist} — ${albumOf(t).title}`, icon: coverUrl(t.rel), tag: 'axdio-now', silent: true }); } catch (e) { /* not allowed here */ }
 }
 
-const FS = { open: false, lyr: false };
+const FS = { open: false, lyr: false, scene: null, idle: 0, clock: 0, lock: null };
 function openFs() {
   if (!curTrack()) { toast('Play something first'); return; }
   FS.open = true; byId('fs').classList.add('open'); byId('fs').setAttribute('aria-hidden', 'false'); renderFs();
   if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+  fsViz(); fsWake(); fsTick(); FS.clock = setInterval(fsTick, 1000);
 }
 function closeFs() {
-  FS.open = false; byId('fs').classList.remove('open'); byId('fs').setAttribute('aria-hidden', 'true');
+  FS.open = false; byId('fs').classList.remove('open', 'idle'); byId('fs').setAttribute('aria-hidden', 'true');
   if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  if (FS.scene) FS.scene.stop();
+  clearInterval(FS.clock); clearTimeout(FS.idle);
+  if (FS.lock) { FS.lock.release().catch(() => {}); FS.lock = null; }
 }
+// Visuals painted from the cover and driven by the music (web/app/immersive.js).
+function fsViz() {
+  const Vis = window.AX.Vis, fs = byId('fs');
+  if (!Vis) return;
+  if (!FS.scene) FS.scene = Vis.mount(byId('fs-viz'), { art: byId('fs-art'), len: .3 });
+  const on = Vis.on && FS.open;
+  fs.classList.toggle('viz', on); byId('fs-viz-btn').classList.toggle('on', Vis.on);
+  if (on) { const t = curTrack(); FS.scene.setTrack(t ? coverUrl(t.rel) : ''); FS.scene.start(); } else FS.scene.stop();
+  fsWake();
+}
+// Ambient mode: when the mouse rests, the controls and cursor fade away and a clock takes their place, like a TV screensaver.
+function fsWake() {
+  const fs = byId('fs');
+  fs.classList.remove('idle'); clearTimeout(FS.idle);
+  if (FS.open) FS.idle = setTimeout(() => { if (FS.open && isPlaying() && !fs.querySelector('.fs-bottom:hover, .fs-top:hover')) fs.classList.add('idle'); else fsWake(); }, 3500);
+  if (FS.open && !FS.lock && navigator.wakeLock && isPlaying()) navigator.wakeLock.request('screen').then(l => { if (FS.open) FS.lock = l; else l.release(); }).catch(() => {});
+}
+function fsTick() {
+  const box = byId('fs-clock');
+  box.firstElementChild.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const nid = P.queue.length ? P.queue[0] : (upcoming(1)[0] || {}).id, n = nid != null ? L.tracks[nid] : null;
+  box.lastElementChild.textContent = n ? `Up next · ${n.title} · ${n.artist}` : '';
+}
+['mousemove', 'mousedown', 'wheel', 'keydown', 'touchstart'].forEach(ev => byId('fs').addEventListener(ev, () => { if (FS.open) fsWake(); }, { passive: true }));
+document.addEventListener('visibilitychange', () => { if (FS.open && !document.hidden) { FS.lock = null; fsWake(); } });
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && FS.open) closeFs(); });
 function renderFs() {
   if (!FS.open) return;
@@ -938,6 +974,8 @@ function renderFs() {
   byId('fs-title').textContent = t.title;
   byId('fs-artist').textContent = t.artist;
   byId('fs-ctx').textContent = P.ctx ? P.ctx.name : albumOf(t).title;
+  if (FS.scene && FS.scene.running) FS.scene.setTrack(coverUrl(t.rel));
+  fsTick();
   renderFsLyrics();
 }
 function renderFsLyrics() {
@@ -1174,7 +1212,7 @@ function creditsDialog(t) {
 function shortcutsDialog() {
   const mod = /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl';
   const rows = [['Play / pause', 'Space'], ['Next song', `${mod} →`], ['Previous song', `${mod} ←`], ['Volume up / down', `${mod} ↑ / ↓`], ['Search', `${mod} K  or  /`], ['Like the current song', 'Alt Shift B'],
-    ['Shuffle', 'Alt S'], ['Repeat', 'Alt R'], ['Queue', 'Alt Q'], ['Lyrics', 'Alt L'], ['Full screen', 'Alt F'], ['New playlist', 'Alt N'], ['Select all songs in a list', `${mod} A`], ['Remove selected from playlist', 'Delete'], ['Go back / forward', 'Alt ← / →'], ['Show this list', '?']];
+    ['Shuffle', 'Alt S'], ['Repeat', 'Alt R'], ['Queue', 'Alt Q'], ['Lyrics', 'Alt L'], ['Full screen', 'Alt F'], ['Visuals in full screen', 'Alt V'], ['New playlist', 'Alt N'], ['Select all songs in a list', `${mod} A`], ['Remove selected from playlist', 'Delete'], ['Go back / forward', 'Alt ← / →'], ['Show this list', '?']];
   modal({ title: 'Keyboard shortcuts', ok: 'Done', cancel: null, body: `<div class="kbd-grid">${rows.map(([a, b]) => `<span>${a}</span><span>${b.split('  or  ').map(k => k.split(' ').map(x => `<kbd>${esc(x)}</kbd>`).join('')).join(' or ')}</span>`).join('')}</div>` });
 }
 function editProfileDialog() {
@@ -1487,7 +1525,8 @@ function renderFriendsPanel(rp) {
     const list = Social.activity.length ? Social.activity : friends.map(f => Object.assign({ now: null }, f));
     h += list.map(a => {
       const n = (act.get(a.username) || a).now, live = n && n.live;
-      return `<div class="fa-row"><div class="fa-av-wrap" data-act="open-user" data-u="${esc(a.username)}">${personAvatar(a, 'fa-av')}${live ? '<span class="live-dot"></span>' : ''}</div><div class="flex1"><div class="fa-top"><b class="ell lnk" data-act="open-user" data-u="${esc(a.username)}">${esc(a.display_name)}</b><span class="fa-t">${live ? `<span class="fa-eq">${EQB}</span>` : n ? ago(n.t * 1000) : ''}</span></div>${n ? songLine(n) : `<div class="fa-ctx">${a.sharing === false ? 'Not sharing what they play' : 'Nothing played yet'}</div>`}</div></div>`;
+      const pty = (act.get(a.username) || a).party;
+      return `<div class="fa-row"><div class="fa-av-wrap" data-act="open-user" data-u="${esc(a.username)}">${personAvatar(a, 'fa-av')}${live ? '<span class="live-dot"></span>' : ''}</div><div class="flex1"><div class="fa-top"><b class="ell lnk" data-act="open-user" data-u="${esc(a.username)}">${esc(a.display_name)}</b><span class="fa-t">${live ? `<span class="fa-eq">${EQB}</span>` : n ? ago(n.t * 1000) : ''}</span></div>${n ? songLine(n) : `<div class="fa-ctx">${a.sharing === false ? 'Not sharing what they play' : 'Nothing played yet'}</div>`}${pty ? `<button class="fa-party" data-act="party-join" data-id="${esc(pty.id)}">${ic('party', 'sm')}<span class="ell">In ${esc(pty.name)} · Join</span></button>` : ''}</div></div>`;
     }).join('');
   }
   const share = Social.me.settings && Social.me.settings.share_activity !== false;
@@ -1559,6 +1598,7 @@ VIEWS.user = (el, p) => {
       const t = L.byRel.get(pr.now.rel);
       if (t) h += `<section class="sec"><div class="sec-h"><h2>${pr.now.live ? 'Listening now' : 'Last played'}</h2></div><div class="now-card" data-act="fa-play" data-rel="${esc(t.rel)}">${img(coverUrl(t.rel))}<div class="flex1"><b>${esc(t.title)}</b><span>${esc(t.artist)} • ${esc(albumOf(t).title)}</span></div>${pr.now.live ? `<span class="fa-eq">${EQB}</span>` : `<span class="muted">${agoText(pr.now.t * 1000)}</span>`}<button class="big-play" style="width:44px;height:44px" aria-label="Play">${ic('play')}</button></div></section>`;
     }
+    if (window.AX.ChatMedia) h += window.AX.ChatMedia.blendHtml(pr);
     if (tops.length) h += shelf('Top artists', tops.map(itArtist), { kicker: 'From their listening' });
     if (recent.length) { const ctx = vctx('list', 'user:' + u, `${pr.display_name}'s recent songs`, recent); h += `<section class="sec"><div class="sec-h"><h2>Recently played</h2></div>${tableShell(ctx, { noHead: true })}</section>`; }
     const shared = (pr.playlists || []).map(x => Collab.get(x.id)).filter(Boolean);
@@ -1617,6 +1657,7 @@ VIEWS.messages = (el, p) => {
 };
 function drawChatList() {
   const box = byId('ml-body'); if (!box) return;
+  box.closest('.msg-view').classList.toggle('none', Chat.ready && !Chat.list.length);
   const cur = V.route.params.c;
   if (!Chat.ready) { box.innerHTML = '<div class="ml-row"><div class="sk" style="width:48px;height:48px;border-radius:50%"></div><div class="flex1"><div class="sk" style="height:14px;width:60%"></div></div></div>'.repeat(4); return; }
   box.innerHTML = Chat.list.length ? Chat.list.map(c => `<div class="ml-row${c.id === cur ? ' on' : ''}${c.unread ? ' unread' : ''}" data-act="open-chat" data-c="${c.id}">${convAvatar(c, 'ml-av')}<div class="flex1"><div class="ml-top"><b class="ell">${esc(Chat.title(c))}</b><span class="ml-t">${c.preview ? ago(c.preview.ts) : ''}</span></div><div class="ml-sub"><span class="ell">${esc(previewText(c))}</span>${c.unread ? `<span class="ml-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div></div></div>`).join('')
@@ -1644,8 +1685,8 @@ function msgHtml(c, th, m, grouped) {
   else if (m.err === 'keys') inner = `<div class="bub gone">${ic('lock', 'sm')} Sent before this device had the right keys</div>`;
   else if (m.err) inner = `<div class="bub gone">${ic('lock', 'sm')} This message can't be decrypted</div>`;
   else {
-    const a = attachment(m.body.a);
-    inner = (a ? attCard(a) : '') + (m.body.t ? `<div class="bub">${linkify(esc(m.body.t))}</div>` : '');
+    const a = attachment(m.body.a), CM = window.AX.ChatMedia;
+    inner = (m.body.f && CM ? CM.html(c.id, m) : '') + (a ? attCard(a) : '') + (m.body.t ? `<div class="bub">${linkify(esc(m.body.t))}</div>` : '');
   }
   const tools = m.deleted || m.err ? '' : `<div class="msg-tools"><button data-act="react-menu" data-m="${m.id}" data-tip="React">${ic('smile', 'sm')}</button>${m.mine ? `<button data-act="unsend" data-m="${m.id}" data-tip="Unsend">${ic('trash', 'sm')}</button>` : ''}</div>`;
   return `<div class="msg${m.mine ? ' mine' : ''}${grouped ? ' grouped' : ''}" data-m="${m.id}">${m.mine ? '' : grouped ? '<span class="mt-av"></span>' : personAvatar(who, 'mt-av')}<div class="msg-col">${!m.mine && !grouped && c.kind === 'group' ? `<div class="msg-who">${esc(who.display_name)}</div>` : ''}<div class="msg-line">${m.mine ? tools : ''}<div class="msg-body">${inner}</div>${m.mine ? '' : tools}</div>${reactChips(th.reacts.get(m.id))}${m.trust === 'unknown' && !m.err ? '<span class="unv" data-tip="Signed with a key this device has never seen, so it can\'t confirm who sent it">Unverified sender</span>' : ''}</div><span class="msg-time">${timeLabel(m.ts)}</span></div>`;
@@ -1656,6 +1697,7 @@ function msgsHtml(c, th) {
   let prevFrom = '', prevTs = 0, prevDay = '', lostRun = 0;
   const flush = () => { if (lostRun) { h += `<div class="mt-note">${ic('lock', 'sm')} ${count(lostRun, 'earlier message')} can't be read on this device</div>`; lostRun = 0; } };
   for (const m of th.msgs) {
+    if (m.expires && m.expires <= Date.now()) continue;
     if (m.err === 'keys') { lostRun++; continue; }
     flush();
     const day = new Date(m.ts).toDateString();
@@ -1668,7 +1710,7 @@ function msgsHtml(c, th) {
     const peer = Chat.peer(c), mine = th.msgs.filter(m => m.mine && !m.deleted), last = mine[mine.length - 1];
     if (last && th.msgs[th.msgs.length - 1] === last && (c.reads || {})[peer] >= last.seq) h += `<div class="mt-seen">Seen</div>`;
   }
-  return h;
+  return h + (window.AX.ChatMedia ? window.AX.ChatMedia.pendingHtml(c.id) : '');
 }
 async function threadBanner(c) {
   const bits = [];
@@ -1698,8 +1740,9 @@ async function updateThread() {
       ? `<div class="mt-who" data-act="open-user" data-u="${esc(Chat.peer(c))}">${convAvatar(c, 'mt-hav')}<div><b id="mt-title"></b><span>@${esc(Chat.peer(c))}</span></div></div><span class="flex1"></span>${E2EE.state === 'ready' ? `<button class="icon-btn" data-act="safety" data-u="${esc(Chat.peer(c))}" data-tip="Verify security code">${ic('shield', 'md')}</button>` : ''}`
       : `<div class="mt-who" data-act="group-info">${convAvatar(c, 'mt-hav')}<div><b id="mt-title"></b><span id="mt-sub"></span></div></div><span class="flex1"></span><button class="icon-btn" data-act="group-info" data-tip="Group info">${ic('group', 'md')}</button>`;
     box.innerHTML = `<div class="mt-h">${head}<button class="icon-btn" data-act="chat-more" data-tip="More">${ic('more-h', 'md')}</button></div><div class="mt-banner" id="mt-banner"></div><div class="mt-body" id="mt-body"></div>`
-      + `<form class="composer" id="composer"><button type="button" class="icon-btn" data-act="chat-attach" data-tip="Share what's playing" aria-label="Share what's playing">${ic('note')}</button><textarea id="mt-input" rows="1" maxlength="4000" placeholder="Message"></textarea><button class="send" type="submit" aria-label="Send">${ic('send')}</button></form>`;
+      + `<form class="composer" id="composer"><button type="button" class="icon-btn" data-act="chat-attach" data-tip="Share what's playing" aria-label="Share what's playing">${ic('note')}</button>${window.AX.ChatMedia ? window.AX.ChatMedia.buttons('icon-btn') : ''}<textarea id="mt-input" rows="1" maxlength="4000" placeholder="Message"></textarea><button class="send" type="submit" aria-label="Send">${ic('send')}</button></form>`;
     const body = byId('mt-body'), input = byId('mt-input'), form = byId('composer');
+    if (window.AX.ChatMedia) window.AX.ChatMedia.mount(form, cid, box);
     body.addEventListener('scroll', () => {
       THREAD.stick = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
       if (body.scrollTop < 60 && th.more && th.loaded) { const h0 = body.scrollHeight; Chat.older(cid).then(() => { body.scrollTop = body.scrollHeight - h0 + body.scrollTop; }); }
@@ -1726,23 +1769,29 @@ async function updateThread() {
   byId('mt-input').placeholder = `Message ${c.kind === 'dm' ? firstName(Chat.title(c)) : Chat.title(c)}`;
   const body = byId('mt-body');
   body.innerHTML = msgsHtml(c, th);
+  if (window.AX.ChatMedia) window.AX.ChatMedia.hydrate(body);
   if (THREAD.stick) body.scrollTop = body.scrollHeight;
   const { html, problem } = await threadBanner(c);
   if (THREAD.cid !== cid) return;
-  byId('mt-banner').innerHTML = html;
+  byId('mt-banner').innerHTML = (window.AX.ChatMedia ? window.AX.ChatMedia.banner(c) : '') + html;
   const input = byId('mt-input');
   input.disabled = !!problem; byId('composer').classList.toggle('off', !!problem);
   if (th.loaded) Chat.markRead(cid);
 }
+function chatExtras(c) {
+  const CM = window.AX.ChatMedia;
+  return CM ? [{ label: c.ttl ? `Disappearing messages: ${CM.ttlName(c.ttl)}` : 'Disappearing messages', icon: 'timer', act: () => CM.ttlDialog(c.id) },
+    feat('party') && window.AX.Party ? { label: 'Start a listening party here', icon: 'party', act: () => CM.partyInvite(c.id) } : null] : [];
+}
 function chatMenu(c) {
   if (c.kind === 'dm') {
     const peer = Chat.peer(c);
-    return [{ label: 'View profile', icon: 'person', act: () => go('user', { u: peer }) }, E2EE.state === 'ready' ? { label: 'Verify security code', icon: 'shield', act: () => safetyDialog(peer) } : null, { sep: true },
+    return [{ label: 'View profile', icon: 'person', act: () => go('user', { u: peer }) }, E2EE.state === 'ready' ? { label: 'Verify security code', icon: 'shield', act: () => safetyDialog(peer) } : null, ...chatExtras(c), { sep: true },
       { label: 'Clear chat', icon: 'trash', act: async () => { if (await confirmDlg({ title: 'Clear this chat?', text: 'The messages disappear from your devices. The other person keeps their copy.', ok: 'Clear' })) { await Chat.hide(c.id); go('messages'); } } },
       { label: 'Block', icon: 'block', danger: true, act: async () => { if (await confirmDlg({ title: `Block ${Chat.title(c)}?`, text: "They won't be able to message you or find you.", ok: 'Block', danger: true })) friendAct('block', peer); } }];
   }
   const admin = c.st.admin === U.username;
-  return [{ label: 'Group info', icon: 'group', act: () => groupInfoDialog(c.id) }, { label: 'Rename group', icon: 'edit', act: () => renameGroupDlg(c.id) }, { label: 'Add people', icon: 'person-add', act: () => addPeopleDlg(c.id) }, { sep: true },
+  return [{ label: 'Group info', icon: 'group', act: () => groupInfoDialog(c.id) }, { label: 'Rename group', icon: 'edit', act: () => renameGroupDlg(c.id) }, { label: 'Add people', icon: 'person-add', act: () => addPeopleDlg(c.id) }, ...chatExtras(c), { sep: true },
     { label: 'Clear chat', icon: 'trash', act: async () => { if (await confirmDlg({ title: 'Clear this chat?', text: 'The messages disappear from your devices. Everyone else keeps theirs.', ok: 'Clear' })) { await Chat.hide(c.id); go('messages'); } } },
     { label: 'Leave group', icon: 'logout', danger: true, act: async () => { if (await confirmDlg({ title: 'Leave this group?', text: admin ? "You're the admin; the next person who joined becomes admin." : "You won't get its messages anymore.", ok: 'Leave', danger: true })) { await Chat.leave(c.id); go('messages'); } } }];
 }
@@ -2041,10 +2090,12 @@ const ACT = {
     collabOn() ? { label: 'Collaborative playlist', icon: 'people', act: () => newCollabDialog() } : null,
     (P.cur != null) ? { label: 'Playlist from queue', icon: 'queue', act: () => createPlaylistDlg(uniq([P.cur, ...P.queue, ...upcoming(100).map(u => u.id)]), 'My queue') } : null]),
   'me-menu': b => menuAt(b, U.token
-    ? [{ head: U.name || U.username }, { label: 'Profile', icon: 'person', act: () => go('profile') }, socialOn() ? { label: 'Friends', icon: 'people', act: () => go('friends') } : null, chatOn() ? { label: 'Messages', icon: 'chat', act: () => go('messages') } : null, { label: 'Settings', icon: 'gear', act: () => go('settings') }, { label: 'Downloads', icon: 'dl', act: () => go('downloads') }, { label: 'Keyboard shortcuts', icon: 'keyboard', act: shortcutsDialog }, { sep: true }, { label: 'Mobile site', icon: 'phone', act: () => { location.href = '/mobile'; } }, { label: 'Log out', icon: 'logout', act: ACT.logout }]
+    ? [{ head: U.name || U.username }, { label: 'Profile', icon: 'person', act: () => go('profile') }, socialOn() ? { label: 'Friends', icon: 'people', act: () => go('friends') } : null, chatOn() ? { label: 'Messages', icon: 'chat', act: () => go('messages') } : null, { label: 'Settings', icon: 'gear', act: () => go('settings') }, { label: 'Downloads', icon: 'dl', act: () => go('downloads') }, feat('rewind') && window.AX.Rewind ? { label: 'Your Rewind', icon: 'spark', act: () => window.AX.Rewind.open() } : null, { label: 'Keyboard shortcuts', icon: 'keyboard', act: shortcutsDialog }, { sep: true }, { label: 'Mobile site', icon: 'phone', act: () => { location.href = '/mobile'; } }, { label: 'Log out', icon: 'logout', act: ACT.logout }]
     : [{ label: 'Log in or sign up', icon: 'person', act: () => go('profile') }, { label: 'Settings', icon: 'gear', act: () => go('settings') }, { label: 'Keyboard shortcuts', icon: 'keyboard', act: shortcutsDialog }, { sep: true }, { label: 'Mobile site', icon: 'phone', act: () => { location.href = '/mobile'; } }]),
   'toggle-np': () => setPanel('np'),
   'toggle-friends': () => setPanel('friends'),
+  'party': () => { setPanel('party'); if (window.AX.Party && RP.mode === 'party') window.AX.Party.refresh(); },
+  'party-join': b => window.AX.Party && window.AX.Party.join('', b.dataset.id),
   'discord-link': () => discordLink(),
   'discord-unlink': async () => { if (await confirmDlg({ title: 'Disconnect Discord?', text: "You won't be able to sign in with Discord until you connect it again.", ok: 'Disconnect' })) { try { await discordUnlink(); toast('Discord disconnected'); render(view.scrollTop); } catch (e) { toast(e.message); } } },
   'presence-setup': () => presenceDialog(),
@@ -2106,6 +2157,7 @@ const ACT = {
   pip: togglePip,
   fullscreen: () => (FS.open ? closeFs() : openFs()),
   'fs-lyrics': () => { FS.lyr = !FS.lyr; renderFsLyrics(); },
+  'fs-viz': () => { if (!window.AX.Vis) return; window.AX.Vis.toggle(); fsViz(); toast(window.AX.Vis.on ? 'Visuals on' : 'Visuals off'); },
   'q-clear': queueClear,
   'q-remove': b => queueRemove(+b.dataset.qi),
   'go-ctx': () => {
@@ -2122,6 +2174,8 @@ const ACT = {
   'dl-cancel-all': () => { Off.cancel([...Off.queue, ...Off.active.keys()]); toast('Downloads cancelled'); render(view.scrollTop); },
   'set-autoplay': () => { S.autoplay = !S.autoplay; saveS(); render(view.scrollTop); },
   'set-gapless': () => { S.gapless = !S.gapless; saveS(); render(view.scrollTop); },
+  'set-smart': () => { S.smart = S.smart === false; saveS(); window.AX.SM.refresh(); render(view.scrollTop); },
+  'set-matchvol': () => { S.matchVol = !S.matchVol; saveS(); window.AX.SM.refresh(); render(view.scrollTop); },
   'set-normalize': toggleNormalize,
   'set-dyncolor': () => { S.dynColor = !S.dynColor; saveS(); refreshAll(); },
   'set-notify': async () => {
@@ -2204,6 +2258,7 @@ document.addEventListener('keydown', e => {
   else if (e.altKey && e.code === 'KeyQ') { e.preventDefault(); setPanel('queue'); }
   else if (e.altKey && e.code === 'KeyL') { e.preventDefault(); ACT.lyrics(); }
   else if (e.altKey && e.code === 'KeyF') { e.preventDefault(); ACT.fullscreen(); }
+  else if (e.altKey && e.code === 'KeyV' && FS.open) { e.preventDefault(); ACT['fs-viz'](); }
   else if (e.altKey && e.code === 'KeyN') { e.preventDefault(); createPlaylistDlg(); }
   else if (e.key === '?') { e.preventDefault(); shortcutsDialog(); }
   else if (SEL.tt) tableKeys(e);
@@ -2294,6 +2349,8 @@ async function boot() {
 }
 
 Object.assign(UI, {
+  party(v) { const b = byId('btn-party'); if (b) b.classList.toggle('on', !!v); },
+  openParty() { if (RP.mode !== 'party') setPanel('party'); },
   track: onTrack, playState: onPlayState, queue: onQueue, progress: onProgress, volume: onVolume, lyrics: onLyrics, lyricLine: onLyricLine,
   remote: onRemote, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, online: () => { if (V.route) render(view.scrollTop); }, social: onSocial,
   pickPlaylist: ids => openMenu(innerWidth / 2 - 120, innerHeight - 380, playlistSub(ids)),
@@ -2304,7 +2361,7 @@ boot().catch(err => { console.error(err); Boot.log('WARN', 'Startup error: ' + e
 
 // A page cached from an older version may not load the shared scripts yet: fetch whatever is missing first.
 (function bootstrap() {
-  const need = [!window.AX && '/web/app/core.js?v=3.2.0', !(window.AX && window.AX.Social) && '/web/app/social.js?v=1.0.0'].filter(Boolean);
+  const need = [!window.AX && '/web/app/core.js?v=3.2.0', !(window.AX && window.AX.Social) && '/web/app/social.js?v=1.0.0', !(window.AX && window.AX.Party) && '/web/app/party.js?v=1.0.0', !(window.AX && window.AX.Vis) && '/web/app/immersive.js?v=1.0.0', !(window.AX && window.AX.ChatMedia) && '/web/app/chatmedia.js?v=1.0.0', !(window.AX && window.AX.Rewind) && '/web/app/rewind.js?v=1.0.0'].filter(Boolean);
   const next = () => {
     const src = need.shift();
     if (!src) { axdioDesktop(); return; }

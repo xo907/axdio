@@ -58,6 +58,10 @@ const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform ==
 
 // One sprite for both UIs (24px Material-style glyphs). Injected once so every <use href="#i-…"> resolves.
 const ICONS = {
+  spark: '<path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/>',
+  image: '<path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>',
+  timer: '<path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42C16.07 4.74 14.12 4 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>',
+  party: '<path d="M12 3a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h3v-8H5v-2a7 7 0 0 1 14 0v2h-4v8h3a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z"/>',
   home: '<path d="M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/>',
   'home-f': '<path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>',
   search: '<path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>',
@@ -168,7 +172,7 @@ const K = {
 const S = Object.assign({
   autoplay: true, dynColor: true, boost: 1, eqOn: false, eqPreset: 'flat', eq: [0, 0, 0, 0, 0, 0], normalize: false,
   libView: 'list', libSort: 'recent', deviceName: '', shuffle: false, repeat: 0,
-  volume: 1, muted: false, crossfade: 0, gapless: true, quality: 'original', cellQuality: '',
+  volume: 1, muted: false, crossfade: 0, gapless: true, quality: 'original', cellQuality: '', smart: true, matchVol: false,
 }, LS.get(K.settings, {}));
 const FRESH_DEVICE = LS.raw(K.settings) == null;
 const saveS = () => LS.set(K.settings, S);
@@ -1099,9 +1103,10 @@ const EQ_PRESETS = {
 const eqLabel = () => S.eqOn ? (EQ_PRESETS[S.eqPreset] ? EQ_PRESETS[S.eqPreset][0] : 'Custom') : 'Off';
 // Web Audio graph built only when an effect is on; plain <audio> keeps iOS background playback reliable.
 // Both decks feed one input node so crossfades pass through the same EQ.
+// The visuals (immersive.js) set `viz` and read the analyser tapped off the end of the chain.
 const FX = {
-  ctx: null, srcs: [], input: null, eq: [], comp: null, gain: null, limit: null,
-  needed() { return S.boost > 1 || S.normalize || (S.eqOn && S.eq.some(v => v)); },
+  ctx: null, srcs: [], input: null, eq: [], comp: null, gain: null, limit: null, analyser: null, viz: false,
+  needed() { return this.viz || S.boost > 1 || S.normalize || (S.eqOn && S.eq.some(v => v)); },
   ensure() {
     if (this.ctx) return true;
     if (!this.needed()) return false;
@@ -1117,6 +1122,8 @@ const FX = {
       this.gain = c.createGain();
       this.limit = c.createDynamicsCompressor();
       this.limit.threshold.value = -1.5; this.limit.knee.value = 0; this.limit.ratio.value = 20; this.limit.attack.value = .002; this.limit.release.value = .12;
+      this.analyser = c.createAnalyser();
+      this.analyser.fftSize = 2048; this.analyser.smoothingTimeConstant = .72; this.analyser.minDecibels = -90; this.analyser.maxDecibels = -22;
       this.apply();
       return true;
     } catch (e) { this.ctx = null; return false; }
@@ -1131,6 +1138,7 @@ const FX = {
     n.connect(this.gain); n = this.gain;
     if (S.boost > 1 || S.normalize) { n.connect(this.limit); n = this.limit; }
     n.connect(this.ctx.destination);
+    if (this.analyser) n.connect(this.analyser);
   },
   resume() { if (this.ctx && this.ctx.state !== 'running') this.ctx.resume().catch(() => {}); },
 };
@@ -1151,7 +1159,7 @@ function setEqBand(i, db) { S.eq[i] = db; S.eqPreset = 'custom'; FX.apply(); sav
 // iOS only allows the element a user tapped to play, so it keeps a single deck.
 const D = {
   els: [byId('audio'), IOS ? null : byId('audio2')].filter(Boolean),
-  i: 0, fade: [1, 1], blob: [null, null], ready: null, preparing: null, prepSeq: 0, xf: null,
+  i: 0, fade: [1, 1], blob: [null, null], ready: null, preparing: null, prepSeq: 0, xf: null, rel: [null, null], level: [1, 1],
   get a() { return this.els[this.i]; },
   get b() { return this.els.length > 1 ? this.els[1 - this.i] : null; },
 };
@@ -1160,6 +1168,9 @@ const audio = new Proxy({}, {
   get(_, k) { const el = D.a; const v = el[k]; return typeof v === 'function' ? v.bind(el) : v; },
   set(_, k, v) { D.a[k] = v; return true; },
 });
+// While in a listening party (web/app/party.js), the player's controls act on the party instead.
+const PartyHook = { h: null };
+function setPartyHook(h) { PartyHook.h = h; }
 const P = {
   ctx: null, order: [], pos: -1, queue: [], cur: null, fromQueue: false, shuffle: !!S.shuffle, repeat: S.repeat | 0,
   pending: null, seekTo: 0, listened: 0, lastT: 0, counted: false, scrobbled: false, startedAt: 0, errors: 0, seq: 0, everPlayed: false, dur: 0,
@@ -1174,7 +1185,7 @@ const isPlaying = () => !audio.paused && !P.pending;
 
 function applyVolume() {
   const base = S.muted ? 0 : clamp(+S.volume || 0, 0, 1);
-  D.els.forEach((el, i) => { el.volume = clamp(base * D.fade[i] * SL.fade, 0, 1); });
+  D.els.forEach((el, i) => { el.volume = clamp(base * D.fade[i] * SL.fade * (D.level[i] || 1), 0, 1); });
 }
 function setVolume(v) { S.volume = clamp(v, 0, 1); if (S.volume > 0) S.muted = false; applyVolume(); saveSSoon(); UI.volume(); }
 function toggleMute() { S.muted = !S.muted; if (!S.muted && S.volume < .02) S.volume = .5; applyVolume(); saveSSoon(); UI.volume(); }
@@ -1187,6 +1198,7 @@ function buildOrder(len, start) {
 }
 function playCtx(ctx, start = -1, opts = {}) {
   if (!ctx || !ctx.ids.length) { UI.toast('Nothing to play here yet'); return; }
+  if (PartyHook.h && PartyHook.h.playCtx(ctx, start)) return;
   if (opts.shuffle != null && opts.shuffle !== P.shuffle) setShuffle(opts.shuffle, true);
   P.ctx = { type: ctx.type, ref: ctx.ref, name: ctx.name, ids: ctx.ids.slice(), key: ctx.key, recent: ctx.recent };
   const o = buildOrder(ctx.ids.length, start < 0 && !P.shuffle ? 0 : start);
@@ -1217,6 +1229,7 @@ function setDeckSrc(i, r) {
   if (D.blob[i]) URL.revokeObjectURL(D.blob[i]);
   D.blob[i] = r && r.blob ? r.src : null;
   const el = D.els[i];
+  if (!r) { D.rel[i] = null; D.level[i] = 1; }
   if (r) el.src = r.src; else { el.removeAttribute('src'); el.load(); }
 }
 async function load(id, autoplay, seek = 0) {
@@ -1224,6 +1237,8 @@ async function load(id, autoplay, seek = 0) {
   const seq = ++P.seq;
   const prepared = D.ready && D.ready.id === id && !seek ? D.ready.deck : -1;
   P.cur = id; P.pending = null; P.listened = 0; P.lastT = 0; P.counted = false; P.scrobbled = false; P.startedAt = Math.floor(Date.now() / 1000); P.seekTo = seek > 0 ? seek : 0; P.dur = 0;
+  clearTimeout(SM.cut); SM.cut = 0;
+  { const n = peekNext(); SM.want([t.rel, n != null && L.tracks[n] ? L.tracks[n].rel : ''], t.rel); }
   if (prepared >= 0) {
     // The next song is already buffered on the other deck (gapless), or already fading in (crossfade).
     const old = D.i;
@@ -1247,6 +1262,7 @@ async function load(id, autoplay, seek = 0) {
     return;
   }
   setDeckSrc(D.i, r);
+  D.rel[D.i] = t.rel; D.level[D.i] = SM.level(t.rel); applyVolume();
   if (autoplay) play(); else D.a.load();
   saveState();
 }
@@ -1262,14 +1278,15 @@ function play() {
   });
 }
 function pause() { endCrossfade(true); D.a.pause(); }
-function togglePlay() { haptic(); if (audio.paused || P.pending) play(); else pause(); }
+function togglePlay() { haptic(); if (PartyHook.h && PartyHook.h.toggle()) return; if (audio.paused || P.pending) play(); else pause(); }
 function shuffleAll() {
   if (!L.tracks.length) return;
   playCtx(makeCtx('library', 'all', 'Your Library', L.tracks.map(t => t.id)), -1, { shuffle: true });
   UI.toast('Shuffling your whole library');
 }
 function next(auto = false, fromError = false) {
-  if (auto && !fromError && P.repeat === 2) { audio.currentTime = 0; play(); return; }
+  if (PartyHook.h) { PartyHook.h.next(auto, fromError); return; }
+  if (auto && !fromError && P.repeat === 2) { audio.currentTime = SM.startAt((curTrack() || {}).rel); play(); return; }
   if (P.queue.length) { P.fromQueue = true; load(P.queue.shift(), true); UI.queue(); return; }
   if (!P.ctx) return;
   let np = P.pos + (P.fromQueue ? 0 : 1);
@@ -1285,6 +1302,7 @@ function next(auto = false, fromError = false) {
 }
 function prev() {
   haptic();
+  if (PartyHook.h) { PartyHook.h.prev(); return; }
   if (audio.currentTime > 3 || !P.ctx) { audio.currentTime = 0; return; }
   if (P.fromQueue) { P.fromQueue = false; load(P.ctx.ids[P.order[P.pos]], true); UI.queue(); return; }
   if (P.pos > 0) P.pos--;
@@ -1322,6 +1340,7 @@ function cycleRepeat() {
 function addToQueue(ids, playNext) {
   ids = ids.filter(id => L.tracks[id]);
   if (!ids.length) return;
+  if (PartyHook.h && PartyHook.h.add(ids, playNext)) return;
   if (playNext) P.queue.unshift(...ids); else P.queue.push(...ids);
   if (P.cur == null) {
     // Nothing loaded yet: stage the first queued song instead of blasting it.
@@ -1340,11 +1359,12 @@ function upcoming(n) {
   return out;
 }
 function queueJump(i) { const id = P.queue.splice(0, i + 1).pop(); if (id == null) return; P.fromQueue = true; load(id, true); UI.queue(); }
-function ctxJump(pos) { if (!P.ctx || pos < 0 || pos >= P.order.length) return; P.pos = pos; P.fromQueue = false; load(P.ctx.ids[P.order[pos]], true); UI.queue(); }
+function ctxJump(pos) { if (!P.ctx || pos < 0 || pos >= P.order.length) return; if (PartyHook.h && PartyHook.h.jump && PartyHook.h.jump(pos)) return; P.pos = pos; P.fromQueue = false; load(P.ctx.ids[P.order[pos]], true); UI.queue(); }
 function queueRemove(i) { P.queue.splice(i, 1); UI.queue(); saveState(); }
 function queueMove(from, to) { const [m] = P.queue.splice(from, 1); P.queue.splice(to, 0, m); UI.queue(); saveState(); }
 function queueClear() { P.queue = []; UI.queue(); saveState(); UI.toast('Queue cleared'); }
 function seek(sec) {
+  if (PartyHook.h && PartyHook.h.seek(sec)) return;
   if (P.pending) { P.pending.t = sec; UI.progress(true); return; }
   endCrossfade(true);
   if (isFinite(audio.duration)) audio.currentTime = clamp(sec, 0, audio.duration);
@@ -1379,15 +1399,19 @@ async function prepareNext() {
   D.preparing = null;
   const bi = 1 - D.i;
   setDeckSrc(bi, r);
+  D.rel[bi] = t.rel; D.level[bi] = SM.level(t.rel);
+  SM.want([t.rel]);
   D.els[bi].preload = 'auto';
   D.els[bi].load();
   D.ready = { id, deck: bi };
+  // Gapless: have the next song waiting where its sound starts.
+  D.els[bi].addEventListener('loadedmetadata', () => { const s0 = SM.startAt(t.rel); if (s0 && D.ready && D.ready.deck === bi && D.ready.id === id && D.els[bi].paused) try { D.els[bi].currentTime = s0; } catch (e) { /* not seekable */ } }, { once: true });
 }
-function startCrossfade() {
+function startCrossfade(len) {
   const to = D.ready.deck, from = D.i, el = D.els[to];
-  D.xf = { from, to, t0: now(), dur: S.crossfade * 1000, iv: 0 };
+  D.xf = { from, to, t0: now(), dur: (len || S.crossfade) * 1000, iv: 0 };
   D.fade[to] = 0; applyVolume();
-  try { el.currentTime = 0; } catch (e) { /* not seekable yet */ }
+  try { el.currentTime = SM.startAt(D.rel[to]); } catch (e) { /* not seekable yet */ }
   const pr = el.play(); if (pr) pr.catch(() => endCrossfade(true));
   // Timers keep running in background tabs, unlike requestAnimationFrame.
   D.xf.iv = setInterval(() => {
@@ -1409,6 +1433,46 @@ function endCrossfade(abort) {
   if (abort && x.to !== D.i && D.ready) D.ready = null;
   applyVolume();
 }
+
+/* Smart transitions */
+// Each song's loudness curve, measured once on the server (GET /api/analysis): where its sound starts and ends, where
+// a fade-out begins, and how loud it is overall. With it the player skips silence at either end of a song, stretches a
+// crossfade over a song's own fade-out, keeps albums that flow into the next track gapless, and can even out volume.
+const SM = {
+  data: new Map(), asked: new Map(), cut: 0,
+  on: () => S.smart !== false && feat('smart') && !PartyHook.h,
+  get(rel) { return (rel && this.data.get(rel)) || null; },
+  want(rels, nowRel) {
+    const t = now();
+    rels = uniq(rels.filter(r => r && r[0] !== '@' && !this.data.has(r) && t - (this.asked.get(r) || 0) > 15000));
+    if (!rels.length || !feat('smart')) return;
+    rels.forEach(r => this.asked.set(r, t));
+    const q = rels.map(r => 'rel=' + encodeURIComponent(r)).join('&') + (nowRel ? '&now=' + encodeURIComponent(nowRel) : '');
+    api('/api/analysis?' + q).then(d => Object.entries(d.analysis || {}).forEach(([r, a]) => {
+      if (!a || a.failed) return;
+      this.data.set(r, a);
+      D.els.forEach((el, i) => { if (D.rel[i] === r) D.level[i] = this.level(r); });
+      applyVolume();
+    })).catch(() => {});
+  },
+  // Quieter than about -14 LUFS stays as it is; louder masters come down to match (element volume can't go above 1).
+  level(rel) { const a = this.get(rel); return !a || !S.matchVol || IOS ? 1 : clamp(Math.pow(10, (-14 - a.lufs) / 20), .25, 1); },
+  refresh() { D.els.forEach((el, i) => { D.level[i] = this.level(D.rel[i]); }); applyVolume(); },
+  startAt(rel) { const a = this.on() && this.get(rel); return a && a.start > .3 && a.start < (a.dur || 0) - 8 ? a.start : 0; },
+  endAt(rel, dur) { const a = this.on() && this.get(rel); return a && dur - a.end > .5 && a.end > 8 && a.end <= dur ? a.end : dur; },
+  // A crossfade lasts as long as the setting, or longer to ride out a song's own fade-out (up to 12 s).
+  fadeLen(rel, end) {
+    const a = this.on() && this.get(rel);
+    if (!a) return S.crossfade;
+    const fade = end - a.outro;
+    return fade > S.crossfade + 1 ? Math.min(fade, 12, Math.max(S.crossfade * 2, 6)) : S.crossfade;
+  },
+  // Consecutive tracks of an album that run into each other (no silence between them) stay gapless, not crossfaded.
+  flows(cur, nextId) {
+    const n = L.tracks[nextId], a = this.get(cur && cur.rel), b = this.get(n && n.rel);
+    return !!(this.on() && n && a && cur.albumId === n.albumId && n.no === cur.no + 1 && a.end >= a.dur - .5 && (!b || b.start < .3));
+  },
+};
 
 /* Sleep timer */
 const SL = { end: 0, eot: false, iv: 0, fade: 1 };
@@ -1597,7 +1661,8 @@ function setPositionState() {
 function bindMediaSession() {
   if (!('mediaSession' in navigator)) return;
   const set = (a, fn) => { try { navigator.mediaSession.setActionHandler(a, fn); } catch (e) { /* unsupported action */ } };
-  set('play', play); set('pause', pause); set('stop', pause);
+  const partyToggle = fn => () => { if (PartyHook.h && PartyHook.h.toggle()) return; fn(); };
+  set('play', partyToggle(play)); set('pause', partyToggle(pause)); set('stop', partyToggle(pause));
   set('previoustrack', prev); set('nexttrack', () => next());
   set('seekto', d => { if (d.fastSeek && D.a.fastSeek) D.a.fastSeek(d.seekTime); else seek(d.seekTime); setPositionState(); });
   set('seekbackward', d => { seek(audio.currentTime - (d.seekOffset || 10)); setPositionState(); });
@@ -1627,6 +1692,7 @@ D.els.forEach((el, i) => {
     if (!active()) return;
     P.dur = el.duration;
     if (P.seekTo) { el.currentTime = Math.min(P.seekTo, el.duration - 1); P.seekTo = 0; }
+    else if (el.currentTime < .2) { const s0 = SM.startAt((curTrack() || {}).rel); if (s0) el.currentTime = s0; }
     UI.progress(true); setPositionState();
   });
   el.addEventListener('seeked', () => { if (active()) setPositionState(); });
@@ -1644,21 +1710,26 @@ D.els.forEach((el, i) => {
     }
     if (document.hidden) syncLyrics();
     saveState(false);
+    // Where the song's sound really ends (Smart transitions), or the end of the file.
+    const dur = el.duration || 0, end = cur ? SM.endAt(cur.rel, dur) : dur, left = end - t;
+    if (cur && left < 40) { const n = peekNext(); SM.want([cur.rel, n != null && L.tracks[n] ? L.tracks[n].rel : '']); }
+    // Silence at the end is skipped: move on right where the sound stops.
+    if (end < dur - .3 && !D.xf && !el.paused && left < 1.2 && !SM.cut) {
+      SM.cut = setTimeout(() => {
+        SM.cut = 0;
+        if (active() && curTrack() === cur && !el.paused && !D.xf && el.currentTime >= end - .15) finishTrack(el);
+      }, Math.max(0, left * 1000 / (el.playbackRate || 1) - 40));
+    }
     // Buffer the next song on the spare deck near the end, then crossfade into it.
-    const left = (el.duration || 0) - t;
     if (D.b && isFinite(left) && left > 0) {
       if (D.ready && D.ready.id !== peekNext() && !D.xf) dropPrepared();
-      if ((S.gapless || S.crossfade > 0) && left < Math.max(20, S.crossfade + 12)) prepareNext();
-      if (S.crossfade > 0 && !D.xf && D.ready && D.ready.id === peekNext() && left <= S.crossfade && left > .4
-        && el.duration > S.crossfade * 3 && !SL.eot && !el.paused) startCrossfade();
+      const xf = S.crossfade > 0 && cur ? SM.fadeLen(cur.rel, end) : 0;
+      if ((S.gapless || S.crossfade > 0) && left < Math.max(20, xf + 12)) prepareNext();
+      if (xf > 0 && !PartyHook.h && !D.xf && D.ready && D.ready.id === peekNext() && left <= xf && left > .4
+        && end > xf * 3 && !SL.eot && !el.paused && !SM.flows(cur, D.ready.id)) startCrossfade(xf);
     }
   });
-  el.addEventListener('ended', () => {
-    if (!active()) return;
-    nowPlaying('IDLE');
-    if (SL.eot) { SL.eot = false; updateSleepUi(); UI.toast('Sleep timer ended — sweet dreams'); el.currentTime = 0; return; }
-    next(true);
-  });
+  el.addEventListener('ended', () => { if (active()) finishTrack(el); });
   el.addEventListener('error', () => {
     if (!active()) { if (D.ready && D.ready.deck === i) D.ready = null; return; }
     if (!el.getAttribute('src')) return;
@@ -1669,6 +1740,13 @@ D.els.forEach((el, i) => {
     setTimeout(() => next(true, true), 900);
   });
 });
+// A song is over: at the end of the file, or where its sound stops (Smart transitions).
+function finishTrack(el) {
+  nowPlaying('IDLE');
+  if (SL.eot) { SL.eot = false; updateSleepUi(); UI.toast('Sleep timer ended — sweet dreams'); el.pause(); el.currentTime = 0; return; }
+  if (PartyHook.h) { PartyHook.h.ended(); return; }
+  next(true);
+}
 // Admin dashboard "now playing" feed
 let npLast = 0;
 function nowPlaying(status) {
@@ -1960,7 +2038,7 @@ function dragSort(container, rowSel, scrollSel, onDrop) {
 const CREDIT = { text: 'Created by xo.st', url: 'https://xo.st' };
 const INVITE_KEY = 'axdio_invite';
 const SITE_KEYS = ['site_title', 'accent_color', 'custom_css', 'allow_indexing', 'custom_favicon_url', 'custom_logo_url', 'app_version', 'site_tagline',
-  'public_url', 'features', 'announcement', 'registration', 'require_login', 'min_password_length', 'defaults'];
+  'public_url', 'features', 'announcement', 'registration', 'require_login', 'min_password_length', 'defaults', 'chat_media'];
 let siteLive = false;   // set once /api/branding answered; the cached library's copy is older
 // Features are on unless the server says otherwise, so older servers keep everything.
 const feat = k => !(SITE.features && SITE.features[k] === false);
@@ -2179,7 +2257,7 @@ window.AX = {
   addToPlaylist, removeFromPlaylist, reorderPlaylist, plCreate, plRename, plDelete, pushLibrary, pushPrefs, Collab,
   RECENTS, touchRecent, recentTs, SEARCHES, rememberSearch, forgetSearch, clearSearches,
   Off, ring, dlBadge, dlChanged, updateDlButton, toggleCtxDownload, EQ_BANDS, EQ_PRESETS, eqLabel, FX, setBoost, toggleNormalize, toggleEq, setEqPreset, setEqBand,
-  audio, D, P, CTX, makeCtx, regCtx, curTrack, ctxPlaying, isPlaying, buildOrder, playCtx, playTrackAlone, load, play, pause, togglePlay, shuffleAll, next, prev,
+  audio, D, P, CTX, SM, makeCtx, setPartyHook, regCtx, curTrack, ctxPlaying, isPlaying, buildOrder, playCtx, playTrackAlone, load, play, pause, togglePlay, shuffleAll, next, prev,
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, applyVolume, stageTrack,
   SL, setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
   LY, lyMsg, syncLyrics, Connect, share, shareId, trackLink, albumLink, artistLink, setOnline,

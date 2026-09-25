@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.6.0
+
+- **Listening parties.** Start a party from the headphones button in the player (desktop) or Now Playing (phones). Everyone who joins hears the same moment of the same song, wherever they are, typically within a few hundredths of a second of each other.
+  - There's one shared queue; tapping a song plays it for everyone.
+  - The host decides whether guests can add songs and control playback.
+  - Emoji reactions float across everyone's screen, and there's party chat.
+  - People join with a six-character code or an invite link (`/party/CODE`). Friends see your party in Friend Activity and join with one tap.
+  - The server keeps the party's clock and moves to the next song exactly when one ends. Each app follows it, correcting drift by nudging the playback speed.
+  - Admins can turn parties off under **Features**.
+- **Immersive Now Playing.** Full screen on the desktop, and Now Playing on phones, come alive with the music.
+  - The background is painted from the album cover's own colours, drifting slowly and swelling with the bass.
+  - A frame of spectrum bars grows out of the cover's edges, and the cover pulses on each beat.
+  - On desktop and Android the visuals react to the real audio. iPhones get a gentle rhythm instead, because routing audio through the browser's audio engine stops playback in the background on iOS.
+  - Ambient mode on desktop: when the mouse rests, the controls and cursor fade away, and a clock and "Up next" appear, so a TV or spare screen makes a good music display. The screen is kept awake while music plays.
+  - Turn the visuals on or off with the sparkle button (or Alt V in full screen).
+- **Photos, videos and voice messages in private chats.** They're encrypted on the sender's device, each with its own key that travels inside the encrypted message, so the server stores only scrambled chunks it can't read.
+  - Files move in 512 KB chunks, several at a time, with retries. Big videos upload and play without straining the server, and they fit under reverse-proxy size limits.
+  - Photos are redrawn before sending, which removes their location and camera details.
+  - Voice messages are recorded right in the chat, with a live waveform. Music pauses while a voice message or video plays, and carries on afterwards.
+  - Paste or drag photos into a chat on desktop, and tap a photo to see it full screen and save it.
+  - Admins choose, under **Features**, whether photos, videos and voice messages are allowed, the largest attachment, and how much each person can keep stored.
+- **Disappearing messages.** Anyone in a chat can make new messages vanish for everyone after an hour, a day, a week or four weeks, attachments included.
+- **Chats in a folder of their own.** Conversations, message ciphertext and attachments now live in `CHAT_DIR` (`config/chat` by default), so they can sit on another disk or an encrypted volume. Existing chats move there by themselves; the old tables stay in `axdio.db`, renamed, in case you want them.
+- **Rewind.** Your month or year in music, told as full-screen story cards: minutes listened, your top artists and songs, your listening clock and the kind of listener it makes you, your longest streak and biggest day, and the songs you found.
+  - The last card is a poster you can save as an image, share, or send to a friend as an end-to-end encrypted photo.
+  - Open it from the card on Home or from your account menu, and switch between this month, this year, earlier years and all time.
+  - Axdio now keeps a log of when each song is played. Your existing history is brought in on the first start (counted for top songs and minutes, but not for times of day). Only you can see your Rewind; the log is included in your data export and deleted with your account.
+  - Admins can turn Rewind off under **Features**.
+- **Smart transitions.** Each song is measured once (its loudness, and where its sound starts, fades and ends), in the background at low priority, and the player uses that:
+  - silence at the start and end of songs is skipped, so songs follow each other without dead air;
+  - with crossfade on, the fade starts where the song really ends and stretches over the song's own fade-out, and tracks of an album that run straight into each other stay gapless;
+  - **Match volume between songs** brings loud recordings down to the level of the rest (not on iPhone, where the browser controls the volume).
+  - Turn them on or off in Settings → Playback. Admins can turn the measuring off under **Features**.
+- **Blend.** A friend's profile shows how well your tastes match and a mix of the music you both love, built only from listening that both of you share with friends.
+- **Party invites in chat.** Start a listening party from a chat's menu, and the invite lands in the conversation. Tapping a party link in a chat joins right away.
+- Messages (desktop): with no conversations yet, one "Your messages" panel is shown instead of two, and the chat now always fills its panel, so the message box can't be pushed off the bottom.
+
 ## 2.5.1
 
 - Admin panel: cards that end with a line of text, like the Updates card when you're up to date, no longer cut that line off at the bottom.

@@ -70,6 +70,7 @@
         <button class="icon-btn" id="btn-np" data-act="toggle-np" data-tip="Now playing view" aria-label="Now playing view"><svg class="i"><use href="#i-npv"/></svg></button>
         <button class="icon-btn" id="btn-lyrics" data-act="lyrics" data-tip="Lyrics" aria-label="Lyrics"><svg class="i"><use href="#i-mic"/></svg></button>
         <button class="icon-btn" id="btn-queue" data-act="toggle-queue" data-tip="Queue" aria-label="Queue"><svg class="i"><use href="#i-queue"/></svg></button>
+        <button class="icon-btn" id="btn-party" data-act="party" data-tip="Listening party" aria-label="Listening party"><svg class="i"><use href="#i-party"/></svg></button>
         <button class="icon-btn" id="btn-dev" data-act="devices" data-tip="Connect to a device" aria-label="Connect to a device"><svg class="i"><use href="#i-devices"/></svg></button>
         <div class="vol" id="vol-wrap"><button class="icon-btn" id="btn-mute" data-act="mute" data-tip="Mute" aria-label="Mute"><svg class="i"><use href="#i-volume"/></svg></button><input type="range" class="range" id="vol" min="0" max="100" value="100" aria-label="Volume"></div>
         <button class="icon-btn" id="btn-pip" data-act="pip" data-tip="Open miniplayer" aria-label="Open miniplayer"><svg class="i"><use href="#i-pip"/></svg></button>
@@ -80,11 +81,13 @@
 
   <!-- Full screen -->
   <div id="fs" aria-hidden="true">
-    <div class="fs-bg" id="fs-bg"></div><div class="fs-shade"></div>
+    <div class="fs-bg" id="fs-bg"></div><canvas class="viz" id="fs-viz"></canvas><div class="fs-shade"></div>
+    <div class="fs-clock" id="fs-clock" aria-hidden="true"><b></b><small></small></div>
     <div class="fs-top">
       <span class="brand-mark"><svg class="i"><use href="#i-note"/></svg></span>
       <div class="fs-ctx"><small>Playing from</small><span id="fs-ctx"></span></div>
       <span class="flex1"></span>
+      <button class="icon-btn" id="fs-viz-btn" data-act="fs-viz" data-tip="Visuals" aria-label="Visuals"><svg class="i"><use href="#i-spark"/></svg></button>
       <button class="icon-btn" id="fs-lyr-btn" data-act="fs-lyrics" data-tip="Lyrics" aria-label="Lyrics"><svg class="i"><use href="#i-mic"/></svg></button>
       <button class="icon-btn" data-act="fullscreen" data-tip="Exit full screen" aria-label="Exit full screen"><svg class="i"><use href="#i-full-exit"/></svg></button>
     </div>
@@ -136,6 +139,10 @@
   </script>
   <script src="/web/app/core.js?v=3.2.0"></script>
   <script src="/web/app/social.js?v=1.0.0"></script>
+  <script src="/web/app/party.js?v=1.0.0"></script>
+  <script src="/web/app/immersive.js?v=1.0.0"></script>
+  <script src="/web/app/chatmedia.js?v=1.0.0"></script>
+  <script src="/web/app/rewind.js?v=1.0.0"></script>
   <script src="/web/desktop/desktop.js?v=2.2.0"></script>
 </body>
 </html>

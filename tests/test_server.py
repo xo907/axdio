@@ -1575,6 +1575,340 @@ class TestUpdates(Base):
             server._update_job.update(state="idle", message="")
 
 
+class TestParties(Social):
+    """Listening parties: one clock, one queue, everyone in sync."""
+    def rels(self):
+        return [self.rel("Opening"), self.rel("Second Song"), self.rel("Something Else")]
+
+    def op(self, pid, h, **d):
+        return self.c.post(f"/api/party/{pid}", json=d, headers=h)
+
+    def tearDown(self):
+        with server._party_cv:
+            for p in list(server._parties.values()): server._party_end(p)
+
+    def test_party_flow(self):
+        ha, hb, hc = self.user("host1"), self.user("guest1"), self.user("guest2")
+        one, two, three = self.rels()
+        with server.library_cache_lock:
+            server.library_cache_data[one]["duration"] = 12.0
+            server.library_cache_data[two]["duration"] = 9.5
+        v = self.c.post("/api/party", json={"name": "Friday", "queue": [one, two]}, headers=ha).get_json()
+        pid, code = v["id"], v["code"]
+        self.assertEqual((v["name"], v["state"]["rel"], v["state"]["playing"], v["is_host"]), ("Friday", one, True, True))
+        self.assertEqual([q["r"] for q in v["queue"]], [two])
+        self.assertEqual(self.c.post("/api/party/join", json={"code": "NOPE00"}, headers=hb).status_code, 404)
+        g = self.c.post("/api/party/join", json={"code": code.lower()}, headers=hb).get_json()
+        self.assertEqual(len(g["members"]), 2)
+        self.assertFalse(g["can_control"]); self.assertTrue(g["can_add"])
+        # Guests add but don't control (until the host says so).
+        self.assertEqual(self.op(pid, hb, op="next").status_code, 403)
+        self.assertEqual(self.op(pid, hb, op="add", rels=[three]).status_code, 200)
+        self.assertEqual(self.op(pid, hb, op="settings", control=True).status_code, 403)
+        self.op(pid, ha, op="settings", control=True)
+        v = self.op(pid, hb, op="pause").get_json()
+        self.assertFalse(v["state"]["playing"])
+        pos = v["state"]["pos"]
+        time.sleep(0.3)
+        self.assertAlmostEqual(self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=ha).get_json()["state"]["pos"], pos, places=2)   # paused: the clock stands still
+        v = self.op(pid, hb, op="seek", pos=5).get_json()
+        self.assertEqual(v["state"]["pos"], 5)
+        self.op(pid, ha, op="resume")
+        # A long poll answers as soon as something changes.
+        rev = self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=hb).get_json()["rev"]
+        t0 = time.time()
+        threading.Timer(0.5, lambda: self.op(pid, ha, op="react", emoji="🔥")).start()
+        w = self.c.get(f"/api/party/{pid}/wait?rev={rev}", headers=hb).get_json()
+        self.assertLess(time.time() - t0, 3)
+        self.assertEqual(w["feed"][-1]["emoji"], "🔥")
+        self.assertEqual(self.op(pid, hb, op="react", emoji="🍕").status_code, 400)
+        self.op(pid, hb, op="chat", text="  great   song ")
+        self.assertEqual(self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=ha).get_json()["feed"][-1]["text"], "great song")
+        # The server moves on by itself at the end of the song.
+        with server._party_cv:
+            p = server._parties[pid]
+            p["state"].update(pos=11.9, at=time.time())
+        time.sleep(0.2)
+        v = self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=ha).get_json()
+        self.assertEqual(v["state"]["rel"], two)
+        self.assertEqual([q["r"] for q in v["queue"]], [three])
+        v = self.op(pid, ha, op="prev").get_json()                  # back to the song before (it's been under 3 s)
+        self.assertEqual(v["state"]["rel"], one)
+        v = self.op(pid, hb, op="jump", id=v["queue"][-1]["id"]).get_json()
+        self.assertEqual(v["state"]["rel"], three)
+        # Host leaves: the next longest-standing member takes over; last one out ends the party.
+        self.c.post("/api/party/join", json={"code": code}, headers=hc)
+        self.op(pid, ha, op="leave")
+        v = self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=hb).get_json()
+        self.assertEqual(v["host"], "guest1")
+        self.assertEqual(self.op(pid, hc, op="kick", user="guest1").status_code, 403)
+        self.op(pid, hb, op="kick", user="guest2")
+        self.assertEqual(self.c.get(f"/api/party/{pid}/wait?rev=-1", headers=hc).status_code, 410)
+        self.assertEqual(self.op(pid, hb, op="end").get_json(), {"ended": True})
+        self.assertNotIn(pid, server._parties)
+
+    def test_songs_play_to_the_end_by_themselves(self):
+        ha = self.user("host2")
+        one, two, _ = self.rels()
+        with server.library_cache_lock:
+            server.library_cache_data[one]["duration"] = 1.0
+            server.library_cache_data[two]["duration"] = 30.0
+        v = self.c.post("/api/party", json={"queue": [one, two]}, headers=ha).get_json()
+        t0 = time.time()
+        w = self.c.get(f"/api/party/{v['id']}/wait?rev={v['rev']}", headers=ha).get_json()   # wakes when the 1 s song ends
+        self.assertLess(time.time() - t0, 2.5)
+        self.assertEqual(w["state"]["rel"], two)
+
+    def test_friends_see_and_join(self):
+        ha, hb, hx = self.user("pal1"), self.user("pal2"), self.user("stranger1")
+        self.friends("pal1", "pal2")
+        v = self.c.post("/api/party", json={}, headers=ha).get_json()
+        live = self.c.get("/api/party", headers=hb).get_json()["live"]
+        self.assertEqual([p["id"] for p in live], [v["id"]])
+        self.assertEqual(self.c.get("/api/party", headers=hx).get_json()["live"], [])
+        self.assertEqual(self.c.post("/api/party/join", json={"id": v["id"]}, headers=hx).status_code, 404)    # needs the code
+        act = self.c.get("/api/social/activity", headers=hb).get_json()["friends"]
+        self.assertEqual(next(a for a in act if a["username"] == "pal1")["party"]["id"], v["id"])
+        self.assertEqual(self.c.post("/api/party/join", json={"id": v["id"]}, headers=hb).status_code, 200)
+        self.op(v["id"], ha, op="settings", visible=False)
+        self.assertEqual(self.c.get("/api/party", headers=hb).get_json()["party"]["visible"], False)
+
+    def test_turned_off(self):
+        h = self.user("host3")
+        self.settings(feature_party=False)
+        try:
+            self.assertEqual(self.c.post("/api/party", json={}, headers=h).status_code, 403)
+            self.assertFalse(self.c.get("/api/library/cache").get_json()["settings"]["features"]["party"])
+        finally:
+            self.settings(feature_party=True)
+        self.assertEqual(self.c.get("/party/abc123").headers["Location"], "/?party=ABC123")
+
+
+class TestPrivateMedia(Social):
+    def chat(self, a, b):
+        ha, hb = self.friends(a, b)
+        for h, tag in ((ha, "A"), (hb, "C")): self.c.post("/api/chat/keys", json=fake_keys(tag), headers=h)
+        cid = self.c.post("/api/chat/dm", json={"username": b}, headers=ha).get_json()["id"]
+        key = {"v": 1, "conv": cid, "by": a, "ts": 1, "ev": 0, "members": sorted([a, b]), "sig": b64(86),
+               "wraps": {m: dict(sealed(), e=b64(87)) for m in (a, b)}, "fps": {m: "a" * 64 for m in (a, b)}}
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/keys", json={"key": key}, headers=ha).status_code, 200)
+        return ha, hb, cid
+
+    def upload(self, h, cid, size, kind="image"):
+        r = self.c.post(f"/api/chat/{cid}/files", json={"kind": kind, "size": size}, headers=h)
+        if r.status_code != 200: return r, None
+        f = r.get_json()
+        for n in range(f["chunks"]):
+            n_bytes = (f["chunk"] if n < f["chunks"] - 1 else size - f["chunk"] * (f["chunks"] - 1)) + 16
+            body = bytes([n % 251]) * n_bytes
+            self.assertEqual(self.c.put(f"/api/chat/{cid}/files/{f['id']}/{n}", data=body, headers=h).status_code, 200)
+        return self.c.post(f"/api/chat/{cid}/files/{f['id']}/done", headers=h), f
+
+    def test_chats_live_in_their_own_folder(self):
+        self.assertEqual(server.CHAT_DIR, CONFIG / "chat")
+        self.assertTrue(server.CHAT_DB_FILE.is_file())
+        with server._db_lock:
+            main = {r[0] for r in server.db().execute("SELECT name FROM main.sqlite_master WHERE type = 'table'")}
+            chat = {r[0] for r in server.db().execute("SELECT name FROM chat.sqlite_master WHERE type = 'table'")}
+        self.assertFalse({"messages", "conversations", "conv_members"} & main)
+        self.assertTrue({"messages", "conversations", "conv_members", "files"} <= chat)
+
+    def test_older_chats_move_over(self):
+        import sqlite3
+        d = TMP / "migrate"
+        d.mkdir()
+        conn = sqlite3.connect(str(d / "axdio.db"), isolation_level=None)
+        conn.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated REAL)")
+        conn.execute("CREATE TABLE conv_members (conv TEXT NOT NULL, user TEXT NOT NULL, read_seq INTEGER NOT NULL DEFAULT 0, hidden_seq INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conv, user))")
+        conn.execute("CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, conv TEXT NOT NULL, sender TEXT NOT NULL, ts REAL NOT NULL, data TEXT NOT NULL)")
+        conn.execute("INSERT INTO conversations VALUES ('dm_x', '{}', 1)")
+        conn.execute("INSERT INTO conv_members (conv, user) VALUES ('dm_x', 'a')")
+        conn.executemany("INSERT INTO messages (id, conv, sender, ts, data) VALUES (?, 'dm_x', 'a', 1, '{}')", [("m1",), ("m2",)])
+        saved = server.CHAT_DIR, server.CHAT_DB_FILE
+        server.CHAT_DIR, server.CHAT_DB_FILE = d / "elsewhere", d / "elsewhere" / "chat.db"
+        try:
+            server._chat_attach(conn)
+        finally:
+            server.CHAT_DIR, server.CHAT_DB_FILE = saved
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 2)          # plain names now reach chat.db
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM chat.conv_members").fetchone()[0], 1)
+        main = {r[0] for r in conn.execute("SELECT name FROM main.sqlite_master WHERE type = 'table'")}
+        self.assertTrue(any(n.startswith("moved_messages_") for n in main))
+        self.assertNotIn("messages", main)
+        seq = conn.execute("INSERT INTO messages (id, conv, sender, ts, data) VALUES ('m3', 'dm_x', 'a', 2, '{}')").lastrowid
+        self.assertEqual(seq, 3)
+        conn.close()
+
+    def test_encrypted_attachments_in_chunks(self):
+        ha, hb, cid = self.chat("ivy", "jon")
+        hs = self.user("kim")
+        size = server.CHAT_CHUNK + 1000
+        r = self.c.post(f"/api/chat/{cid}/files", json={"kind": "image", "size": size}, headers=ha)
+        f = r.get_json()
+        self.assertEqual(f["chunks"], 2)
+        self.assertEqual(self.c.put(f"/api/chat/{cid}/files/{f['id']}/0", data=b"x" * 10, headers=ha).status_code, 400)
+        self.assertEqual(self.c.put(f"/api/chat/{cid}/files/{f['id']}/0", data=b"x" * (server.CHAT_CHUNK + 16), headers=hb).status_code, 403)
+        self.assertEqual(self.c.put(f"/api/chat/{cid}/files/{f['id']}/0", data=b"x" * (server.CHAT_CHUNK + 16), headers=ha).status_code, 200)
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/files/{f['id']}/done", headers=ha).status_code, 409)   # chunk 1 missing
+        self.assertEqual(self.c.get(f"/api/chat/{cid}/files/{f['id']}/0", headers=hb).status_code, 404)       # not finished
+        self.assertEqual(self.c.put(f"/api/chat/{cid}/files/{f['id']}/1", data=b"y" * 1016, headers=ha).status_code, 200)
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/files/{f['id']}/done", headers=ha).status_code, 200)
+        self.assertTrue((server.CHAT_MEDIA_DIR / f["id"][:2] / f["id"] / "1.bin").is_file())
+        msg = dict(sealed(), id="p" * 20, v=1, sig=b64(86), files=[f["id"]])
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/messages", json=dict(msg, files=["z" * 22]), headers=ha).status_code, 400)
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/messages", json=msg, headers=ha).status_code, 200)
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/messages", json=dict(msg, id="q" * 20), headers=ha).status_code, 400)  # already used
+        got = self.c.get(f"/api/chat/{cid}/files/{f['id']}/1", headers=hb)
+        self.assertEqual((got.status_code, got.data), (200, b"y" * 1016))
+        self.assertIn("immutable", got.headers["Cache-Control"])
+        got.close()
+        self.assertEqual(self.c.get(f"/api/chat/{cid}/files/{f['id']}/1", headers=hs).status_code, 404)       # not in the chat
+        stats = server.social_stats()
+        self.assertGreaterEqual(stats["media_bytes"], size)
+        self.assertEqual(self.c.delete(f"/api/chat/{cid}/messages/{msg['id']}", headers=ha).status_code, 200)  # unsending removes it
+        self.assertEqual(self.c.get(f"/api/chat/{cid}/files/{f['id']}/1", headers=hb).status_code, 404)
+        self.assertFalse((server.CHAT_MEDIA_DIR / f["id"][:2] / f["id"]).exists())
+
+    def test_admin_limits(self):
+        ha, hb, cid = self.chat("lou", "max")
+        try:
+            self.settings(chat_media_videos=False, chat_media_max_mb=1, chat_media_quota_mb=2)
+            branding = self.c.get("/api/branding", headers=ha).get_json()["settings"]["chat_media"]
+            self.assertEqual((branding["video"], branding["image"], branding["max"], branding["chunk"]), (False, True, 1024 * 1024, server.CHAT_CHUNK))
+            self.assertEqual(self.c.post(f"/api/chat/{cid}/files", json={"kind": "video", "size": 10}, headers=ha).status_code, 403)
+            self.assertEqual(self.c.post(f"/api/chat/{cid}/files", json={"kind": "image", "size": 2 * 1024 * 1024}, headers=ha).status_code, 413)
+            self.assertEqual(self.c.post(f"/api/chat/{cid}/files", json={"kind": "exe", "size": 10}, headers=ha).status_code, 400)
+            r, _ = self.upload(ha, cid, 1024 * 1024)
+            self.assertEqual(r.status_code, 200)
+            r = self.c.post(f"/api/chat/{cid}/files", json={"kind": "image", "size": 1024 * 1024}, headers=ha)
+            self.assertEqual(r.status_code, 200)                     # exactly at the quota (unfinished uploads count too)
+            r = self.c.post(f"/api/chat/{cid}/files", json={"kind": "voice", "size": 1000}, headers=ha)
+            self.assertEqual((r.status_code, r.get_json().get("quota")), (413, True))
+            self.assertEqual(self.c.post(f"/api/chat/{cid}/files", json={"kind": "voice", "size": 1000}, headers=hb).status_code, 200)   # per listener
+        finally:
+            self.settings(chat_media_videos=True, chat_media_max_mb=100, chat_media_quota_mb=2048)
+
+    def test_disappearing_messages(self):
+        ha, hb, cid = self.chat("ned", "ola")
+        self.assertEqual(self.c.post(f"/api/chat/{cid}/ttl", json={"ttl": 5}, headers=ha).status_code, 400)
+        conv = self.c.post(f"/api/chat/{cid}/ttl", json={"ttl": 3600}, headers=hb).get_json()
+        self.assertEqual((conv["ttl"], conv["ttl_log"][-1]["by"]), (3600, "ola"))
+        sent = self.c.post(f"/api/chat/{cid}/messages", json=dict(sealed(), id="d" * 20, v=1, sig=b64(86)), headers=ha).get_json()["message"]
+        self.assertAlmostEqual(sent["expires"], sent["ts"] + 3600, delta=1)
+        self.assertEqual(len(self.c.get(f"/api/chat/{cid}/messages", headers=hb).get_json()["messages"]), 1)
+        with server._db_lock: server.db().execute("UPDATE messages SET expires = ? WHERE id = ?", (time.time() - 1, "d" * 20))
+        self.assertEqual(self.c.get(f"/api/chat/{cid}/messages", headers=hb).get_json()["messages"], [])
+        self.c.post(f"/api/chat/{cid}/ttl", json={"ttl": 0}, headers=ha)
+        later = self.c.post(f"/api/chat/{cid}/messages", json=dict(sealed(), id="e" * 20, v=1, sig=b64(86)), headers=ha).get_json()["message"]
+        self.assertNotIn("expires", later)
+
+    def test_blend_with_a_friend(self):
+        ha, hb = self.friends("pia", "quin")
+        one, two, three = self.rel("Opening"), self.rel("Second Song"), self.rel("Something Else")
+        with server.users_lock:
+            server.users_data["pia"]["history"] = [{"rel_path": r, "count": 3, "last_played": "2026-09-01"} for r in (one, two)]
+            server.users_data["pia"]["liked_songs"] = [one, two, three]
+            server.users_data["quin"]["history"] = [{"rel_path": one, "count": 9, "last_played": "2026-09-02"}]
+            server.users_data["quin"]["liked_songs"] = [one, three, two]
+        b = self.c.get("/api/social/users/quin", headers=ha).get_json()["blend"]
+        self.assertGreater(b["match"], 50)
+        self.assertEqual(b["rels"][0], one)                         # both play it most
+        self.assertEqual(sorted(b["rels"]), sorted([one, two, three]))
+        self.assertIn("Test Artist", b["common"])
+        self.c.post("/api/social/settings", json={"share_activity": False}, headers=ha)
+        self.assertNotIn("blend", self.c.get("/api/social/users/quin", headers=ha).get_json())    # keeps theirs private → no blend
+        self.c.post("/api/social/settings", json={"share_activity": True}, headers=ha)
+
+
+class TestRewind(Social):
+    def test_year_in_music(self):
+        h = self.user("rae")
+        one, two, three = self.rel("Opening"), self.rel("Second Song"), self.rel("Something Else")
+        for rel, n in ((one, 4), (two, 2), (three, 1)):
+            for _ in range(n): self.c.post("/api/user/record_play", json={"rel_path": rel}, headers=h)
+        r = self.c.get("/api/rewind?period=year&tz=0", headers=h).get_json()
+        self.assertEqual((r["plays"], r["songs"], r["artists"]), (7, 3, 2))
+        self.assertEqual(r["top_songs"][0]["rel"], one)
+        self.assertEqual(r["top_songs"][0]["plays"], 4)
+        self.assertEqual(r["top_artists"][0]["name"], "Test Artist")
+        self.assertEqual(r["minutes"], round((12.0 * 4 + 9.5 * 2 + 7.25) / 60))
+        self.assertEqual(sum(r["hours"]), 7)
+        self.assertIn(r["persona"]["name"], {"Early bird", "Daydreamer", "Golden hour", "Night owl"})
+        self.assertEqual((r["streak"], r["active_days"], r["discoveries"]), (1, 1, 3))
+        self.assertEqual(r["on_repeat"]["rel"], one)
+        self.assertIn(time.gmtime().tm_year, r["years"])
+        empty = self.c.get("/api/rewind?period=month&y=2001&m=2&tz=0", headers=h).get_json()
+        self.assertEqual((empty["plays"], empty["label"]), (0, "February 2001"))
+        log = json.loads(self.c.get("/api/user/export", headers=h).data)["account"]["listening_log"]
+        self.assertEqual(len(log), 7)
+
+    def test_history_is_brought_in_once(self):
+        h = self.user("sol")
+        rel = self.rel("Second Song")
+        with server.users_lock:
+            server.users_data["sol"]["history"] = [{"rel_path": rel, "count": 5, "last_played": "2025-03-02T21:30:00"}]
+        with server._db_lock: server.db().execute("DELETE FROM kv WHERE key = 'plays_backfilled'")
+        server.rewind_backfill()
+        server.rewind_backfill()   # a second run changes nothing
+        r = self.c.get("/api/rewind?period=year&y=2025&tz=0", headers=h).get_json()
+        self.assertEqual((r["plays"], r["top_songs"][0]["rel"], sum(r["hours"])), (5, rel, 0))   # no time of day from old history
+        self.assertNotIn("persona", r)
+        self.assertEqual(self.c.get("/api/rewind?period=month&y=2025&m=3&tz=0", headers=h).get_json()["plays"], 5)
+
+    def test_gone_with_the_account_and_switch(self):
+        h = self.user("tam")
+        self.c.post("/api/user/record_play", json={"rel_path": self.rel("Opening")}, headers=h)
+        try:
+            self.settings(feature_rewind=False)
+            self.assertEqual(self.c.get("/api/rewind", headers=h).status_code, 403)
+            self.assertFalse(self.c.get("/api/branding").get_json()["settings"]["features"]["rewind"])
+        finally:
+            self.settings(feature_rewind=True)
+        self.assertEqual(self.c.post("/api/user/delete_account", json={"password": "long-password-1"}, headers=h).status_code, 200)
+        with server._db_lock:
+            self.assertEqual(server.db().execute("SELECT COUNT(*) FROM plays WHERE user = 'tam'").fetchone()[0], 0)
+
+    def test_collab_switch_blocks_the_api(self):
+        h = self.user("uma")
+        try:
+            self.settings(feature_collab=False)
+            self.assertEqual(self.c.get("/api/social/playlists", headers=h).status_code, 403)
+        finally:
+            self.settings(feature_collab=True)
+        self.assertEqual(self.c.get("/api/social/playlists", headers=h).status_code, 200)
+
+
+class TestSmartTransitions(Base):
+    def test_measuring_a_song(self):
+        f = TMP / "shape.flac"
+        # 1.5 s of silence, a tone that fades out from 7.5 s to 9.5 s, then 2 s of silence.
+        expr = "if(between(t,1.5,9.5),0.5*sin(2*PI*440*t)*if(gt(t,7.5),(9.5-t)/2,1),0)"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "aevalsrc=" + expr.replace(",", "\\,") + ":s=44100:d=11.5", str(f)], check=True)
+        a = server.measure_song(f)
+        self.assertAlmostEqual(a["dur"], 11.5, delta=.3)
+        self.assertTrue(1.3 <= a["start"] <= 1.5, a)
+        self.assertTrue(9.4 <= a["end"] <= 9.8, a)
+        self.assertTrue(7.6 <= a["outro"] <= 8.4, a)
+        self.assertLess(a["lufs"], -3)
+
+    def test_measured_in_the_background_and_cached(self):
+        rel = self.rel("Something Else")
+        first = self.c.get("/api/analysis", query_string={"rel": rel, "now": rel}).get_json()["analysis"]
+        self.assertIn(rel, first)
+        for _ in range(60):
+            got = self.c.get("/api/analysis", query_string={"rel": rel}).get_json()["analysis"][rel]
+            if got: break
+            time.sleep(.5)
+        self.assertAlmostEqual(got["dur"], 7.25, delta=.3)
+        self.assertLess(got["start"], .3)
+        self.assertEqual(self.c.get("/api/analysis", query_string={"rel": "@rabcdef/x.flac"}).get_json()["analysis"], {})
+        try:
+            self.settings(feature_smart=False)
+            self.assertTrue(self.c.get("/api/analysis", query_string={"rel": rel}).get_json()["off"])
+        finally:
+            self.settings(feature_smart=True)
+
+
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
 

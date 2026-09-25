@@ -458,7 +458,7 @@ const Chat = {
   },
   msgData(conv, m) { return canon({ t: 'msg', conv, id: m.id, from: m.sender, v: m.v, iv: m.iv, ct: m.ct }); },
   async decrypt(c, m) {
-    const out = { id: m.id, seq: m.seq, from: m.sender, ts: m.ts * 1000, mine: m.sender === U.username, body: null, err: '', trust: '' };
+    const out = { id: m.id, seq: m.seq, from: m.sender, ts: m.ts * 1000, mine: m.sender === U.username, body: null, err: '', trust: '', expires: m.expires ? m.expires * 1000 : 0 };
     if (m.deleted) { out.deleted = true; return out; }
     if (E2EE.state !== 'ready') { out.err = 'locked'; return out; }
     try {
@@ -526,7 +526,8 @@ const Chat = {
     hook('chats');
     api(`/api/chat/${cid}/read`, { seq: top }).catch(() => {});
   },
-  async post(cid, body, attempt = 0) {
+  // `files`: ids of encrypted attachments this message carries (web/app/chatmedia.js), so the server can remove them with it.
+  async post(cid, body, attempt = 0, files) {
     let c = this.byId.get(cid);
     if (!c) throw new Error('That conversation is gone.');
     try {
@@ -534,7 +535,7 @@ const Chat = {
       const id = b64u(rand(16));
       const box = await seal(key, JSON.stringify(Object.assign({ at: Date.now() }, body)), `axdio-msg-v1|${cid}|${id}|${U.username}|${v}`);
       const sig = await E2EE.sign(this.msgData(cid, { id, sender: U.username, v, iv: box.iv, ct: box.ct }));
-      const { message } = await api(`/api/chat/${cid}/messages`, Object.assign({ id, v, sig }, box));
+      const { message } = await api(`/api/chat/${cid}/messages`, Object.assign({ id, v, sig }, box, files && files.length ? { files } : {}));
       const th = this.thread(cid);
       await this.add(c, th, [message], false);
       c = this.byId.get(cid);
@@ -542,7 +543,7 @@ const Chat = {
       hook('thread', cid); hook('chats');
       return message;
     } catch (e) {
-      if (e.status === 409 && attempt < 2) { await this.merge(await api(`/api/chat/${cid}`)); return this.post(cid, body, attempt + 1); }
+      if (e.status === 409 && attempt < 2 && !/attachment/.test(e.message)) { await this.merge(await api(`/api/chat/${cid}`)); return this.post(cid, body, attempt + 1, files); }
       throw e;
     }
   },
@@ -714,6 +715,8 @@ function previewText(c) {
   if (m.err === 'locked') return 'Encrypted message';
   if (m.err) return "Can't decrypt this message";
   if (m.body.re) return who + (m.body.re.e ? 'Reacted ' + m.body.re.e : 'Removed a reaction');
+  const f = m.body.f;
+  if (f && !m.body.t) return who + (f.kind === 'voice' ? 'Sent a voice message' : f.kind === 'video' ? 'Sent a video' : 'Sent a photo');
   const a = m.body.a;
   if (a && !m.body.t) return who + 'Sent ' + (a.k === 'track' ? 'a song' : a.k === 'album' ? 'an album' : a.k === 'artist' ? 'an artist' : 'a playlist');
   return who + m.body.t;

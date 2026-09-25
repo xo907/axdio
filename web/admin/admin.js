@@ -359,8 +359,10 @@ async function pageOverview(el) {
       ${d.social ? `<section class="card"><div class="card-h"><h2>Social</h2><a class="link" href="#/features">Settings</a></div><div class="card-b"><dl class="kv">
         <dt>Friendships</dt><dd>${nf(d.social.friendships)}</dd>
         <dt>Private messages</dt><dd>${plural(d.social.messaging, 'account')} set up · ${plural(d.social.conversations, 'conversation')} · ${plural(d.social.messages, 'message')} (${fmtBytes(d.social.message_bytes)})</dd>
+        ${d.social.media_files != null ? `<dt>Photos, videos and voice</dt><dd>${plural(d.social.media_files, 'attachment')} (${fmtBytes(d.social.media_bytes)})</dd>` : ''}
         <dt>Collaborative playlists</dt><dd>${nf(d.social.collab_playlists)}</dd>
-      </dl><p class="dim" style="margin-top:12px;font-size:12.5px">Messages are end-to-end encrypted on listeners' devices. The server only stores scrambled data, so nobody here, including admins, can read them.</p></div></section>` : ''}
+        ${d.social.chat_dir ? `<dt>Stored in</dt><dd><code>${esc(d.social.chat_dir)}</code></dd>` : ''}
+      </dl><p class="dim" style="margin-top:12px;font-size:12.5px">Messages and their attachments are end-to-end encrypted on listeners' devices. The server only stores scrambled data, so nobody here, including admins, can read them. Set <code>CHAT_DIR</code> to keep them in a folder of their own.</p></div></section>` : ''}
       <section class="card"><div class="card-h"><h2>Recent activity</h2><a class="link" href="#/activity">See all</a></div><div class="card-b flush list">${activityRows(d.activity) || '<div class="empty">Nothing yet.</div>'}</div></section>`;
   };
   await draw();

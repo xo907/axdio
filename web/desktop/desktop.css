@@ -643,6 +643,24 @@ body.remote .remote-strip { display: flex; }
 .fs-ctrl .pb-play { width: 64px; height: 64px; }
 .fs-ctrl .pb-play .i { width: 32px; height: 32px; }
 .fs-side { position: absolute; right: 0; display: flex; gap: 8px; }
+/* Visuals and ambient mode */
+#fs-viz-btn.on { color: var(--accent); }
+#fs.viz .fs-bg { opacity: 0; transition: opacity .8s; }
+#fs.viz .fs-shade { background: linear-gradient(180deg, rgba(0,0,0,.25) 0%, transparent 22%, transparent 55%, rgba(0,0,0,.6) 100%); }
+#fs.viz:not(.lyr) .fs-main { gap: 64px; }
+#fs.viz .fs-art { box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+.fs-top, .fs-bottom { transition: opacity .6s var(--ease), transform .6s var(--ease); }
+#fs.idle { cursor: none; }
+#fs.idle .fs-top { opacity: 0; transform: translateY(-12px); pointer-events: none; }
+#fs.idle .fs-bottom { opacity: 0; transform: translateY(16px); pointer-events: none; }
+#fs.idle .fs-main { bottom: 72px; }
+.fs-main { transition: bottom .8s var(--ease), right .4s var(--ease); }
+.fs-clock { position: absolute; top: 34px; right: 44px; z-index: 2; text-align: right; opacity: 0; transition: opacity .8s var(--ease); pointer-events: none; }
+.fs-clock b { display: block; font-size: 56px; font-weight: 300; letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.fs-clock small { display: block; margin-top: 10px; font-size: 14px; font-weight: 600; color: rgba(255,255,255,.7); max-width: 40vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#fs.idle .fs-clock { opacity: 1; }
+#fs.idle.lyr .fs-clock { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .fs-top, .fs-bottom, .fs-main, .fs-clock { transition: none; } }
 
 /* Offline notice */
 #offline { position: fixed; top: 8px; left: 50%; transform: translate(-50%, -80px); z-index: 60; background: #2d46b9; color: #fff; font-size: 13px; font-weight: 700; padding: 8px 16px; border-radius: 999px; display: flex; align-items: center; gap: 8px; transition: transform .3s; }
@@ -778,10 +796,18 @@ span.mt-av { width: 28px; flex-shrink: 0; }
 .steps-done { margin: -4px 0 16px; color: var(--text-2); line-height: 1.5; }
 .auth-card .ax-or { margin: 14px 0 0; }
 
+/* Listening parties */
+#btn-party.on { color: var(--accent); }
+.fa-party { display: flex; align-items: center; gap: 6px; margin-top: 6px; max-width: 100%; border: 0; border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+
 /* Messages */
 #view.fixed { overflow: hidden; }
-#view > .msg-view { position: absolute; inset: 0; z-index: 1; }
+/* .fixed outranks `#view > :not(.vbg):not(.vhead)`, which otherwise made the chat only as tall as its content */
+#view.fixed > .msg-view { position: absolute; inset: 0; z-index: 1; }
 .msg-view { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; }
+.msg-view.none { grid-template-columns: 1fr; }
+.msg-view.none .msg-list { display: none; }
 .msg-list { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
 .ml-h { display: flex; align-items: center; justify-content: space-between; padding: 20px 16px 12px 20px; }
 .ml-h h1 { font-size: 24px; font-weight: 800; letter-spacing: -.02em; }

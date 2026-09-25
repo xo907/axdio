@@ -2,9 +2,10 @@
 set -e
 
 CONFIG_DIR="${CONFIG_DIR:-/app/config}"
+CHAT_DIR="${CHAT_DIR:-$CONFIG_DIR/chat}"
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
-mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONFIG_DIR" "$CHAT_DIR"
 
 if [ "${AUTO_UPDATE_EXTRACTORS:-false}" = "true" ]; then
   echo "[!] AUTO_UPDATE_EXTRACTORS isn't used any more. Install yt-dlp under Plugins in the admin panel and tick automatic updates there."
@@ -12,7 +13,7 @@ fi
 
 if [ "$(id -u)" = "0" ] && [ "$PUID" != "0" ]; then
   # Run as an ordinary user. Hand it any config files it doesn't own yet (e.g. from older root-run versions).
-  find "$CONFIG_DIR" \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown "$PUID:$PGID" {} + 2>/dev/null || true
+  find "$CONFIG_DIR" "$CHAT_DIR" \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown "$PUID:$PGID" {} + 2>/dev/null || true
   export HOME=/tmp/axdio-home
   mkdir -p "$HOME" && chown "$PUID:$PGID" "$HOME"
   # With the Docker socket mounted (for updates from the admin panel), the server joins the group that owns it.

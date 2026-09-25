@@ -13,8 +13,13 @@ Created by [xo.st](https://xo.st).
 - Share links for songs, albums and artists that show the title, artist and artwork in Discord, iMessage, Slack and other apps, and open a page where anyone can listen (after signing in, on a private server)
 - Profile photos
 - Friends: add people on your server, see what they're playing in Friend Activity, and visit their profiles (everyone can hide their listening or stay out of search)
-- Private messages: end-to-end encrypted chats and group chats between friends, with songs, albums and artists you can play right from the conversation, reactions and read receipts
+- Private messages: end-to-end encrypted chats and group chats between friends, with photos, videos and voice messages (encrypted on your device before upload), disappearing messages, songs, albums and artists you can play right from the conversation, reactions and read receipts
+- Blend: see how well your taste matches a friend's, and play a mix of the music you both love
 - Collaborative playlists: invite friends to add, remove and reorder songs together
+- Listening parties: friends listen together in sync, with a shared queue, live reactions and party chat
+- Immersive Now Playing: visuals painted from the album cover that react to the music, plus an ambient full-screen mode for TVs
+- Rewind: your month or year in music as story cards (minutes, top artists and songs, your listening clock, streaks and new finds), with a card to save, share or send to a friend
+- Smart transitions: silence between songs is skipped, crossfades follow each song's own fade-out, albums that run into the next track stay gapless, and volume can be matched from song to song
 - Data saver: stream 320, 192 or 128 kbps MP3 instead of lossless files, with a separate setting for mobile data
 - Connect: see your other devices and move playback between them
 - Works with Subsonic apps (Symfonium, Feishin, DSub, Substreamer, play:Sub, Tempo and more)
@@ -93,6 +98,7 @@ Almost everything is set in the admin panel. The container reads these environme
 |---|---|---|
 | `CFG_DIR_MUSIC` | `/music` | Music folder inside the container |
 | `CONFIG_DIR` | `/app/config` | Where settings, accounts (`axdio.db`), caches and backups live |
+| `CHAT_DIR` | `$CONFIG_DIR/chat` | Where private messages and their encrypted photos, videos and voice messages live. Mount a folder of its own here to keep chats on another disk or an encrypted volume |
 | `PORT` | `7865` | Port the server listens on |
 | `PUID` / `PGID` | `1000` | User and group the server runs as (set `PUID=0` to run as root) |
 | `SECRET_KEY` | generated | Signs sessions and encrypts app passwords. By default a random key is created once and kept in `config/secret_key`; if you set it yourself, keep it stable or people get signed out |
@@ -165,7 +171,22 @@ Messages are end-to-end encrypted in the browser with Web Crypto (P-256 keys, AE
 
 What the server can see: who talks to whom, when, and roughly how long each message is. Like every web app, the encryption code itself is served by your server, so it protects against a curious admin, stolen backups and database leaks, but not against someone who changes the server's code to capture keys as people type.
 
-Admins can turn messages off, cap group sizes and delete old messages under **Features**. Backups include friends and collaborative playlists; conversations live in `config/axdio.db`, so copying the `config` folder moves them too.
+**Photos, videos and voice messages** are encrypted on the sender's device before they leave it, each with a key of its own that travels inside the (encrypted) message. They're uploaded and downloaded in 512 KB chunks, so large videos don't tie up the server or trip reverse-proxy size limits, and a failed chunk is simply sent again. Photos are redrawn before sending, which removes their location and camera details. People who receive them decrypt them in memory; nothing is saved on their device unless they choose **Save**.
+
+**Disappearing messages**: anyone in a chat can make new messages disappear for everyone after an hour, a day, a week or four weeks. The server deletes them, with their attachments, when the time is up.
+
+Admins can turn messages off, cap group sizes, delete old messages, allow or block photos, videos and voice messages, and set the largest attachment and how much each person can keep stored, all under **Features**.
+
+Chats are stored in their own folder, `CHAT_DIR` (`config/chat` unless you set it): `chat.db` holds conversations and message ciphertext, and `media/` holds the encrypted attachment chunks. To keep chats somewhere else, for example on another disk or an encrypted volume, mount that folder and point `CHAT_DIR` at it:
+
+```yaml
+    volumes:
+      - /path/to/private/chat:/chat
+    environment:
+      - CHAT_DIR=/chat
+```
+
+Servers from before 2.6.0 kept chats inside `config/axdio.db`; they move into `CHAT_DIR` by themselves the first time the new version starts. Backups include friends and collaborative playlists but not chats, so back up the chat folder too (it's encrypted, so a copy can't be read without people's keys).
 
 ## Library sharing
 
@@ -258,7 +279,7 @@ Axdio saves a backup every day by default (**Maintenance & backups → Automatic
 
 It doesn't hold music files, artwork or profile photos (those are in `config/avatars`). You can download a backup at any time and restore all of it or just parts. Because backups contain password hashes and webhook URLs, keep copies somewhere private.
 
-To move a server, copy the whole `config` folder. It's everything the server knows.
+To move a server, copy the whole `config` folder (and your chat folder, if you set `CHAT_DIR` somewhere else). It's everything the server knows.
 
 ## Updating
 

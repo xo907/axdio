@@ -251,6 +251,10 @@ function chunked(pg, container, n, render, step = 50) {
   return dispose;
 }
 
+VIEWS.party = pg => {
+  pg.el.innerHTML = topbar('Listening party') + '<div class="party-page"><div></div></div>';
+  if (window.AX.Party) window.AX.Party.render(pg.el.querySelector('.party-page > div'));
+};
 VIEWS.missing = pg => { pg.el.innerHTML = topbar('') + `<div style="padding-top:80px">${emptyHtml('album', "This isn't available", 'It may have been removed from the library.', '<button class="btn light" data-act="back">Go back</button>')}</div>`; };
 
 function skeletonShelves() {
@@ -274,6 +278,7 @@ VIEWS.home = pg => {
   const bigAlbums = L.albums.filter(a => a.type === 'Album');
   shuffled(bigAlbums.length > 8 ? bigAlbums : L.albums, rand).slice(0, 12).forEach(a => addQ(itAlbum(a)));
   h += `<div class="quick">${quick.slice(0, quick.length >= 6 ? (quick.length >= 8 ? 8 : 6) : quick.length).map(quickHtml).join('')}</div>`;
+  if (window.AX.Rewind) h += `<div class="rw-wrap">${window.AX.Rewind.homeCard()}</div>`;
   h += friendsShelf();
 
   const jump = RECENTS.map(r => itFromKey(r.k)).filter(it => it && !quick.slice(0, 8).some(q => q.ck === it.ck)).slice(0, 12);
@@ -625,6 +630,8 @@ VIEWS.settings = pg => {
     + (SITE.features.subsonic ? setRow({ act: 'subsonic', title: 'Subsonic-compatible apps', sub: 'Symfonium, Substreamer, play:Sub and more', chev: true }) : '');
   h += `<div class="set-sec">Playback</div>`
     + setRow({ act: 'set-autoplay', title: 'Autoplay', sub: 'Keep listening to similar songs when your music ends', tog: S.autoplay })
+    + (feat('smart') ? setRow({ act: 'set-smart', title: 'Smart transitions', sub: 'Skip silence between songs and let albums flow', tog: S.smart !== false })
+      + (IOS ? '' : setRow({ act: 'set-matchvol', title: 'Match volume between songs', sub: 'Bring loud recordings down to the level of the rest', tog: !!S.matchVol })) : '')
     + setRow({ act: 'sleep', title: 'Sleep timer', sub: 'Pause playback after a set time', val: { text: sleepLabel(), attr: ' data-sleep-val' } })
     + setRow({ act: 'devices', title: 'Connect to a device', sub: 'Move playback between your phones and computers', chev: true });
   h += `<div class="set-sec">Audio</div>`
@@ -718,6 +725,7 @@ VIEWS.profile = pg => {
         toast(`Welcome, ${who}!`);
         refreshAll();
         Social.start();
+        if (window.AX.Party) window.AX.Party.start();
       } catch (ex) { err.textContent = ex.message; btn.disabled = false; }
     });
     return;
@@ -811,8 +819,11 @@ VIEWS.friends = pg => {
   let h = topbar('Friends') + `<div class="hero" style="padding-bottom:4px"><h1 class="hero-title">Friends</h1></div><div class="chips">${tabs.map(([k, l]) => `<button class="chip${st.tab === k ? ' on' : ''}" data-act="fr-tab" data-t="${k}">${l}</button>`).join('')}</div><div class="rows">`;
   if (st.tab === 'friends') {
     const act = new Map(Social.activity.map(a => [a.username, a.now]));
+    const parties = new Map(Social.activity.filter(a => a.party).map(a => [a.username, a.party]));
     if (now() - Social.activityAt > 60000) Social.loadActivity();
-    h += friends.length ? friends.map(c => { const n = act.get(c.username), t = n && L.byRel.get(n.rel); return personRow(c, stateTail(c, 'friend'), n && t ? `${n.live ? '▶ ' : ''}${esc(t.title)} • ${esc(t.artist)}` : ''); }).join('')
+    h += friends.length ? friends.map(c => { const n = act.get(c.username), t = n && L.byRel.get(n.rel), pty = parties.get(c.username);
+      return personRow(c, pty ? `<button class="btn primary sm" data-act="party-join" data-id="${esc(pty.id)}">Join</button>` : stateTail(c, 'friend'),
+        pty ? `In ${esc(pty.name)}` : n && t ? `${n.live ? '▶ ' : ''}${esc(t.title)} • ${esc(t.artist)}` : ''); }).join('')
       : emptyHtml('people', 'No friends yet', 'Find people on this server by their name or username.', '<button class="btn light" data-act="fr-tab" data-t="find">Find people</button>');
   } else if (st.tab === 'requests') {
     if (inc.length) h += `<div class="set-sec">Waiting for you</div>` + inc.map(c => personRow(c, stateTail(c, 'incoming'))).join('');
@@ -846,6 +857,7 @@ VIEWS.user = pg => {
     let h = topbar(pr.display_name) + `<div class="wash"></div><div class="prof-hero">${personAvatar(pr, 'lg')}<h1>${esc(pr.display_name)}</h1><div class="muted">@${esc(pr.username)} • ${count(pr.friends || 0, 'friend')}${pr.mutual ? ` • ${count(pr.mutual, 'mutual friend')}` : ''}</div><div style="display:flex;gap:10px;margin-top:14px">`
       + (state === 'friend' ? `<button class="pill-btn on" data-act="friend-more" data-u="${esc(u)}">Friends</button>${chatOn() ? `<button class="pill-btn" data-act="dm" data-u="${esc(u)}">Message</button>` : ''}` : stateTail(pr, state)) + `</div></div>`;
     if (pr.now) { const t = L.byRel.get(pr.now.rel); if (t) h += `<div class="sec-h"><h2>${pr.now.live ? 'Listening now' : 'Last played'}</h2></div><div class="rows">${trackRow(t, 0, { sub: `${t.artist} • ${pr.now.live ? 'now' : agoText(pr.now.t * 1000)}` })}</div>`; }
+    if (window.AX.ChatMedia) h += `<div class="axm-blend-wrap">${window.AX.ChatMedia.blendHtml(pr)}</div>`;
     h += shelf('Top artists', tops.map(itArtist), { kicker: 'From their listening' });
     if (recent.length) { const ctx = pageCtx(pg, 'list', 'user:' + u, `${pr.display_name}'s recent songs`, recent); h += `<div class="sec-h"><h2>Recently played</h2></div>${trackList(ctx)}`; }
     const shared = (pr.playlists || []).map(x => Collab.get(x.id)).filter(Boolean);
@@ -923,7 +935,7 @@ function msgHtml(c, th, m, grouped) {
   let inner;
   if (m.deleted) inner = `<div class="bub gone">${m.mine ? 'You unsent a message' : 'Message unsent'}</div>`;
   else if (m.err) inner = `<div class="bub gone">${ic('lock', 'sm')} This message can't be decrypted</div>`;
-  else { const a = attachment(m.body.a); inner = (a ? attCard(a) : '') + (m.body.t ? `<div class="bub">${linkify(esc(m.body.t))}</div>` : ''); }
+  else { const a = attachment(m.body.a), CM = window.AX.ChatMedia; inner = (m.body.f && CM ? CM.html(c.id, m) : '') + (a ? attCard(a) : '') + (m.body.t ? `<div class="bub">${linkify(esc(m.body.t))}</div>` : ''); }
   return `<div class="msg${m.mine ? ' mine' : ''}${grouped ? ' grouped' : ''}" data-m="${m.id}"${m.deleted || m.err ? '' : ` data-sa-msg="1"`}>${m.mine ? '' : grouped ? '<span class="mt-av"></span>' : `<span class="mt-av">${personAvatar(who)}</span>`}<div class="msg-col">${!m.mine && !grouped && c.kind === 'group' ? `<div class="msg-who">${esc(who.display_name)}</div>` : ''}<div class="msg-body">${inner}</div>${reactChips(th.reacts.get(m.id))}${m.trust === 'unknown' && !m.err ? '<span class="unv">Unverified sender</span>' : ''}</div></div>`;
 }
 function msgsHtml(c, th) {
@@ -933,6 +945,7 @@ function msgsHtml(c, th) {
   let prevFrom = '', prevTs = 0, prevDay = '', lost = 0;
   const flush = () => { if (lost) { h += `<div class="mt-note">${ic('lock', 'sm')} ${count(lost, 'earlier message')} can't be read on this device</div>`; lost = 0; } };
   for (const m of th.msgs) {
+    if (m.expires && m.expires <= Date.now()) continue;
     if (m.err === 'keys') { lost++; continue; }
     flush();
     const day = new Date(m.ts).toDateString();
@@ -946,7 +959,7 @@ function msgsHtml(c, th) {
     const peer = Chat.peer(c), mine = th.msgs.filter(m => m.mine && !m.deleted), last = mine[mine.length - 1];
     if (last && th.msgs[th.msgs.length - 1] === last && (c.reads || {})[peer] >= last.seq) h += '<div class="mt-seen">Seen</div>';
   }
-  return h;
+  return h + (window.AX.ChatMedia ? window.AX.ChatMedia.pendingHtml(c.id) : '');
 }
 VIEWS.thread = pg => {
   const cid = pg.params.c, c = Chat.byId.get(cid);
@@ -956,8 +969,9 @@ VIEWS.thread = pg => {
   const who = c.kind === 'dm' ? `data-act="open-user" data-u="${esc(Chat.peer(c))}"` : 'data-act="group-info"';
   pg.el.innerHTML = `<div class="topbar chat-top"><button class="tb-btn" data-act="back" aria-label="Back">${ic('back')}</button><div class="ct-who" ${who}><span class="ct-av">${convAvatar(c)}</span><div class="ct-t"><b class="ell" data-ct="title"></b><span class="ell" data-ct="sub"></span></div></div>`
     + `${c.kind === 'dm' ? `<button class="tb-btn" data-act="safety" data-u="${esc(Chat.peer(c))}" aria-label="Verify security code">${ic('shield')}</button>` : `<button class="tb-btn" data-act="group-info" aria-label="Group info">${ic('group')}</button>`}<button class="tb-btn" data-act="chat-more" aria-label="More">${ic('more-v')}</button></div>`
-    + `<div class="mt-banner"></div><div class="mt-body"></div><form class="composer"><button type="button" class="tb-btn" data-act="chat-attach" aria-label="Share what's playing">${ic('note')}</button><textarea rows="1" maxlength="4000" placeholder="Message" enterkeyhint="send"></textarea><button class="send" type="submit" aria-label="Send">${ic('send')}</button></form>`;
+    + `<div class="mt-banner"></div><div class="mt-body"></div><form class="composer"><button type="button" class="tb-btn" data-act="chat-attach" aria-label="Share what's playing">${ic('note')}</button>${window.AX.ChatMedia ? window.AX.ChatMedia.buttons('tb-btn') : ''}<textarea rows="1" maxlength="4000" placeholder="Message" enterkeyhint="send"></textarea><button class="send" type="submit" aria-label="Send">${ic('send')}</button></form>`;
   const body = pg.el.querySelector('.mt-body'), input = pg.el.querySelector('textarea'), form = pg.el.querySelector('.composer');
+  if (window.AX.ChatMedia) window.AX.ChatMedia.mount(form, cid, pg.el);
   pg.stick = true;
   body.addEventListener('scroll', () => {
     pg.stick = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
@@ -993,6 +1007,7 @@ async function updateThread(pg) {
   pg.el.querySelector('[data-ct="sub"]').textContent = c.kind === 'dm' ? '@' + Chat.peer(c) : count(c.st.members.length, 'member');
   pg.el.querySelector('textarea').placeholder = `Message ${c.kind === 'dm' ? firstName(Chat.title(c)) : Chat.title(c)}`;
   body.innerHTML = msgsHtml(c, th);
+  if (window.AX.ChatMedia) window.AX.ChatMedia.hydrate(body);
   if (pg.stick) body.scrollTop = body.scrollHeight;
   const bits = [];
   for (const m of Chat.others(c)) {
@@ -1002,7 +1017,7 @@ async function updateThread(pg) {
   const problem = await Chat.sendProblem(c);
   if (problem && problem !== 'locked' && !bits.length) bits.push(`<div class="mt-warn">${ic('lock', 'sm')}<span class="flex1">${esc(problem)}</span></div>`);
   if (!pg.el.isConnected) return;
-  pg.el.querySelector('.mt-banner').innerHTML = bits.join('');
+  pg.el.querySelector('.mt-banner').innerHTML = (window.AX.ChatMedia ? window.AX.ChatMedia.banner(c) : '') + bits.join('');
   pg.el.querySelector('.composer').classList.toggle('off', !!problem);
   pg.el.querySelector('textarea').disabled = !!problem;
   if (th.loaded && curPage() === pg && !document.hidden) Chat.markRead(cid);
@@ -1023,12 +1038,15 @@ function chatSheet(c) {
   openSheet(sheetHead(convAvatar(c), Chat.title(c), dm ? '@' + peer : count(c.st.members.length, 'member')) + '<div class="sheet-body">'
     + (dm ? si('profile', 'person', 'View profile') : si('info', 'group', 'Group info') + si('rename', 'edit', 'Rename group') + si('add', 'person-add', 'Add people'))
     + (E2EE.state === 'ready' && dm ? si('safety', 'shield', 'Verify security code') : '')
+    + (window.AX.ChatMedia ? si('ttl', 'timer', c.ttl ? `Disappearing messages: ${window.AX.ChatMedia.ttlName(c.ttl)}` : 'Disappearing messages') + (feat('party') && window.AX.Party ? si('party', 'party', 'Start a listening party here') : '') : '')
     + si('clear', 'trash', 'Clear chat') + (dm ? si('block', 'block', 'Block', { danger: true }) : si('leave', 'logout', 'Leave group', { danger: true })) + '</div>', {
     profile: thenNav(() => openPage('user', { u: peer })),
     info: (b, close) => close().then(() => groupSheet(c.id)),
     rename: (b, close) => close().then(() => renameGroup(c.id)),
     add: (b, close) => close().then(() => addPeople(c.id)),
     safety: (b, close) => close().then(() => safetySheet(peer)),
+    ttl: (b, close) => close().then(() => window.AX.ChatMedia.ttlDialog(c.id)),
+    party: (b, close) => close().then(() => window.AX.ChatMedia.partyInvite(c.id)),
     clear: async (b, close) => { await close(); if (await confirmDlg({ title: 'Clear this chat?', text: 'Messages disappear from your devices. Everyone else keeps theirs.', ok: 'Clear' })) { await Chat.hide(c.id); goBack(); } },
     block: async (b, close) => { await close(); if (await confirmDlg({ title: `Block ${Chat.title(c)}?`, text: "They won't be able to message you or find you.", ok: 'Block', danger: true })) { await friendAct('block', peer); goBack(); } },
     leave: async (b, close) => { await close(); if (await confirmDlg({ title: 'Leave this group?', text: admin ? "You're the admin; whoever joined next becomes admin." : "You won't get its messages anymore.", ok: 'Leave', danger: true })) { await Chat.leave(c.id).catch(e => toast(e.message)); goBack(); } },
@@ -1657,11 +1675,22 @@ function openOverlay(name) {
   overlay[name] = { kind: 'layer', close: () => {
     overlay[name] = null;
     node.classList.remove('open', 'dragging'); node.style.transform = ''; node.setAttribute('aria-hidden', 'true');
-    if (name === 'player') { document.body.classList.remove('fp-open'); setThemeColor('#121212'); }
+    if (name === 'player') { document.body.classList.remove('fp-open'); setThemeColor('#121212'); fpViz(); }
   } };
   H.push(overlay[name]);
+  if (name === 'player') fpViz();
 }
 const closeOverlay = name => { if (overlay[name]) H.closeEntry(overlay[name]); };
+// Visuals painted from the cover and driven by the music (web/app/immersive.js); they run only while Now Playing is open.
+let fpScene = null;
+function fpViz() {
+  const Vis = window.AX.Vis;
+  if (!Vis) return;
+  if (!fpScene) fpScene = Vis.mount(byId('fp-viz'), { art: el.fpArt, len: .2 });
+  const on = Vis.on && !!overlay.player;
+  el.player.classList.toggle('viz', on); byId('fp-viz-btn').classList.toggle('on', Vis.on);
+  if (on) { const t = curTrack(); fpScene.setTrack(t ? coverUrl(t.rel) : ''); fpScene.start(); } else fpScene.stop();
+}
 function themePlayer() {
   const t = curTrack();
   if (!t) return;
@@ -1689,6 +1718,7 @@ function onTrackChange(t) {
   const al = albumOf(t), src = coverUrl(t.rel);
   el.miniArt.src = src; el.miniT.textContent = t.title; el.miniS.textContent = t.artist; el.miniS.classList.remove('remote');
   el.fpArt.src = src; el.fpTitle.firstElementChild.textContent = t.title; el.fpArtist.textContent = t.artist;
+  if (fpScene && fpScene.running) fpScene.setTrack(src);
   el.lyT.textContent = t.title; el.lyS.textContent = t.artist;
   const c = P.ctx;
   const kind = { album: 'Playing from album', artist: 'Playing from artist', playlist: 'Playing from playlist', liked: 'Playing from playlist', mix: 'Playing from mix', search: 'Playing from search', library: 'Playing from', list: 'Playing from' }[c && c.type] || 'Now playing';
@@ -1836,9 +1866,12 @@ const ACT = {
   'more-ctx': b => ctxSheet(b.dataset.k, b.dataset.id),
   'open-player': () => { if (curTrack()) { haptic(); openOverlay('player'); } },
   'close-player': () => closeOverlay('player'),
+  viz: () => { if (!window.AX.Vis) return; haptic(); window.AX.Vis.toggle(); fpViz(); toast(window.AX.Vis.on ? 'Visuals on' : 'Visuals off'); },
   'open-lyrics': () => openOverlay('lyrics'),
   'close-lyrics': () => closeOverlay('lyrics'),
   'open-queue': () => openOverlay('queue'),
+  'party': () => afterLayers(() => openPage('party')),
+  'party-join': b => window.AX.Party && window.AX.Party.join('', b.dataset.id),
   'close-queue': () => closeOverlay('queue'),
   'open-cur-artist': () => { const t = curTrack(); if (t) afterLayers(() => openPage('artist', { id: t.artistId })); },
   'open-ctx': () => {
@@ -1883,6 +1916,8 @@ const ACT = {
   'dl-remove-all': async () => { if (Off.set.size && await confirmDlg({ title: 'Remove all downloads?', text: `${count(Off.set.size, 'song')} will be removed from this device.`, ok: 'Remove', danger: true })) { await Off.removeAll(); toast('All downloads removed'); } },
   'dl-cancel-all': () => { Off.cancel([...Off.queue, ...Off.active.keys()]); toast('Downloads cancelled'); markDirty(['downloads'], true); },
   'set-autoplay': () => { S.autoplay = !S.autoplay; saveS(); markDirty(['settings'], true); },
+  'set-smart': () => { S.smart = S.smart === false; saveS(); window.AX.SM.refresh(); markDirty(['settings'], true); },
+  'set-matchvol': () => { S.matchVol = !S.matchVol; saveS(); window.AX.SM.refresh(); markDirty(['settings'], true); },
   'set-normalize': toggleNormalize,
   'set-dyncolor': () => { S.dynColor = !S.dynColor; saveS(); if (!S.dynColor) $$('.page').forEach(p => p.style.removeProperty('--c')); themePlayer(); refreshAll(); },
   'set-boost': boostSheet,
@@ -2157,6 +2192,8 @@ function handleDeepLink() {
 
 // Plug this view into the engine.
 Object.assign(UI, {
+  party(v) { document.querySelectorAll('[data-act="party"]').forEach(b => b.classList.toggle('on', !!v)); },
+  openParty() { if (!(curPage() && curPage().view === 'party')) afterLayers(() => openPage('party')); },
   track: onTrackChange, queue: refreshQueue, progress: updateProgress, lyrics: renderLyrics, lyricLine,
   remote: showRemote, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, pickPlaylist: playlistPicker, social: onSocial,
 });
@@ -2176,7 +2213,7 @@ boot().catch(err => {
     const el = document.getElementById(id); if (el && !el.hasAttribute(attr)) el.setAttribute(attr, '');
   });
   // A page cached from an older version may not load the shared scripts yet: fetch whatever is missing first.
-  const need = [!window.AX && '/web/app/core.js?v=3.2.0', !(window.AX && window.AX.Social) && '/web/app/social.js?v=1.0.0'].filter(Boolean);
+  const need = [!window.AX && '/web/app/core.js?v=3.2.0', !(window.AX && window.AX.Social) && '/web/app/social.js?v=1.0.0', !(window.AX && window.AX.Party) && '/web/app/party.js?v=1.0.0', !(window.AX && window.AX.Vis) && '/web/app/immersive.js?v=1.0.0', !(window.AX && window.AX.ChatMedia) && '/web/app/chatmedia.js?v=1.0.0', !(window.AX && window.AX.Rewind) && '/web/app/rewind.js?v=1.0.0'].filter(Boolean);
   const next = () => {
     const src = need.shift();
     if (!src) { axdioMobile(); return; }

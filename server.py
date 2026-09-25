@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.5.1"
+AXDIO_VERSION = "2.6.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -912,11 +912,12 @@ def record_play_for(username, rel_path):
             if item.get("rel_path") == rel_path:
                 item["count"] = item.get("count", 1) + 1
                 item["last_played"] = datetime.now().isoformat()
-                save_users(username)
-                return
-        history.insert(0, {"rel_path": rel_path, "count": 1, "last_played": datetime.now().isoformat()})
-        u["history"] = history[:1000]
+                break
+        else:
+            history.insert(0, {"rel_path": rel_path, "count": 1, "last_played": datetime.now().isoformat()})
+            u["history"] = history[:1000]
         save_users(username)
+    log_play(username, rel_path)
 
 @app.route("/admin/setup", methods=["GET", "POST"])
 def admin_setup_page():
@@ -3772,7 +3773,20 @@ ADMIN_SCHEMA = [
         {"key": "chat_group_max", "type": "number", "label": "Largest group chat", "default": 32, "min": 3, "max": 64},
         {"key": "chat_retention_days", "type": "number", "label": "Delete messages after (days)", "default": 0, "min": 0, "max": 3650,
          "help": "0 keeps messages until people delete them. Older messages are removed from the server once an hour."},
+        {"key": "chat_media_images", "type": "bool", "label": "Photos in messages", "default": True,
+         "help": "Encrypted on the sender's device before they're uploaded, like the messages themselves. Location and camera details are removed from photos before sending."},
+        {"key": "chat_media_videos", "type": "bool", "label": "Videos in messages", "default": True},
+        {"key": "chat_media_voice", "type": "bool", "label": "Voice messages", "default": True},
+        {"key": "chat_media_max_mb", "type": "number", "label": "Largest photo, video or voice message (MB)", "default": 100, "min": 1, "max": 4096},
+        {"key": "chat_media_quota_mb", "type": "number", "label": "Space for each listener's attachments (MB)", "default": 2048, "min": 0, "max": 1000000,
+         "help": "How much each listener can have stored in chats at once. Unsending, disappearing messages and deleting old messages free it up. 0 means no limit."},
         {"key": "feature_collab", "type": "bool", "label": "Collaborative playlists", "default": True, "help": "Playlist owners can invite friends to add, remove and reorder songs."},
+        {"key": "feature_party", "type": "bool", "label": "Listening parties", "default": True,
+         "help": "Listeners start a party and everyone who joins (with the code or link, or as a friend) hears the same song at the same moment, with a shared queue, reactions and chat."},
+        {"key": "feature_rewind", "type": "bool", "label": "Rewind", "default": True,
+         "help": "Each listener gets their month and year in music: minutes, top artists and songs, listening habits and a card to share. Only they can see their numbers."},
+        {"key": "feature_smart", "type": "bool", "label": "Smart transitions", "default": True,
+         "help": "Trims silence between songs, times crossfades to where each song really ends and can even out volume. Each song is measured once with ffmpeg the first time it's played or queued (a few seconds of CPU at low priority)."},
         {"key": "feature_subsonic", "type": "bool", "label": "Subsonic apps", "default": True,
          "help": "Lets listeners use Subsonic-compatible apps (Symfonium, Feishin, DSub, Substreamer…) with an app password from their Settings. The API lives at /rest."},
         {"key": "feature_scrobbling", "type": "bool", "label": "Scrobbling", "default": True,
@@ -4046,6 +4060,11 @@ def send_discord_notification(title, message, color=2278750):
 import sqlite3
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{1,31}$")
 DB_FILE = CONFIG_DIR / "axdio.db"
+# Private messages (conversations, message ciphertext and encrypted attachments) have a folder of their own, so they
+# can live on another disk or an encrypted volume and be backed up on their own schedule. Set it with CHAT_DIR.
+CHAT_DIR = Path(os.environ.get("CHAT_DIR") or CONFIG_DIR / "chat")
+CHAT_DB_FILE = CHAT_DIR / "chat.db"
+CHAT_MEDIA_DIR = CHAT_DIR / "media"
 _db_lock = threading.RLock()
 _db_conn = None
 _saved_rows = {}
@@ -4060,14 +4079,66 @@ def db():
         _db_conn.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
         # Social: collaborative playlists, conversations (JSON rows) and end-to-end encrypted messages.
         _db_conn.execute("CREATE TABLE IF NOT EXISTS shared_playlists (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated REAL)")
-        _db_conn.execute("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated REAL)")
-        _db_conn.execute("CREATE TABLE IF NOT EXISTS conv_members (conv TEXT NOT NULL, user TEXT NOT NULL, read_seq INTEGER NOT NULL DEFAULT 0, "
-                         "hidden_seq INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conv, user))")
-        _db_conn.execute("CREATE INDEX IF NOT EXISTS conv_members_user ON conv_members (user)")
-        _db_conn.execute("CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, conv TEXT NOT NULL, "
-                         "sender TEXT NOT NULL, ts REAL NOT NULL, data TEXT NOT NULL)")
-        _db_conn.execute("CREATE INDEX IF NOT EXISTS messages_conv ON messages (conv, seq)")
+        # Rewind's listening log, and Smart transitions' measurements of each song.
+        _db_conn.execute("CREATE TABLE IF NOT EXISTS plays (user TEXT NOT NULL, ts REAL NOT NULL, rel TEXT NOT NULL, secs REAL NOT NULL, "
+                         "n INTEGER NOT NULL DEFAULT 1, b INTEGER NOT NULL DEFAULT 0)")
+        _db_conn.execute("CREATE INDEX IF NOT EXISTS plays_user_ts ON plays (user, ts)")
+        _db_conn.execute("CREATE TABLE IF NOT EXISTS analysis (rel TEXT PRIMARY KEY, mtime REAL NOT NULL, data TEXT NOT NULL)")
+        _chat_attach(_db_conn)
     return _db_conn
+
+def _chat_attach(conn):
+    """Open chat.db in CHAT_DIR on the same connection. Its tables keep their plain names in queries: SQLite looks
+    in the main database first and then in attached ones, and once moved, axdio.db no longer has them."""
+    try:
+        CHAT_DIR.mkdir(parents=True, exist_ok=True)
+        conn.execute("ATTACH DATABASE ? AS chat", (str(CHAT_DB_FILE),))
+    except Exception as ex:
+        raise RuntimeError(f"Can't open the chat folder {CHAT_DIR} ({ex}). Check that it exists and Axdio can write to it.") from ex
+    conn.execute("PRAGMA chat.journal_mode=WAL")
+    conn.execute("PRAGMA chat.synchronous=NORMAL")
+    conn.execute("CREATE TABLE IF NOT EXISTS chat.conversations (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated REAL)")
+    conn.execute("CREATE TABLE IF NOT EXISTS chat.conv_members (conv TEXT NOT NULL, user TEXT NOT NULL, read_seq INTEGER NOT NULL DEFAULT 0, "
+                 "hidden_seq INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conv, user))")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat.conv_members_user ON conv_members (user)")
+    conn.execute("CREATE TABLE IF NOT EXISTS chat.messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, conv TEXT NOT NULL, "
+                 "sender TEXT NOT NULL, ts REAL NOT NULL, data TEXT NOT NULL, expires REAL)")
+    if "expires" not in {r[1] for r in conn.execute("PRAGMA chat.table_info(messages)")}:
+        conn.execute("ALTER TABLE chat.messages ADD COLUMN expires REAL")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat.messages_conv ON messages (conv, seq)")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat.messages_expires ON messages (expires) WHERE expires IS NOT NULL")
+    # Encrypted attachments: the chunks are files under media/, this is what the server knows about them.
+    conn.execute("CREATE TABLE IF NOT EXISTS chat.files (id TEXT PRIMARY KEY, conv TEXT NOT NULL, sender TEXT NOT NULL, ts REAL NOT NULL, "
+                 "kind TEXT NOT NULL, size INTEGER NOT NULL, chunks INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, msg TEXT)")
+    for col in ("conv", "sender", "msg"): conn.execute(f"CREATE INDEX IF NOT EXISTS chat.files_{col} ON files ({col})")
+    _chat_migrate(conn)
+
+def _chat_migrate(conn):
+    """Versions before 2.6.0 kept chats inside axdio.db: copy them into chat.db once, and keep the old tables, renamed."""
+    main = {r[0] for r in conn.execute("SELECT name FROM main.sqlite_master WHERE type = 'table'")}
+    old = [t for t in ("conversations", "conv_members", "messages") if t in main]
+    fresh = not conn.execute("SELECT 1 FROM chat.conversations LIMIT 1").fetchone() and not conn.execute("SELECT 1 FROM chat.messages LIMIT 1").fetchone()
+    if not old:
+        if fresh and any(n.startswith("moved_conversations_") for n in main):
+            print(f"[WARN] {CHAT_DB_FILE} is empty, but chats were moved out of axdio.db before. If you changed CHAT_DIR, "
+                  "copy chat.db and the media folder over from the old chat folder.")
+        return
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    moved = {}
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for t in old:
+            if fresh:
+                cols = ",".join(r[1] for r in conn.execute(f"PRAGMA main.table_info({t})"))
+                moved[t] = conn.execute(f"INSERT INTO chat.{t} ({cols}) SELECT {cols} FROM main.{t}").rowcount
+            conn.execute(f"ALTER TABLE main.{t} RENAME TO moved_{t}_{stamp}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    if any(moved.values()):
+        print(f"[INFO] Moved private messages into {CHAT_DB_FILE} ({moved.get('conversations', 0)} conversations, {moved.get('messages', 0)} messages). "
+              f"The old copies stay in axdio.db as moved_*_{stamp} tables; they're encrypted like the originals.")
 
 def token_hash(token):
     return hashlib.sha256(str(token).encode()).hexdigest()
@@ -4255,6 +4326,9 @@ def user_export():
     for k in ("password", "tokens", "sessions", "session_epoch", "subsonic", "scrobbling", "e2ee", "presence"): rec.pop(k, None)
     rec["collaborative_playlists"] = [{"name": pl["name"], "owner": pl["owner"], "collaborators": pl["collaborators"],
                                        "songs": [t["r"] for t in pl["tracks"]]} for pl in playlists_of(u)]
+    with _db_lock:
+        rec["listening_log"] = [{"time": datetime.fromtimestamp(ts).isoformat(timespec="seconds"), "song": rel, "plays": n, "from_history": bool(b)}
+                                for ts, rel, n, b in db().execute("SELECT ts, rel, n, b FROM plays WHERE user = ? ORDER BY ts", (u,))]
     body = {"format": "axdio-user-export", "exported_at": datetime.now().isoformat(), "server": cfg().get("site_title", "Axdio"),
             "username": u, "account": rec}
     return Response(json.dumps(body, indent=2), mimetype="application/json",
@@ -4338,7 +4412,11 @@ def get_public_settings():
                                   "custom_logo_url", "app_version", "site_tagline", "meta_description", "public_url",
                                   "registration", "require_login", "min_password_length") if c.get(k) is not None}
     out["features"] = {k: bool(c.get("feature_" + k, True)) for k in ("lyrics", "offline", "connect", "sharing", "transcoding", "subsonic", "scrobbling", "avatars", "social")}
-    out["features"].update(chat=chat_on(), collab=collab_on(), discord_login=discord_login_ready(), discord_presence=discord_presence_ready())
+    out["features"].update(chat=chat_on(), collab=collab_on(), discord_login=discord_login_ready(), discord_presence=discord_presence_ready(), party=party_on(),
+                           rewind=rewind_on(), smart=smart_on())
+    if chat_on():
+        out["chat_media"] = {k: bool(c.get(key, True)) for k, key in MEDIA_KINDS.items()}
+        out["chat_media"].update(max=media_max(), chunk=CHAT_CHUNK)
     out["defaults"] = {"crossfade": c.get("default_crossfade", 0), "gapless": c.get("default_gapless", True), "normalize": c.get("default_normalize", False)}
     text = (c.get("announcement_text") or "").strip()
     if text:
@@ -4399,6 +4477,10 @@ def admin_v2_gates():
         if p.startswith("/api/chat/") and not c.get("feature_chat", True): return jsonify({"error": "Messages are turned off on this server.", "disabled": True}), 403
         if p.startswith("/api/social/playlists") and not c.get("feature_collab", True):
             return jsonify({"error": "Collaborative playlists are turned off on this server.", "disabled": True}), 403
+    if p.startswith("/api/party") and not c.get("feature_party", True):
+        return jsonify({"error": "Listening parties are turned off on this server.", "disabled": True}), 403
+    if p.startswith("/api/rewind") and not c.get("feature_rewind", True):
+        return jsonify({"error": "Rewind is turned off on this server.", "disabled": True}), 403
     if not c.get("feature_connect", True) and p.startswith("/api/devices/"):
         return jsonify({"error": "Connect is turned off on this server.", "devices": []}), 403
     if not c.get("downloader_enabled", True) and p == "/api/admin/download" and request.method == "POST":
@@ -4424,7 +4506,7 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Frame-Options": "SAMEORIGIN",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), payment=()",   # the microphone is for voice messages
     "Content-Security-Policy": "frame-ancestors 'self'; base-uri 'self'; object-src 'none'; form-action 'self'",
 }
 _GZIP_TYPES = ("text/", "application/json", "application/javascript", "application/manifest+json", "image/svg+xml")
@@ -6580,7 +6662,8 @@ def social_activity():
         for f in social_rec(users_data[u])["friends"]:
             rec = users_data.get(f)
             if rec and not rec.get("disabled"):
-                out.append(dict(user_card(f, rec), now=listening_now(f, rec), sharing=social_rec(rec)["share_activity"]))
+                out.append(dict(user_card(f, rec), now=listening_now(f, rec), sharing=social_rec(rec)["share_activity"],
+                                party=party_badge(f, u) if party_on() else None))
     out.sort(key=lambda x: (not (x["now"] and x["now"]["live"]), -(x["now"]["t"] if x["now"] else 0), x["display_name"].lower()))
     return jsonify({"friends": out})
 
@@ -6606,9 +6689,46 @@ def social_profile(username):
                     if isinstance(meta, dict):
                         counts[extract_primary_artist(meta.get("artist"), meta.get("album_artist"))] += h.get("count", 1)
             out["top_artists"] = [a for a, _ in counts.most_common(10) if a != "Unknown Artist"]
+            if state == "friend" and mine["share_activity"]: out["blend"] = blend(users_data[u], rec)
     if collab_on():
         out["playlists"] = [pl_summary(pl) for pl in playlists_of(u) if username in pl_members(pl)] if state != "self" else []
     return jsonify(out)
+
+# --- Blend: how two friends' tastes meet ---
+import itertools, math
+# Built only from what friends already share with each other (listening activity and likes), and only when both share it.
+def _taste(rec):
+    plays = Counter()
+    for h in (rec.get("history") or [])[-1500:]:
+        if h.get("rel_path"): plays[h["rel_path"]] += max(1, int(h.get("count") or 1))
+    for rel in (rec.get("liked_songs") or [])[-3000:]:
+        if isinstance(rel, str): plays[rel] += 3
+    artists = Counter()
+    with library_cache_lock:
+        for rel in list(plays):
+            meta = library_cache_data.get(rel)
+            if not isinstance(meta, dict): del plays[rel]; continue
+            a = extract_primary_artist(meta.get("artist"), meta.get("album_artist"))
+            if a != "Unknown Artist": artists[a] += plays[rel]
+    return plays, artists
+
+def blend(me_rec, them_rec, size=50):
+    a_plays, a_art = _taste(me_rec)
+    b_plays, b_art = _taste(them_rec)
+    if len(a_plays) < 3 or len(b_plays) < 3: return None
+    dot = sum(a_art[x] * b_art[x] for x in a_art.keys() & b_art.keys())
+    norm = math.sqrt(sum(v * v for v in a_art.values()) * sum(v * v for v in b_art.values())) or 1
+    match = round(100 * (dot / norm) ** 0.6)
+    ta, tb = sum(a_art.values()) or 1, sum(b_art.values()) or 1
+    common = sorted(a_art.keys() & b_art.keys(), key=lambda x: -min(a_art[x] / ta, b_art[x] / tb))[:5]
+    both = sorted(a_plays.keys() & b_plays.keys(), key=lambda r: -(a_plays[r] + b_plays[r]))
+    mine = [r for r, _ in a_plays.most_common(200) if r not in b_plays]
+    theirs = [r for r, _ in b_plays.most_common(200) if r not in a_plays]
+    rels, seen = [], set()
+    for group in (both[:size // 2], [x for pair in itertools.zip_longest(theirs, mine) for x in pair if x]):
+        for r in group:
+            if r not in seen and len(rels) < size: seen.add(r); rels.append(r)
+    return {"match": max(0, min(100, match)), "common": common, "rels": rels, "shared_songs": len(both)}
 
 @app.route("/api/social/pulse")
 def social_pulse():
@@ -6894,8 +7014,10 @@ def chat_unread(u):
                            "WHERE msg.seq > m.read_seq AND msg.sender != ? AND msg.seq > m.hidden_seq AND msg.data NOT LIKE '%\"deleted\": true%'", (u, u)).fetchone()
     return row[0] if row else 0
 
-def _msg_out(seq, sender, ts, data):
-    return dict(json.loads(data), seq=seq, sender=sender, ts=ts)
+def _msg_out(seq, sender, ts, data, expires=None):
+    out = dict(json.loads(data), seq=seq, sender=sender, ts=ts)
+    if expires: out["expires"] = expires
+    return out
 
 def conv_views(u, cids=None):
     """The listener's conversations with their people, keys, read markers, newest message and unread count."""
@@ -7054,12 +7176,13 @@ def chat_messages(cid):
         limit = max(1, min(100, request.args.get("limit", 50, type=int)))
         with _db_lock:
             hidden = (db().execute("SELECT hidden_seq FROM conv_members WHERE conv = ? AND user = ?", (cid, u)).fetchone() or (0,))[0]
+            live = time.time()
             if after is not None:
-                rows = db().execute("SELECT seq, sender, ts, data FROM messages WHERE conv = ? AND seq > ? AND seq > ? ORDER BY seq LIMIT ?",
-                                    (cid, after, hidden, limit)).fetchall()
+                rows = db().execute("SELECT seq, sender, ts, data, expires FROM messages WHERE conv = ? AND seq > ? AND seq > ? AND (expires IS NULL OR expires > ?) "
+                                    "ORDER BY seq LIMIT ?", (cid, after, hidden, live, limit)).fetchall()
             else:
-                rows = db().execute("SELECT seq, sender, ts, data FROM messages WHERE conv = ? AND seq < ? AND seq > ? ORDER BY seq DESC LIMIT ?",
-                                    (cid, before or 2 ** 62, hidden, limit)).fetchall()[::-1]
+                rows = db().execute("SELECT seq, sender, ts, data, expires FROM messages WHERE conv = ? AND seq < ? AND seq > ? AND (expires IS NULL OR expires > ?) "
+                                    "ORDER BY seq DESC LIMIT ?", (cid, before or 2 ** 62, hidden, live, limit)).fetchall()[::-1]
         return jsonify({"messages": [_msg_out(*r) for r in rows], "more": after is None and len(rows) == limit})
     d = _json()
     latest = c["keys"][-1]["v"] if c["keys"] else 0
@@ -7072,18 +7195,38 @@ def chat_messages(cid):
         return jsonify({"error": "This conversation's key changed. Try again.", "stale": True, "conv": conv_views(u, {cid})[0]}), 409
     if not (MSG_ID_RE.match(str(d.get("id") or "")) and _sealed(d, 24000) and _b64(d.get("sig"), 40, 200)):
         return jsonify({"error": "That message couldn't be sent."}), 400
+    files = d.get("files") or []
+    if not (isinstance(files, list) and len(files) <= 10 and all(isinstance(f, str) and FILE_ID_RE.match(f) for f in files)):
+        return jsonify({"error": "That message couldn't be sent."}), 400
     if not rate_ok(("msg", u), 120, 60): return jsonify({"error": "You're sending messages too fast. Wait a moment."}), 429
     ts = time.time()
+    ttl = int(c.get("ttl") or 0)
+    expires = ts + ttl if ttl else None
     data = json.dumps({"id": d["id"], "v": d["v"], "iv": d["iv"], "ct": d["ct"], "sig": d["sig"]})
     with _db_lock:
+        conn = db()
+        conn.execute("BEGIN")
         try:
-            cur = db().execute("INSERT INTO messages (id, conv, sender, ts, data) VALUES (?, ?, ?, ?, ?)", (d["id"], cid, u, ts, data))
+            if files:
+                marks = ",".join("?" * len(files))
+                ok = conn.execute(f"SELECT COUNT(*) FROM files WHERE id IN ({marks}) AND conv = ? AND sender = ? AND ready = 1 AND msg IS NULL",
+                                  files + [cid, u]).fetchone()[0]
+                if ok != len(set(files)):
+                    conn.execute("ROLLBACK")
+                    return jsonify({"error": "An attachment is missing. Try sending it again."}), 400
+                conn.execute(f"UPDATE files SET msg = ? WHERE id IN ({marks})", [d["id"]] + files)
+            cur = conn.execute("INSERT INTO messages (id, conv, sender, ts, data, expires) VALUES (?, ?, ?, ?, ?, ?)", (d["id"], cid, u, ts, data, expires))
+            seq = cur.lastrowid
+            conn.execute("UPDATE conv_members SET read_seq = ? WHERE conv = ? AND user = ?", (seq, cid, u))
+            conn.execute("COMMIT")
         except sqlite3.IntegrityError:
+            conn.execute("ROLLBACK")
             return jsonify({"error": "That message was already sent."}), 409
-        seq = cur.lastrowid
-        db().execute("UPDATE conv_members SET read_seq = ? WHERE conv = ? AND user = ?", (seq, cid, u))
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     bump(c["members"], "c")
-    return jsonify({"message": _msg_out(seq, u, ts, data)})
+    return jsonify({"message": _msg_out(seq, u, ts, data, expires)})
 
 @app.route("/api/chat/<cid>/messages/<mid>", methods=["DELETE"])
 def chat_message_delete(cid, mid):
@@ -7094,8 +7237,155 @@ def chat_message_delete(cid, mid):
         if not row: return jsonify({"error": "That message isn't there anymore."}), 404
         if row[0] != u: return jsonify({"error": "You can only unsend your own messages."}), 403
         db().execute("UPDATE messages SET data = ? WHERE conv = ? AND id = ?", (json.dumps({"id": mid, "deleted": True}), cid, mid))
+    media_drop("msg = ?", (mid,))
     bump(c["members"], "c")
     return jsonify({"ok": True})
+
+# --- Encrypted attachments ---
+# Photos, videos and voice messages are encrypted on the sender's device with a key of their own, which travels inside
+# the (end-to-end encrypted) message. The server gets numbered chunks of ciphertext, stores each as a file under
+# CHAT_DIR/media, and hands them back to the conversation's members. It never sees the key, the file name or the type
+# beyond "image", "video" or "voice", which it needs for the admin's limits.
+CHAT_CHUNK = 512 * 1024           # plaintext bytes per chunk: small enough for default proxy body limits (nginx: 1 MB)
+CHUNK_TAG = 16                    # AES-GCM adds a 16-byte tag to each chunk
+FILE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{22}$")
+MEDIA_KINDS = {"image": "chat_media_images", "video": "chat_media_videos", "voice": "chat_media_voice"}
+MB = 1024 * 1024
+
+def media_max(): return max(1, int(cfg().get("chat_media_max_mb") or 100)) * MB
+
+def media_dir(fid): return CHAT_MEDIA_DIR / fid[:2] / fid
+
+def media_drop(where, args):
+    """Forget attachments matching a WHERE clause on the files table, and remove their chunks."""
+    with _db_lock:
+        ids = [r[0] for r in db().execute(f"SELECT id FROM files WHERE {where}", args)]
+        if ids: db().executemany("DELETE FROM files WHERE id = ?", [(i,) for i in ids])
+    for fid in ids: shutil.rmtree(media_dir(fid), ignore_errors=True)
+    return len(ids)
+
+def _file_or_404(cid, fid):
+    if not FILE_ID_RE.match(fid or ""): abort(404)
+    with _db_lock:
+        row = db().execute("SELECT sender, size, chunks, ready FROM files WHERE id = ? AND conv = ?", (fid, cid)).fetchone()
+    if not row: abort(Response(json.dumps({"error": "That attachment isn't available anymore."}), 404, mimetype="application/json"))
+    return row
+
+def chunk_len(size, chunks, n):
+    return (CHAT_CHUNK if n < chunks - 1 else size - CHAT_CHUNK * (chunks - 1)) + CHUNK_TAG
+
+@app.route("/api/chat/<cid>/files", methods=["POST"])
+def chat_file_create(cid):
+    u = _me()
+    c = _conv_or_404(cid, u)
+    d = _json()
+    kind, size = d.get("kind"), d.get("size")
+    if kind not in MEDIA_KINDS: return jsonify({"error": "That kind of file can't be sent."}), 400
+    if not cfg().get(MEDIA_KINDS[kind], True):
+        return jsonify({"error": {"image": "Photos", "video": "Videos", "voice": "Voice messages"}[kind] + " are turned off on this server."}), 403
+    if not isinstance(size, int) or size < 1: return jsonify({"error": "Bad size."}), 400
+    if size > media_max(): return jsonify({"error": f"Attachments can be up to {media_max() // MB} MB on this server."}), 413
+    if c["kind"] == "dm":
+        other = next(m for m in c["members"] if m != u)
+        with users_lock:
+            if blocked_either(u, other): return jsonify({"error": "You can't message this person."}), 403
+    quota = int(cfg().get("chat_media_quota_mb") or 0) * MB
+    with _db_lock: used = db().execute("SELECT COALESCE(SUM(size), 0) FROM files WHERE sender = ?", (u,)).fetchone()[0]
+    if quota and used + size > quota:
+        return jsonify({"error": f"You've used your {quota // MB} MB for attachments. Unsend some older photos or videos to make room.", "quota": True}), 413
+    if not rate_ok(("file", u), 120, 3600): return jsonify({"error": "You've sent a lot of attachments. Try again later."}), 429
+    fid, chunks = secrets.token_urlsafe(16), -(-size // CHAT_CHUNK)
+    media_dir(fid).mkdir(parents=True, exist_ok=True)
+    with _db_lock:
+        db().execute("INSERT INTO files (id, conv, sender, ts, kind, size, chunks) VALUES (?, ?, ?, ?, ?, ?, ?)", (fid, cid, u, time.time(), kind, size, chunks))
+    return jsonify({"id": fid, "chunk": CHAT_CHUNK, "chunks": chunks})
+
+@app.route("/api/chat/<cid>/files/<fid>/<int:n>", methods=["GET", "PUT"])
+def chat_file_chunk(cid, fid, n):
+    u = _me()
+    _conv_or_404(cid, u)
+    sender, size, chunks, ready = _file_or_404(cid, fid)
+    if not 0 <= n < chunks: abort(404)
+    path = media_dir(fid) / f"{n}.bin"
+    if request.method == "GET":
+        if not ready or not path.is_file(): abort(404)
+        r = send_file(str(path), mimetype="application/octet-stream", conditional=True)
+        r.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+        return r
+    if sender != u or ready: return jsonify({"error": "That attachment can't be changed."}), 403
+    want = chunk_len(size, chunks, n)
+    if request.content_length not in (None, want): return jsonify({"error": "Wrong chunk size."}), 400
+    tmp, got = path.with_suffix(f".{secrets.token_hex(4)}.part"), 0
+    try:
+        with open(tmp, "wb") as f:
+            while True:
+                piece = request.stream.read(min(65536, want + 1 - got))
+                if not piece: break
+                got += len(piece)
+                if got > want: break
+                f.write(piece)
+        if got != want:
+            tmp.unlink(missing_ok=True)
+            return jsonify({"error": "Wrong chunk size."}), 400
+        os.replace(tmp, path)
+    except OSError as ex:
+        tmp.unlink(missing_ok=True)
+        print(f"[ERROR] Couldn't save an attachment chunk in {CHAT_MEDIA_DIR}: {ex}")
+        return jsonify({"error": "The server couldn't store that attachment."}), 507
+    return jsonify({"ok": True})
+
+@app.route("/api/chat/<cid>/files/<fid>/done", methods=["POST"])
+def chat_file_done(cid, fid):
+    u = _me()
+    _conv_or_404(cid, u)
+    sender, size, chunks, ready = _file_or_404(cid, fid)
+    if sender != u: abort(403)
+    d = media_dir(fid)
+    missing = [n for n in range(chunks) if not (d / f"{n}.bin").is_file() or (d / f"{n}.bin").stat().st_size != chunk_len(size, chunks, n)]
+    if missing: return jsonify({"error": "Some of the attachment didn't arrive.", "missing": missing[:100]}), 409
+    with _db_lock: db().execute("UPDATE files SET ready = 1 WHERE id = ?", (fid,))
+    return jsonify({"ok": True})
+
+# --- Disappearing messages ---
+TTL_CHOICES = (0, 3600, 86400, 7 * 86400, 28 * 86400)
+
+@app.route("/api/chat/<cid>/ttl", methods=["POST"])
+def chat_ttl(cid):
+    """Messages sent after this disappear, for everyone, once they're this old. Anyone in the chat can change it."""
+    u = _me()
+    ttl = _json().get("ttl")
+    if ttl not in TTL_CHOICES: return jsonify({"error": "Pick one of the offered times."}), 400
+    with SOCIAL_LOCK:
+        c = _conv_or_404(cid, u)
+        if int(c.get("ttl") or 0) != ttl:
+            c["ttl"] = ttl
+            c["ttl_log"] = (c.get("ttl_log") or [])[-19:] + [{"ttl": ttl, "by": u, "ts": time.time()}]
+            conv_save(c)
+            bump(c["members"], "c")
+    return jsonify(conv_views(u, {cid})[0])
+
+def chat_expiry():
+    """Remove disappearing messages (and their attachments) as they expire, and uploads nobody finished."""
+    while True:
+        time.sleep(30)
+        try:
+            now = time.time()
+            with _db_lock:
+                gone = db().execute("SELECT id, conv FROM messages WHERE expires IS NOT NULL AND expires <= ?", (now,)).fetchall()
+                if gone: db().execute("DELETE FROM messages WHERE expires IS NOT NULL AND expires <= ?", (now,))
+            for mid, _ in gone: media_drop("msg = ?", (mid,))
+            if gone:
+                convs = {cv for _, cv in gone}
+                for cv in convs:
+                    c = conv_load(cv)
+                    if c: bump(c["members"], "c")
+            media_drop("msg IS NULL AND ts < ?", (now - 86400,))
+        except Exception as ex:
+            print(f"[ERROR] Disappearing messages cleanup failed: {ex}")
+
+def media_stats():
+    with _db_lock: n, size = db().execute("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files WHERE ready = 1").fetchone()
+    return {"media_files": n, "media_bytes": size, "chat_dir": str(CHAT_DIR)}
 
 @app.route("/api/chat/<cid>/read", methods=["POST"])
 def chat_read(cid):
@@ -7151,6 +7441,7 @@ def social_forget(u):
             touched.update(c["members"])
     for k in [k for k, v in _links.items() if v["user"] == u]: _links.pop(k, None)
     _presence.pop(u, None)
+    with _db_lock: db().execute("DELETE FROM plays WHERE user = ?", (u,))
     bump(touched, "f", "c", "p")
 
 def social_janitor():
@@ -7162,6 +7453,7 @@ def social_janitor():
             if days > 0:
                 with _db_lock: n = db().execute("DELETE FROM messages WHERE ts < ?", (time.time() - days * 86400,)).rowcount
                 if n: print(f"[INFO] Deleted {n} messages older than {days} days")
+                media_drop("ts < ?", (time.time() - days * 86400,))
         except Exception as ex:
             print(f"[ERROR] Social cleanup failed: {ex}")
 
@@ -7174,7 +7466,8 @@ def social_stats():
         convs = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         msgs = conn.execute("SELECT COUNT(*), COALESCE(SUM(LENGTH(data)), 0) FROM messages").fetchone()
         pls = conn.execute("SELECT COUNT(*) FROM shared_playlists").fetchone()[0]
-    return {"friendships": friendships, "messaging": keys, "conversations": convs, "messages": msgs[0], "message_bytes": msgs[1], "collab_playlists": pls}
+    return dict({"friendships": friendships, "messaging": keys, "conversations": convs, "messages": msgs[0], "message_bytes": msgs[1], "collab_playlists": pls},
+                **media_stats())
 
 # ============================================================
 # LIBRARY SHARING BETWEEN SERVERS
@@ -9030,6 +9323,549 @@ else:
     restore(why)
 '''
 
+# ============================================================
+# LISTENING PARTIES
+# ============================================================
+# People on this server listen together, in sync: one shared queue, everyone hearing the same moment of the same
+# song. The server keeps the party's clock (what's playing, from where, since when) and advances the queue when a song
+# ends; the apps play along and correct their drift continuously. Parties live in memory and end when everyone leaves.
+# Updates reach members by long polling: a request waits until something changes, so a skip or a reaction arrives
+# at once. Party chat is plain text (not end-to-end encrypted) and disappears with the party.
+PARTY_REACTIONS = ["🔥", "❤️", "😂", "🎉", "👏", "🙌", "😭", "🤯", "💃", "🎶"]
+PARTY_MAX_MEMBERS = 50
+_parties = {}             # id -> party
+_party_by_code = {}       # join code -> id
+_party_of = {}            # username -> party id
+_party_cv = threading.Condition(threading.RLock())
+
+def party_on(): return bool(cfg().get("feature_party", True))
+
+
+def _party_code():
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"            # no 0/O, 1/I
+    while True:
+        c = "".join(secrets.choice(alphabet) for _ in range(6))
+        if c not in _party_by_code: return c
+
+
+def _party_dur(rel):
+    e = library_entry(rel) if rel else None
+    return float((e or {}).get("duration") or 0)
+
+
+def _party_pos(p, t=None):
+    st = p["state"]
+    if not st["rel"]: return 0.0
+    pos = st["pos"] + ((t or time.time()) - st["at"] if st["playing"] else 0)
+    return max(0.0, min(pos, st["dur"])) if st["dur"] else max(0.0, pos)
+
+
+def _party_changed(p):
+    p["rev"] += 1
+    _party_cv.notify_all()
+
+
+def _party_event(p, kind, user=None, **kw):
+    p["feed"].append(dict(kw, id=uuid.uuid4().hex[:10], kind=kind, user=user, at=time.time()))
+
+
+def _party_start(p, item):
+    """Play a queue item now (from its start)."""
+    st = p["state"]
+    if st["rel"]: p["played"].append({"id": st["item"], "r": st["rel"], "by": st.get("by")})
+    del p["played"][:-50]
+    p["state"] = {"rel": item["r"], "item": item["id"], "by": item.get("by"), "playing": True, "pos": 0.0, "at": time.time(), "dur": _party_dur(item["r"])}
+
+
+def _party_next(p, auto=False):
+    if p["queue"]:
+        _party_start(p, p["queue"].pop(0))
+    else:
+        st = p["state"]
+        st.update(pos=_party_pos(p), at=time.time(), playing=False)
+        if auto: _party_event(p, "system", text="That was the last song in the queue. Add more to keep the party going.")
+
+
+def _party_tick(p):
+    """Advance when the song has played to its end (the server knows every song's length)."""
+    st = p["state"]
+    if st["playing"] and st["dur"] and time.time() - st["at"] + st["pos"] >= st["dur"] - 0.15:
+        _party_next(p, auto=True)
+        _party_changed(p)
+    now = time.time()
+    gone = [u for u, m in p["members"].items() if now - m["seen"] > 75]     # closed the app without leaving
+    for u in gone: _party_leave(p, u, quiet=True)
+
+
+def _party_leave(p, u, quiet=False):
+    if u not in p["members"]: return
+    del p["members"][u]
+    _party_of.pop(u, None)
+    if not p["members"]:
+        _party_end(p)
+        return
+    if p["host"] == u:
+        p["host"] = min(p["members"], key=lambda x: p["members"][x]["joined"])
+        _party_event(p, "system", text=f"{_party_name(p['host'])} is the host now.")
+    if not quiet: _party_event(p, "leave", u)
+    _party_changed(p)
+
+
+def _party_end(p):
+    p["ended"] = True
+    for u in list(p["members"]): _party_of.pop(u, None)
+    _parties.pop(p["id"], None)
+    _party_by_code.pop(p["code"], None)
+    _party_changed(p)
+
+
+def _party_name(u):
+    rec = users_data.get(u) or {}
+    return rec.get("display_name") or u
+
+
+def party_view(p, me):
+    host = p["host"] == me
+    return {"id": p["id"], "code": p["code"], "name": p["name"], "host": p["host"], "me": me, "rev": p["rev"], "now": time.time(),
+            "ended": p.get("ended", False), "visible": p["visible"],
+            "perm": dict(p["perm"]), "can_control": host or p["perm"]["control"], "can_add": host or p["perm"]["add"], "is_host": host,
+            "members": [dict(user_card(u), host=u == p["host"], joined=m["joined"]) for u, m in sorted(p["members"].items(), key=lambda x: x[1]["joined"])],
+            "state": dict(p["state"], pos=_party_pos(p), at=time.time()),
+            "queue": p["queue"][:200], "queue_len": len(p["queue"]), "feed": list(p["feed"]), "reactions": PARTY_REACTIONS}
+
+
+def _party_for(pid, u):
+    p = _parties.get(pid)
+    if not p or u not in p["members"]: abort(Response(json.dumps({"error": "You're not in this party (it may have ended).", "gone": True}), 410, mimetype="application/json"))
+    p["members"][u]["seen"] = time.time()
+    return p
+
+
+def _party_join(p, u):
+    old = _party_of.get(u)
+    if old and old != p["id"] and old in _parties: _party_leave(_parties[old], u)
+    if u not in p["members"]:
+        if len(p["members"]) >= PARTY_MAX_MEMBERS: raise ValueError("This party is full.")
+        p["members"][u] = {"joined": time.time(), "seen": time.time()}
+        _party_event(p, "join", u)
+    _party_of[u] = p["id"]
+    _party_changed(p)
+
+
+def _party_visible_to(p, u):
+    """Friends of anyone in a visible party can see it and join."""
+    if not p["visible"] or not social_on(): return False
+    mine = set(social_rec(users_data.get(u) or {}).get("friends") or [])
+    return bool(mine & set(p["members"]))
+
+
+def party_badge(friend, viewer):
+    """The party a friend is in, if the viewer may join it (for Friend Activity)."""
+    p = _parties.get(_party_of.get(friend) or "")
+    if not p or not _party_visible_to(p, viewer): return None
+    return {"id": p["id"], "code": p["code"], "name": p["name"], "members": len(p["members"])}
+
+
+def _party_rels(values):
+    out = []
+    for r in values if isinstance(values, list) else []:
+        r = str(r or "")
+        if r and library_entry(r) is not None: out.append(r)
+    return out[:500]
+
+
+@app.route("/api/party", methods=["GET", "POST"])
+def party_home():
+    u = _me()
+    with _party_cv:
+        if request.method == "POST":
+            d = _json()
+            name = re.sub(r"\s+", " ", str(d.get("name") or "")).strip()[:60] or f"{_party_name(u)}'s party"
+            pid = "pty_" + secrets.token_urlsafe(9)
+            p = {"id": pid, "code": _party_code(), "name": name, "host": u, "created": time.time(), "members": {}, "rev": 0,
+                 "perm": {"add": True, "control": False}, "visible": True, "queue": [], "played": [],
+                 "feed": collections.deque(maxlen=80), "ended": False,
+                 "state": {"rel": None, "item": None, "by": None, "playing": False, "pos": 0.0, "at": time.time(), "dur": 0.0}}
+            _parties[pid] = p
+            _party_by_code[p["code"]] = pid
+            _party_join(p, u)
+            # Start with what the host is playing, if anything.
+            rels = _party_rels(d.get("queue") or [])
+            if rels:
+                p["queue"] = [{"id": uuid.uuid4().hex[:8], "r": r, "by": u} for r in rels]
+                _party_start(p, p["queue"].pop(0))
+                if d.get("pos"): p["state"]["pos"] = max(0.0, float(d["pos"]))
+            activity("party", f"Started a listening party ({name})", u)
+            return jsonify(party_view(p, u))
+        mine = _parties.get(_party_of.get(u) or "")
+        live = [{"id": p["id"], "code": p["code"], "name": p["name"], "host": user_card(p["host"]), "members": len(p["members"]),
+                 "now": {"rel": p["state"]["rel"], "playing": p["state"]["playing"]}}
+                for p in _parties.values() if p is not mine and _party_visible_to(p, u)]
+        return jsonify({"party": party_view(mine, u) if mine else None, "live": live, "reactions": PARTY_REACTIONS})
+
+
+@app.route("/api/party/join", methods=["POST"])
+def party_join():
+    u = _me()
+    d = _json()
+    code = re.sub(r"[^A-Z0-9]", "", str(d.get("code") or "").upper())
+    with _party_cv:
+        p = _parties.get(_party_by_code.get(code, "")) or _parties.get(str(d.get("id") or ""))
+        if p and d.get("id") and not code and not _party_visible_to(p, u) and u not in p["members"]: p = None
+        if not p: return jsonify({"error": "There's no live party with that code."}), 404
+        try: _party_join(p, u)
+        except ValueError as ex: return jsonify({"error": str(ex)}), 409
+        return jsonify(party_view(p, u))
+
+
+@app.route("/api/party/<pid>/wait")
+def party_wait(pid):
+    """Long poll: answers as soon as the party changes (or after 25 s with no change)."""
+    u = _me()
+    since = request.args.get("rev", type=int, default=-1)
+    deadline = time.time() + 25
+    with _party_cv:
+        p = _party_for(pid, u)
+        _party_tick(p)
+        while p["rev"] <= since and not p["ended"] and time.time() < deadline:
+            st = p["state"]
+            wake = deadline - time.time()
+            if st["playing"] and st["dur"]: wake = min(wake, max(0.05, st["dur"] - _party_pos(p)))
+            _party_cv.wait(timeout=max(0.05, min(wake, 20)))
+            if u not in p["members"]: break
+            p["members"][u]["seen"] = time.time()
+            _party_tick(p)
+        if p["ended"] or u not in p["members"]:
+            return jsonify({"error": "The party has ended.", "gone": True}), 410
+        return jsonify(party_view(p, u))
+
+
+@app.route("/api/party/<pid>", methods=["POST"])
+def party_op(pid):
+    u = _me()
+    d = _json()
+    op = str(d.get("op") or "")
+    with _party_cv:
+        p = _party_for(pid, u)
+        host = p["host"] == u
+        control, add = host or p["perm"]["control"], host or p["perm"]["add"]
+        st = p["state"]
+        need = {"play": "control", "pause": "control", "resume": "control", "seek": "control", "next": "control", "prev": "control",
+                "jump": "control", "add": "add", "remove": "add", "move": "control", "settings": "host", "kick": "host", "end": "host"}.get(op)
+        if need == "host" and not host: return jsonify({"error": "Only the host can do that."}), 403
+        if need == "control" and not control: return jsonify({"error": "The host controls playback in this party."}), 403
+        if need == "add" and not add: return jsonify({"error": "The host is choosing the songs in this party."}), 403
+        if op == "play":                                       # play a song now, for everyone
+            rels = _party_rels(d.get("rels") or [d.get("rel")])
+            if not rels: return jsonify({"error": "That song isn't in the library."}), 400
+            items = [{"id": uuid.uuid4().hex[:8], "r": r, "by": u} for r in rels]
+            p["queue"][0:0] = items[1:]
+            _party_start(p, items[0])
+            _party_event(p, "play", u, rel=rels[0])
+        elif op == "pause" and st["playing"]:
+            st.update(pos=_party_pos(p), at=time.time(), playing=False)
+        elif op == "resume" and st["rel"] and not st["playing"]:
+            if st["dur"] and st["pos"] >= st["dur"] - 0.5: _party_next(p)
+            else: st.update(at=time.time(), playing=True)
+        elif op == "seek" and st["rel"]:
+            st.update(pos=max(0.0, min(float(d.get("pos") or 0), st["dur"] or 1e9)), at=time.time())
+        elif op == "next":
+            _party_next(p)
+        elif op == "prev":
+            if _party_pos(p) > 3 or not p["played"]: st.update(pos=0.0, at=time.time())
+            else:
+                back = p["played"].pop()
+                if st["rel"]: p["queue"].insert(0, {"id": st["item"], "r": st["rel"], "by": st.get("by")})
+                st.update(rel=back["r"], item=back["id"], by=back.get("by"), pos=0.0, at=time.time(), playing=True, dur=_party_dur(back["r"]))
+        elif op == "jump":
+            i = next((i for i, it in enumerate(p["queue"]) if it["id"] == d.get("id")), None)
+            if i is None: return jsonify({"error": "That song isn't in the queue any more."}), 404
+            item = p["queue"].pop(i)
+            _party_start(p, item)
+        elif op == "add":
+            rels = _party_rels(d.get("rels") or [])
+            if not rels: return jsonify({"error": "Nothing to add."}), 400
+            if len(p["queue"]) + len(rels) > 1000: return jsonify({"error": "The queue is full."}), 400
+            items = [{"id": uuid.uuid4().hex[:8], "r": r, "by": u} for r in rels]
+            if d.get("next"): p["queue"][0:0] = items
+            else: p["queue"].extend(items)
+            _party_event(p, "add", u, rel=rels[0], count=len(rels))
+            if not st["rel"] or (not st["playing"] and st["dur"] and _party_pos(p) >= st["dur"] - 0.5): _party_next(p)
+        elif op == "remove":
+            it = next((it for it in p["queue"] if it["id"] == d.get("id")), None)
+            if not it: return jsonify({"error": "That song isn't in the queue any more."}), 404
+            if not control and it.get("by") != u: return jsonify({"error": "You can remove only the songs you added."}), 403
+            p["queue"].remove(it)
+        elif op == "move":
+            i = next((i for i, it in enumerate(p["queue"]) if it["id"] == d.get("id")), None)
+            if i is None: return jsonify({"error": "That song isn't in the queue any more."}), 404
+            item = p["queue"].pop(i)
+            p["queue"].insert(max(0, min(int(d.get("to") or 0), len(p["queue"]))), item)
+        elif op == "react":
+            emoji = str(d.get("emoji") or "")
+            if emoji not in PARTY_REACTIONS: return jsonify({"error": "Pick one of the party reactions."}), 400
+            if not rate_ok(("party-react", u), 8, 5): return jsonify({"error": "Slow down a little."}), 429
+            _party_event(p, "react", u, emoji=emoji)
+        elif op == "chat":
+            text = re.sub(r"\s+", " ", str(d.get("text") or "")).strip()[:300]
+            if not text: return jsonify({"error": "Say something first."}), 400
+            if not rate_ok(("party-chat", u), 6, 10): return jsonify({"error": "Slow down a little."}), 429
+            _party_event(p, "chat", u, text=text)
+        elif op == "settings":
+            for k in ("add", "control"):
+                if k in d: p["perm"][k] = bool(d[k])
+            if "visible" in d: p["visible"] = bool(d["visible"])
+            if d.get("name"): p["name"] = re.sub(r"\s+", " ", str(d["name"])).strip()[:60] or p["name"]
+        elif op == "kick":
+            who = str(d.get("user") or "")
+            if who == u or who not in p["members"]: return jsonify({"error": "They're not in the party."}), 400
+            _party_leave(p, who, quiet=True)
+            _party_event(p, "system", text=f"{_party_name(who)} was removed from the party.")
+        elif op == "host":
+            who = str(d.get("user") or "")
+            if not host or who not in p["members"]: return jsonify({"error": "Only the host can hand over."}), 403
+            p["host"] = who
+            _party_event(p, "system", text=f"{_party_name(who)} is the host now.")
+        elif op == "ended":                                    # an app reached the end of the song (its length was unknown)
+            if d.get("item") == st["item"] and st["playing"]: _party_next(p, auto=True)
+            else: return jsonify(party_view(p, u))
+        elif op == "duration":
+            dur = float(d.get("dur") or 0)
+            if d.get("item") == st["item"] and 1 < dur < 7200 and not st["dur"]: st["dur"] = dur
+            else: return jsonify(party_view(p, u))
+        elif op == "leave":
+            _party_leave(p, u)
+            return jsonify({"left": True})
+        elif op == "end":
+            _party_event(p, "system", text="The host ended the party.")
+            _party_end(p)
+            activity("party", f"Ended the listening party {p['name']}", u)
+            return jsonify({"ended": True})
+        elif op not in ("pause", "resume", "seek"):
+            return jsonify({"error": "Unknown party action."}), 400
+        _party_changed(p)
+        return jsonify(party_view(p, u))
+
+
+@app.route("/party/<code>")
+def party_link(code):
+    """Invitation links open the app, which joins the party."""
+    code = re.sub(r"[^A-Za-z0-9]", "", code).upper()[:6]
+    return redirect(f"/?party={code}")
+
+
+def party_stats():
+    with _party_cv:
+        return {"parties": len(_parties), "listeners": sum(len(p["members"]) for p in _parties.values())}
+
+# ============================================================
+# REWIND: each listener's year (or month) in music
+# ============================================================
+# Every counted play is logged with its time (the plays table in axdio.db). History from before the log existed is
+# brought in once, one row per song at the time it was last played, flagged `b` so it counts towards top songs and
+# minutes but not towards times of day. The numbers are only ever shown to the listener they belong to.
+def rewind_on(): return bool(cfg().get("feature_rewind", True))
+
+def log_play(username, rel_path):
+    meta = library_entry(rel_path)
+    secs = float((meta or {}).get("duration") or 0) or 200.0
+    with _db_lock:
+        db().execute("INSERT INTO plays (user, ts, rel, secs) VALUES (?, ?, ?, ?)", (username, time.time(), rel_path, min(secs, 3600.0)))
+
+def rewind_backfill():
+    with _db_lock:
+        if db().execute("SELECT value FROM kv WHERE key = 'plays_backfilled'").fetchone(): return
+    rows = []
+    with users_lock:
+        for u, rec in users_data.items():
+            for h in rec.get("history") or []:
+                rel, ts = h.get("rel_path"), _iso_ts(h.get("last_played"))
+                if rel and ts: rows.append((u, ts, rel, float((library_entry(rel) or {}).get("duration") or 200.0), max(1, int(h.get("count") or 1))))
+    with _db_lock:
+        conn = db()
+        conn.execute("BEGIN")
+        conn.executemany("INSERT INTO plays (user, ts, rel, secs, n, b) VALUES (?, ?, ?, ?, ?, 1)", rows)
+        conn.execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('plays_backfilled', ?)", (str(time.time()),))
+        conn.execute("COMMIT")
+    if rows: print(f"[INFO] Rewind: brought in {len(rows)} songs from listening history")
+
+PERSONAS = [  # (from hour, to hour, name, line)
+    (5, 11, "Early bird", "Your music starts with the sunrise."),
+    (11, 17, "Daydreamer", "Your soundtrack runs through the working day."),
+    (17, 22, "Golden hour", "You save your best listening for the evening."),
+    (22, 29, "Night owl", "You come alive after dark."),
+]
+
+def rewind_stats(u, start, end, tz):
+    """Numbers for plays between two UTC timestamps; `tz` is the viewer's UTC offset in minutes (JS getTimezoneOffset)."""
+    with _db_lock:
+        rows = db().execute("SELECT ts, rel, secs, n, b FROM plays WHERE user = ? AND ts >= ? AND ts < ?", (u, start, end)).fetchall()
+        firsts = dict(db().execute("SELECT rel, MIN(ts) FROM plays WHERE user = ? GROUP BY rel", (u,)).fetchall())
+        since = (db().execute("SELECT MIN(ts) FROM plays WHERE user = ? AND b = 0", (u,)).fetchone() or (None,))[0]
+    local = lambda ts: datetime.utcfromtimestamp(ts - tz * 60)
+    songs, artists, albums, art_mins, art_rel, alb_rel = Counter(), Counter(), Counter(), Counter(), {}, {}
+    hours, weekdays, day_mins, day_song, months = [0] * 24, [0] * 7, Counter(), Counter(), [0.0] * 12
+    total_secs = plays = 0
+    for ts, rel, secs, n, b in rows:
+        meta = library_entry(rel)
+        if not isinstance(meta, dict): continue
+        plays += n
+        total_secs += secs * n
+        songs[rel] += n
+        a = extract_primary_artist(meta.get("artist"), meta.get("album_artist"))
+        if a != "Unknown Artist":
+            artists[a] += n; art_mins[a] += secs * n; art_rel.setdefault(a, rel)
+        album = (meta.get("album") or "").strip()
+        if album:
+            key = (album, meta.get("album_artist") or meta.get("artist") or "")
+            albums[key] += n; alb_rel.setdefault(key, rel)
+        d = local(ts)
+        months[d.month - 1] += secs * n / 60
+        day_mins[d.date()] += secs * n / 60
+        if not b:
+            hours[d.hour] += n; weekdays[d.weekday()] += n
+            day_song[(d.date(), rel)] += n
+    song_out = lambda rel, c: dict(rel=rel, title=(library_entry(rel) or {}).get("title") or Path(rel).stem,
+                                   artist=(library_entry(rel) or {}).get("artist") or "", plays=c)
+    out = {"minutes": round(total_secs / 60), "plays": plays, "songs": len(songs), "artists": len(artists), "albums": len(albums),
+           "top_songs": [song_out(r, c) for r, c in songs.most_common(10)],
+           "top_artists": [{"name": a, "plays": c, "minutes": round(art_mins[a] / 60), "rel": art_rel[a]} for a, c in artists.most_common(10)],
+           "top_albums": [{"title": k[0], "artist": k[1], "plays": c, "rel": alb_rel[k]} for k, c in albums.most_common(5)],
+           "hours": hours, "weekdays": weekdays, "months": [round(m) for m in months],
+           "since": since}
+    if sum(hours):
+        best = max(PERSONAS, key=lambda p: sum(hours[h % 24] for h in range(p[0], p[1])))
+        out["persona"] = {"name": best[2], "line": best[3], "peak": max(range(24), key=lambda h: hours[h])}
+    if day_mins:
+        day, mins = max(day_mins.items(), key=lambda kv: kv[1])
+        out["busiest"] = {"date": day.isoformat(), "minutes": round(mins)}
+        days, best_run, run, prev = sorted(day_mins), 1, 1, None
+        for dd in days:
+            run = run + 1 if prev and (dd - prev).days == 1 else 1
+            best_run, prev = max(best_run, run), dd
+        out["streak"] = best_run
+        out["active_days"] = len(days)
+    if day_song:
+        (day, rel), c = day_song.most_common(1)[0]
+        if c >= 3: out["on_repeat"] = dict(song_out(rel, c), date=day.isoformat())
+    found = [r for r in songs if start <= (firsts.get(r) or 0) < end]
+    out["discoveries"] = len(found)
+    if found: out["top_find"] = song_out(max(found, key=lambda r: songs[r]), songs[max(found, key=lambda r: songs[r])])
+    return out
+
+@app.route("/api/rewind")
+def api_rewind():
+    u = _me()
+    tz = max(-900, min(900, request.args.get("tz", 0, type=int)))
+    now_local = datetime.utcfromtimestamp(time.time() - tz * 60)
+    period = request.args.get("period", "year")
+    y = request.args.get("y", now_local.year, type=int)
+    m = request.args.get("m", now_local.month, type=int)
+    to_utc = lambda d: (d - datetime(1970, 1, 1)).total_seconds() + tz * 60
+    if period == "month" and 1 <= m <= 12 and 2000 <= y <= 2100:
+        start, end = datetime(y, m, 1), datetime(y + (m == 12), m % 12 + 1, 1)
+        label = start.strftime("%B %Y")
+    elif period == "year" and 2000 <= y <= 2100:
+        start, end = datetime(y, 1, 1), datetime(y + 1, 1, 1)
+        label = str(y)
+    else:
+        period, start, end, label = "all", datetime(2000, 1, 1), datetime(2100, 1, 1), "All time"
+    stats = rewind_stats(u, to_utc(start), to_utc(end), tz)
+    with _db_lock:
+        years = [int(r[0]) for r in db().execute("SELECT DISTINCT CAST(strftime('%Y', ts - ?, 'unixepoch') AS INTEGER) FROM plays WHERE user = ? ORDER BY 1 DESC", (tz * 60, u))]
+    return jsonify(dict(stats, period=period, label=label, year=y, month=m, years=years,
+                        name=(users_data.get(u) or {}).get("display_name") or u))
+
+# ============================================================
+# SMART TRANSITIONS: loudness and silence of each song
+# ============================================================
+# The apps trim silence at the start and end of songs, time crossfades to where a song really ends (its fade-out),
+# and can even out loudness between songs. For that each song is measured once with ffmpeg's EBU R128 meter (a
+# loudness value every 100 ms), in the background at low priority, one song at a time. Results are cached in axdio.db
+# and redone only when the file changes.
+ANALYSIS_VERSION = 2
+SILENCE_LUFS = -50.0
+_an_queue = collections.deque()
+_an_waiting = set()
+_an_lock = threading.Lock()
+_an_wake = threading.Event()
+_EBU_FRAME = re.compile(r"t:\s*([\d.]+)\s+TARGET:.*?M:\s*(-?[\d.]+|-inf|nan)")
+_EBU_I = re.compile(r"Integrated loudness:\s*I:\s*(-?[\d.]+) LUFS")
+
+def smart_on(): return bool(cfg().get("feature_smart", True))
+
+def measure_song(path):
+    """Loudness (LUFS) and where a song's sound starts, reaches full level, starts to fade and ends, in seconds."""
+    cmd = ["nice", "-n", "15", "ffmpeg", "-hide_banner", "-nostats", "-nostdin", "-i", str(path), "-map", "0:a:0",
+           "-af", "ebur128=framelog=info", "-f", "null", "-"]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    frames = [(float(t), float(m) if m not in ("-inf", "nan") else -120.0) for t, m in _EBU_FRAME.findall(p.stderr)]
+    got = _EBU_I.search(p.stderr)
+    if not frames or not got: return None
+    lufs, dur = float(got.group(1)), frames[-1][0]
+    loud = [t for t, m in frames if m > SILENCE_LUFS]
+    if not loud: return {"v": ANALYSIS_VERSION, "lufs": lufs, "dur": dur, "start": 0, "end": dur, "intro": 0, "outro": dur}
+    body = [t for t, m in frames if m > lufs - 10]
+    full = [t for t, m in frames if m > lufs - 3]      # the song at its usual level: after the last of it, a fade-out
+    # Momentary loudness covers the 400 ms before each timestamp (one every 100 ms): the first window with sound ends
+    # just after the sound starts, and the last one ends 300-400 ms after it stops.
+    start = max(0.0, loud[0] - 0.2)
+    end = max(start, min(dur, loud[-1] - 0.15))
+    intro = max(start, body[0] - 0.2) if body else start
+    outro = min(end, max(intro, full[-1] - 0.2)) if full else end
+    return {"v": ANALYSIS_VERSION, "lufs": round(lufs, 1), "dur": round(dur, 2), "start": round(start, 2), "end": round(end, 2),
+            "intro": round(intro, 2), "outro": round(outro, 2)}
+
+def analysis_cached(rel):
+    path = resolve_safe_music_file(rel)
+    if not path or not path.is_file(): return None, None
+    mtime = path.stat().st_mtime
+    with _db_lock: row = db().execute("SELECT mtime, data FROM analysis WHERE rel = ?", (rel,)).fetchone()
+    if row and abs(row[0] - mtime) < 1:
+        d = json.loads(row[1])
+        if d.get("v") == ANALYSIS_VERSION: return d, path
+    return None, path
+
+def analysis_worker():
+    while True:
+        _an_wake.wait()
+        with _an_lock:
+            if not _an_queue: _an_wake.clear(); continue
+            rel = _an_queue.popleft()
+        try:
+            data, path = analysis_cached(rel)
+            if path and not data:
+                mtime = path.stat().st_mtime
+                data = measure_song(path) or {"v": ANALYSIS_VERSION, "failed": True}
+                with _db_lock:
+                    db().execute("INSERT OR REPLACE INTO analysis (rel, mtime, data) VALUES (?, ?, ?)", (rel, mtime, json.dumps(data)))
+        except Exception as ex:
+            print(f"[WARN] Couldn't measure {rel}: {ex}")
+        finally:
+            with _an_lock: _an_waiting.discard(rel)
+
+@app.route("/api/analysis")
+def api_analysis():
+    """Measurements for up to four songs. Ones not measured yet are queued and come back as null; ask again later."""
+    if not smart_on(): return jsonify({"off": True, "analysis": {}})
+    rels = [r for r in request.args.getlist("rel")[:4] if r and not FED_REMOTE_RE.match(r)]
+    now_rel = request.args.get("now")
+    out = {}
+    for rel in rels:
+        data, path = analysis_cached(rel)
+        out[rel] = data
+        if data or not path: continue
+        with _an_lock:
+            if rel in _an_waiting:
+                if rel == now_rel and rel in _an_queue: _an_queue.remove(rel); _an_queue.appendleft(rel)
+                continue
+            if len(_an_queue) >= 40: continue
+            _an_waiting.add(rel)
+            if rel == now_rel: _an_queue.appendleft(rel)
+            else: _an_queue.append(rel)
+            _an_wake.set()
+    return jsonify({"analysis": out})
+
 # --- Startup ---
 load_users()
 threading.Thread(target=library_scanner, daemon=True, name="library-scanner").start()
@@ -9037,6 +9873,9 @@ threading.Thread(target=backfill_durations, daemon=True, name="duration-backfill
 threading.Thread(target=backup_scheduler, daemon=True, name="backup-scheduler").start()
 threading.Thread(target=duration_flusher, daemon=True, name="duration-flusher").start()
 threading.Thread(target=social_janitor, daemon=True, name="social-janitor").start()
+threading.Thread(target=chat_expiry, daemon=True, name="chat-expiry").start()
+threading.Thread(target=analysis_worker, daemon=True, name="song-analysis").start()
+threading.Thread(target=rewind_backfill, daemon=True, name="rewind-backfill").start()
 threading.Thread(target=fed_sync_loop, daemon=True, name="library-sharing").start()
 threading.Thread(target=plugins_loop, daemon=True, name="plugins").start()
 threading.Thread(target=updates_loop, daemon=True, name="updates").start()
