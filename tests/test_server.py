@@ -1357,12 +1357,16 @@ class TestDownloaderParts(Base):
         self.assertTrue(server.same_credits(["Tyler, The Creator"], "EARFQUAKE", "Tyler, The Creator", "EARFQUAKE"))
 
     def test_library_copies_need_the_same_artists(self):
+        entries = {"Dua Lipa/Future Nostalgia/Levitating.flac": {"title": "Levitating", "artist": "Dua Lipa"},
+                   "Dua Lipa/Moonlight/Levitating (feat. DaBaby).flac": {"title": "Levitating (feat. DaBaby)", "artist": "Dua Lipa"},
+                   "The Weeknd/Starboy/Starboy.flac": {"title": "Starboy", "artist": "The Weeknd"}}
+        for rel, v in entries.items():
+            (MUSIC / rel).parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=duration=1", "-metadata", f"title={v['title']}",
+                            "-metadata", f"artist={v['artist']}", str(MUSIC / rel)], check=True)
         with server.library_cache_lock:
             saved = dict(server.library_cache_data)
-            server.library_cache_data.update({
-                "Dua Lipa/Future Nostalgia/Levitating.flac": {"title": "Levitating", "artist": "Dua Lipa"},
-                "Dua Lipa/Moonlight/Levitating (feat. DaBaby).flac": {"title": "Levitating (feat. DaBaby)", "artist": "Dua Lipa"},
-                "The Weeknd/Starboy/Starboy.flac": {"title": "Starboy", "artist": "The Weeknd"}})
+            server.library_cache_data.update(entries)
         try:
             copies = lambda title, artists: server.library_copies({"title": title, "artists": artists})
             self.assertEqual(copies("Levitating", ["Dua Lipa"]), ["Dua Lipa/Future Nostalgia/Levitating.flac"])
@@ -1379,7 +1383,12 @@ class TestDownloaderParts(Base):
             self.assertNotIn(rel, copies("Levitating", ["Dua Lipa"]))
             self.assertIn(rel, copies("Levitating", ["Dua Lipa", "DaBaby"]))
             (MUSIC / rel).unlink()
+            # A copy that was deleted outside Axdio isn't one, and leaves the library.
+            (MUSIC / "The Weeknd/Starboy/Starboy.flac").unlink()
+            self.assertEqual(copies("Starboy", ["The Weeknd", "Daft Punk"]), [])
+            self.assertNotIn("The Weeknd/Starboy/Starboy.flac", server.library_cache_data)
         finally:
+            for rel in entries: (MUSIC / rel).unlink(missing_ok=True)
             with server.library_cache_lock:
                 server.library_cache_data.clear()
                 server.library_cache_data.update(saved)
@@ -1429,6 +1438,141 @@ class TestDownloaderParts(Base):
         finally:
             server.plugin_ready = orig
             self.settings(downloader_enabled=False)
+
+
+class TestFilesAndLibrary(Social):
+    """Changes made on the Files page reach the library at once, without a rescan."""
+    def make(self, rel, title):
+        p = MUSIC / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=500:duration=2",
+                        "-metadata", f"title={title}", "-metadata", "artist=Mover", str(p)], check=True)
+        server.refresh_library_entry(rel)
+        return rel
+
+    def test_delete_leaves_the_library_at_once(self):
+        a = self.admin()
+        one = self.make("Mover/Gone/01 - One.flac", "One")
+        two = self.make("Mover/Gone/02 - Two.flac", "Two")
+        keep = self.make("Mover/Kept/Stay.flac", "Stay")
+        version = server.library_version
+        server.audit_put(one, {"status": "ok"}, flush=True)
+        r = a.post("/api/admin/files/delete", json={"path": "Mover/Gone"}).get_json()
+        self.assertEqual(r["removed_songs"], 2)
+        self.assertNotIn(one, server.library_cache_data)
+        self.assertNotIn(two, server.library_cache_data)
+        self.assertNotIn(one, server.audit_db)
+        self.assertIn(keep, server.library_cache_data)
+        self.assertNotEqual(server.library_version, version)              # the apps resync
+        self.assertEqual(server.library_copies({"title": "One", "artists": ["Mover"]}), [])   # the downloader may fetch it again
+        self.assertEqual(a.post("/api/admin/files/delete", json={"path": "../config"}).status_code, 403)
+        a.post("/api/admin/files/delete", json={"path": "Mover"})
+
+    def test_rename_keeps_likes_playlists_and_history(self):
+        a = self.admin()
+        h = self.user("rena")
+        song = self.make("Mover/Old Album/01 - Song.flac", "Song")
+        other = self.make("Mover/Old Album/02 - Other.flac", "Other")
+        self.c.post("/api/user/sync", json={"liked_songs": [song], "playlists": {"Mix": [other, song]}}, headers=h)
+        with server.users_lock: server.users_data["rena"]["history"] = [{"rel_path": song, "count": 3}]
+        pl = self.c.post("/api/social/playlists", json={"name": "Together", "tracks": [song]}, headers=h).get_json()
+        r = a.post("/api/admin/files/rename", json={"path": "Mover/Old Album", "new_name": "New Album"}).get_json()
+        self.assertEqual(r["moved_songs"], 2)
+        new_song, new_other = "Mover/New Album/01 - Song.flac", "Mover/New Album/02 - Other.flac"
+        self.assertIn(new_song, server.library_cache_data)
+        self.assertNotIn(song, server.library_cache_data)
+        sync = self.c.get("/api/user/sync", headers=h).get_json()
+        self.assertEqual(sync["liked_songs"], [new_song])
+        self.assertEqual(sync["playlists"]["Mix"], [new_other, new_song])
+        self.assertEqual(sync["history"][0]["rel_path"], new_song)
+        tracks = [t["r"] for t in server._pl_get(pl["id"])["tracks"]] if hasattr(server, "_pl_get") else \
+                 [t["r"] for p in server._pl_rows() if p["id"] == pl["id"] for t in p["tracks"]]
+        self.assertEqual(tracks, [new_song])
+        # A file: its extension stays, and nothing is overwritten.
+        r = a.post("/api/admin/files/rename", json={"path": new_song, "new_name": "Renamed"}).get_json()
+        self.assertEqual(r["new_name"], "Renamed.flac")
+        self.assertIn("Mover/New Album/Renamed.flac", server.library_cache_data)
+        self.assertEqual(a.post("/api/admin/files/rename", json={"path": "Mover/New Album/Renamed.flac", "new_name": "02 - Other.flac"}).status_code, 409)
+        a.post("/api/admin/files/delete", json={"path": "Mover"})
+
+    def test_songs_deleted_elsewhere_leave_when_played(self):
+        rel = self.make("Mover/Elsewhere/Gone.flac", "Gone")
+        (MUSIC / rel).unlink()
+        self.assertEqual(self.c.get("/api/stream_path", query_string={"path": rel}).status_code, 404)
+        for _ in range(50):
+            if rel not in server.library_cache_data: break
+            time.sleep(0.1)
+        self.assertNotIn(rel, server.library_cache_data)
+
+
+class TestAssetVersions(Base):
+    def test_pages_point_at_the_current_files(self):
+        r = self.c.get("/")
+        html = r.get_data(as_text=True)
+        stamps = re.findall(r"/web/(?:app|desktop)/[a-z]+\.js\?v=([0-9a-f]{10})", html)
+        self.assertTrue(stamps, html[:500])
+        self.assertNotIn("?v=3.2.0", html)
+        js = self.c.get("/web/desktop/desktop.js")
+        self.assertRegex(js.get_data(as_text=True), r"/web/app/core\.js\?v=[0-9a-f]{10}")
+        again = self.c.get("/web/desktop/desktop.js", headers={"If-None-Match": js.headers["ETag"]})
+        self.assertEqual(again.status_code, 304)
+        # A changed file gets a new address (checked on a copy: the code may be read-only).
+        web = TMP / "assets" / "web" / "app"
+        web.mkdir(parents=True, exist_ok=True)
+        (web / "x.js").write_text("1")
+        orig = server.SCRIPT_DIR
+        server.SCRIPT_DIR = TMP / "assets"
+        try:
+            first = server._asset_stamp("/web/app/x.js")
+            os.utime(web / "x.js", ns=(0, 10**18))
+            self.assertNotEqual(server._asset_stamp("/web/app/x.js"), first)
+            self.assertIsNone(server._asset_stamp("/web/app/missing.js"))
+        finally:
+            server.SCRIPT_DIR = orig
+
+
+class TestUpdates(Base):
+    def test_versions_and_setup(self):
+        self.assertEqual(server._split_ref("ghcr.io/xo907/axdio:2.4"), ("ghcr.io/xo907/axdio", "2.4"))
+        self.assertEqual(server._split_ref("ghcr.io/xo907/axdio"), ("ghcr.io/xo907/axdio", "latest"))
+        self.assertEqual(server._split_ref("localhost:5000/axdio@sha256:abc"), ("localhost:5000/axdio", "latest"))
+        tags = TMP / "tags.json"
+        tags.write_text(json.dumps({"tags": ["latest", "2.4", "2.4.0", "99.1.0", "99.0.3", "nightly"]}))
+        os.environ["AXDIO_UPDATE_TAGS_URL"] = tags.as_uri()
+        orig_notes, orig_api = server.release_notes, server.docker_api
+        server.release_notes = lambda v: f"- Something new in {v}"
+        try:
+            a = self.admin()
+            v = a.get("/api/admin/v2/updates?check=1").get_json()
+            self.assertEqual((v["latest"], v["available"]), ("99.1.0", True))
+            self.assertEqual([n["version"] for n in v["notes"]], ["99.1.0", "99.0.3"])
+            self.assertEqual(v["setup"]["reason"], "no-socket")           # tests run without Docker
+            self.assertEqual(a.post("/api/admin/v2/updates/install").status_code, 200)
+            for _ in range(50):
+                if server._update_job["state"] != "running": break
+                time.sleep(0.1)
+            self.assertEqual(server._update_job["state"], "error")          # nothing is changed without Docker
+            # With Docker: which containers can update themselves.
+            me = {"Id": "c" * 64, "Name": "/axdio", "Image": "sha256:old", "Config": {"Image": "ghcr.io/xo907/axdio:latest"},
+                  "Mounts": [{"Destination": "/app/config", "Type": "bind", "Source": "/srv/axdio/config"}]}
+            server.os.path.exists, orig_exists = (lambda p: True if p == server.DOCKER_SOCK else orig_exists(p)), server.os.path.exists
+            try:
+                server.docker_api = lambda m, path, body=None, **k: (200, me)
+                self.assertTrue(server.update_setup()["can_update"])
+                me["Mounts"].append({"Destination": "/app/server.py", "Type": "bind", "Source": "/src/server.py"})
+                self.assertEqual(server.update_setup()["reason"], "dev")
+                me["Mounts"].pop(); me["Config"]["Image"] = "axdio-local:latest"
+                self.assertEqual(server.update_setup()["reason"], "other-image")
+                def denied(*a, **k): raise PermissionError(13, "denied")
+                server.docker_api = denied
+                self.assertEqual(server.update_setup()["reason"], "no-permission")
+            finally:
+                server.os.path.exists = orig_exists
+        finally:
+            os.environ.pop("AXDIO_UPDATE_TAGS_URL", None)
+            server.release_notes, server.docker_api = orig_notes, orig_api
+            server._update_cache.update(checked=0, latest=None, versions=[])
+            server._update_job.update(state="idle", message="")
 
 
 def tearDownModule():

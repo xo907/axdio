@@ -138,6 +138,11 @@ td.act { text-align: right; white-space: nowrap; width: 1%; }
 .badge.bad { background: rgba(239,68,68,.14); color: #f87171; }
 .badge.info { background: rgba(56,189,248,.14); color: #7dd3fc; }
 .badge.accent { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.code-block { background: #050505; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 12.5px/1.6 var(--mono); color: #d4d4d8; overflow-x: auto; white-space: pre; margin: 8px 0; }
+.notes h3 { font-size: 14px; margin: 14px 0 6px; }
+.notes h3:first-child { margin-top: 0; }
+.notes ul { margin: 0 0 8px 18px; display: grid; gap: 6px; color: var(--text-2); font-size: 13.5px; line-height: 1.5; }
+.notes p { color: var(--text-2); font-size: 13.5px; margin: 6px 0; }
 .pill { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--accent); color: var(--on-accent); }
 
 /* ---------- Forms ---------- */

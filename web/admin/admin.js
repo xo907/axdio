@@ -136,7 +136,7 @@ function fieldHtml(f) {
     case 'number':
       ctl = `<input class="input" type="number" data-k="${k}" value="${esc(v)}" min="${f.min}" max="${f.max}" style="max-width:140px">`; break;
     case 'select': {
-      const short = f.options.every(o => o[1].length <= 14);
+      const short = f.options.length <= 8 && f.options.every(o => o[1].length <= 14);
       ctl = short
         ? `<div class="seg" role="radiogroup" aria-label="${esc(f.label)}">${f.options.map(([o, l]) => `<button type="button" role="radio" aria-checked="${o === v}" class="${o === v ? 'on' : ''}" data-k="${k}" data-v="${esc(o)}">${esc(l)}</button>`).join('')}</div>`
         : `<select class="select" data-k="${k}">${f.options.map(([o, l]) => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
@@ -252,6 +252,7 @@ const PAGES = [
   { id: 'sharing', title: 'Library sharing', icon: 'sharing', render: pageSharing },
   { group: 'System' },
   { id: 'plugins', title: 'Plugins', icon: 'plugins', render: pagePlugins },
+  { id: 'updates', title: 'Updates', icon: 'refresh', render: pageUpdates },
   { id: 'maintenance', title: 'Maintenance & backups', icon: 'maintenance', render: pageMaintenance },
   { id: 'activity', title: 'Activity', icon: 'activity', render: pageActivity },
   { id: 'logs', title: 'Server logs', icon: 'logs', render: pageLogs },
@@ -262,7 +263,7 @@ const pageById = id => PAGES.find(p => p.id === id);
 function renderNav() {
   $('#nav-list').innerHTML = PAGES.map(p => p.group
     ? `<div class="nav-group">${esc(p.group)}</div>`
-    : `<a class="nav-item${p.id === ST.page ? ' on' : ''}" href="#/${p.id}" data-page="${p.id}">${ic(p.icon)}<span>${esc(p.title)}</span></a>`).join('');
+    : `<a class="nav-item${p.id === ST.page ? ' on' : ''}" href="#/${p.id}" data-page="${p.id}">${ic(p.icon)}<span>${esc(p.title)}</span>${p.id === 'updates' && ST.update ? '<span class="pill">New</span>' : ''}</a>`).join('');
 }
 
 async function render() {
@@ -635,6 +636,77 @@ document.addEventListener('change', e => {
   api(`/api/admin/v2/plugins/${t.dataset.plugAuto}`, { auto_update: t.checked }).then(d => { loadPlugins(d); toast(t.checked ? 'Automatic updates on' : 'Automatic updates off'); }, e2 => { t.checked = !t.checked; fail(e2); });
 });
 
+/* Updates: new versions of Axdio, installed from here when the container can reach Docker */
+function mdLite(text) {
+  return esc(text).split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    l = l.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+    return l.startsWith('- ') ? `<li>${l.slice(2)}</li>` : `<p>${l}</p>`;
+  }).join('').replace(/(<li>.*?<\/li>)+/g, m => `<ul>${m}</ul>`);
+}
+const UPDATE_WHY = {
+  'no-socket': "Axdio can't reach Docker, so it can tell you about new versions but not install them.",
+  'no-permission': "The Docker socket is mounted, but the server isn't allowed to use it. Recreate the container so it starts with the new setting.",
+  'no-docker': "The Docker socket is mounted, but Docker didn't answer.",
+  'not-found': "Docker doesn't know this container (is the socket from another machine?).",
+  'other-image': "This server wasn't installed from the published image (it was built from source), so it's updated the way it was built.",
+  'dev': "This server runs code from a folder on the host (a development setup). Updating the image wouldn't change that code.",
+  'no-config-volume': "The config folder isn't a volume, so settings wouldn't survive a new container.",
+};
+let UPD = null, updTimer = 0;
+async function pageUpdates(el) {
+  el.innerHTML = `<section class="card" id="upd-card"><div class="card-b"><p class="muted">Checking…</p></div></section><div id="upd-extra" class="stack"></div>` + settingsCard('updates', { title: 'Automatic updates' });
+  await loadUpdates(false);
+}
+async function loadUpdates(check) {
+  const was = UPD && UPD.job.state;
+  try { UPD = await api('/api/admin/v2/updates' + (check ? '?check=1' : '')); }
+  catch (e) { if (UPD && ['running', 'restarting'].includes(UPD.job.state)) return waitForRestart(); throw e; }
+  ST.update = UPD.available ? UPD.latest : null; renderNav();
+  drawUpdates();
+  clearTimeout(updTimer);
+  if (UPD.job.state === 'running') updTimer = setTimeout(() => loadUpdates(false).catch(() => waitForRestart()), 1500);
+  else if (UPD.job.state === 'restarting') waitForRestart();
+  else if (was === 'running' && UPD.job.state === 'error') toast(UPD.job.message, true);
+}
+async function waitForRestart() {
+  const card = $('#upd-card'); if (!card) return;
+  const from = UPD ? UPD.current : '';
+  card.innerHTML = `<div class="card-b"><p><b>Restarting with the new version…</b></p><p class="muted">This page reloads when the server is back, usually within a minute or two.</p></div>`;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 6 * 60000) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const h = await (await fetch('/api/health', { cache: 'no-store' })).json();
+      if (h.version && h.version !== from) { toast(`Updated to ${h.version}`); setTimeout(() => location.reload(), 800); return; }
+      const u = await api('/api/admin/v2/updates').catch(() => null);
+      if (u && u.job.state !== 'restarting' && u.last && u.last.state === 'failed') { UPD = u; drawUpdates(); return; }
+    } catch (e) { /* still restarting */ }
+  }
+  card.innerHTML = `<div class="card-b"><p>The server hasn't come back yet. Check the container on the host (for example with <code>docker ps -a</code>).</p></div>`;
+}
+function drawUpdates() {
+  const d = UPD, card = $('#upd-card'); if (!d || !card) return;
+  const s = d.setup, busy = ['running', 'restarting'].includes(d.job.state);
+  const head = d.available
+    ? `<span class="badge info">Axdio ${esc(d.latest)} is available</span> This server runs ${esc(d.current)}.`
+    : d.latest ? `<span class="badge ok">Up to date</span> Axdio ${esc(d.current)} is the newest version.` : `Axdio ${esc(d.current)}.`;
+  const last = d.last && d.last.state === 'failed' ? `<p class="desc" style="color:#f87171">The last update didn't work: ${esc(d.last.message || '')}</p>`
+    : d.last && d.last.state === 'done' && d.last.to === d.current ? `<p class="desc">Updated from ${esc(d.last.from)} to ${esc(d.last.to)} ${d.last.at ? ago(d.last.at) : ''}.</p>` : '';
+  const btn = d.available && s.can_update ? `<button class="btn primary sm" data-act="upd-install"${busy ? ' disabled' : ''}>${ic('downloader', 'sm')}Update to ${esc(d.latest)}</button>` : '';
+  card.innerHTML = `<div class="card-h"><h2>Axdio ${esc(d.current)}</h2><div class="row" style="margin-left:auto">${btn}<button class="btn ghost sm" data-act="upd-check"${busy ? ' disabled' : ''}>${ic('refresh', 'sm')}Check now</button></div></div>
+    <p class="desc">${head}${d.checked ? ` <span class="muted">Checked ${ago(d.checked)}.</span>` : ''}</p>${d.error ? `<p class="desc" style="color:#fbbf24">${esc(d.error)}</p>` : ''}${last}
+    ${busy || d.job.log.length ? `<div class="card-b" style="padding-top:0"><div class="term" style="height:auto;max-height:200px">${d.job.log.map(termLine).join('')}</div></div>` : ''}
+    ${d.available && d.notes.length ? `<div class="card-b" style="padding-top:0"><div class="notes">${d.notes.map(n => `<h3>What's new in ${esc(n.version)}</h3>${n.notes ? mdLite(n.notes) : '<p class="muted">No notes for this version.</p>'}`).join('')}</div></div>` : ''}`;
+  const extra = $('#upd-extra');
+  if (s.can_update) { extra.innerHTML = ''; return; }
+  const manual = `<pre class="code-block">docker compose pull\ndocker compose up -d</pre>`;
+  extra.innerHTML = `<section class="card"><div class="card-h"><h2>Installing updates</h2></div><p class="desc">${esc(UPDATE_WHY[s.reason] || 'Updates can\'t be installed from here.')}</p>
+    ${s.reason === 'no-socket' || s.reason === 'no-permission' ? `<div class="card-b" style="padding-top:0"><p>To install updates from this page, give Axdio access to Docker. In <code>docker-compose.yml</code>, add this line under <code>volumes:</code>, then run <code>docker compose up -d</code> once:</p>
+      <pre class="code-block">      - /var/run/docker.sock:/var/run/docker.sock</pre>
+      <p class="muted" style="font-size:12.5px">This lets Axdio control Docker on this machine (which it needs in order to replace its own container). Leave it out if other people's containers run here and you'd rather update by hand.</p></div>` : ''}
+    <div class="card-b" style="padding-top:0"><p>${s.reason === 'other-image' || s.reason === 'dev' ? 'To update, rebuild it: <code>git pull</code> and <code>docker compose up -d --build</code>.' : 'To update by hand, run these in the folder with <code>docker-compose.yml</code>:'}</p>${s.reason === 'other-image' || s.reason === 'dev' ? '' : manual}</div></section>`;
+}
+
 /* Security: schema fields + admin credentials */
 function pageSecurity(el) {
   el.innerHTML = settingsCard('security', { title: 'Connections & logins' })
@@ -912,10 +984,10 @@ async function pageFiles(el) {
     else if (b.dataset.act === 'file-rename') {
       const old = p.split('/').pop();
       const v = await dialog({ title: 'Rename', fields: [{ name: 'name', label: 'New name', value: old }], ok: 'Rename' });
-      if (v && v.name.trim() && v.name.trim() !== old) api('/api/admin/files/rename', { path: p, new_name: v.name.trim() }).then(() => loadDir(filesPath), fail);
+      if (v && v.name.trim() && v.name.trim() !== old) api('/api/admin/files/rename', { path: p, new_name: v.name.trim() }).then(r => { toast(r.moved_songs ? `Renamed; ${plural(r.moved_songs, 'song')} kept their likes and playlists` : 'Renamed'); loadDir(filesPath); }, fail);
     } else if (b.dataset.act === 'file-delete') {
-      if (!(await confirmDlg(`Delete ${p.split('/').pop()}?`, b.dataset.dir ? 'The folder and everything in it is deleted from disk.' : 'The file is deleted from disk.', 'Delete', true))) return;
-      api('/api/admin/files/delete', { path: p }).then(() => { toast('Deleted'); loadDir(filesPath); }, fail);
+      if (!(await confirmDlg(`Delete ${p.split('/').pop()}?`, (b.dataset.dir ? 'The folder and everything in it is deleted from disk' : 'The file is deleted from disk') + ' and leaves the library right away, so the downloader can fetch it again.', 'Delete', true))) return;
+      api('/api/admin/files/delete', { path: p }).then(r => { toast(r.removed_songs ? `Deleted; ${plural(r.removed_songs, 'song')} left the library` : 'Deleted'); loadDir(filesPath); }, fail);
     }
   });
   loadDir(filesPath);
@@ -1073,6 +1145,11 @@ document.addEventListener('click', async e => {
     case 'user-menu': userMenu(b); break;
     case 'invite-new': newInvite(); break;
     case 'copy-text': copy(b.dataset.v); break;
+    case 'upd-check': b.disabled = true; loadUpdates(true).then(() => toast(UPD.available ? `Axdio ${UPD.latest} is available` : 'Up to date'), fail); break;
+    case 'upd-install':
+      if (!(await confirmDlg(`Update to Axdio ${UPD.latest}?`, "The server downloads the new version and restarts with it: listeners are interrupted for about a minute. If the new version doesn't start, the current one comes back.", 'Update'))) break;
+      api('/api/admin/v2/updates/install', {}).then(d => { UPD = d; drawUpdates(); loadUpdates(false); }, fail);
+      break;
     case 'use-origin':
       try { const r = await api('/api/admin/v2/config', { values: { public_url: location.origin } }); ST.values = r.values; toast('Public URL saved'); render(); }
       catch (e) { fail(e); }
@@ -1201,6 +1278,7 @@ async function loadNavMark() {
     ST.page = pageById(location.hash.slice(2)) ? location.hash.slice(2) : 'overview';
     history.replaceState(null, '', '#/' + ST.page);
     renderNav(); render();
+    api('/api/admin/v2/updates').then(u => { ST.update = u.available ? u.latest : null; renderNav(); }).catch(() => {});
   } catch (e) {
     $('#page').innerHTML = `<div class="card"><div class="empty">Couldn't reach the server: ${esc(e.message)}</div></div>`;
   }

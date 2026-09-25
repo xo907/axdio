@@ -9,6 +9,8 @@ services:
     volumes:
       - /path/to/your/music:/music     # your library
       - ./config:/app/config           # settings, accounts, caches and backups
+      # Optional: lets the admin panel install new versions of Axdio (it gives Axdio control over Docker on this machine)
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - PUID=1000                      # owner of ./config (id -u)
       - PGID=1000

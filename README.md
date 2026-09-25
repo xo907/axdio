@@ -54,6 +54,7 @@ services:
     volumes:
       - /path/to/your/music:/music            # your music folder
       - ./config:/app/config                  # settings, accounts, caches and backups
+      - /var/run/docker.sock:/var/run/docker.sock   # optional: install updates from the admin panel (see Updating)
     environment:
       - PUID=1000                             # the user that owns ./config: run `id -u`
       - PGID=1000                             # and `id -g`
@@ -261,6 +262,17 @@ To move a server, copy the whole `config` folder. It's everything the server kno
 
 ## Updating
 
+Axdio checks for new versions and shows them under **Updates** in the admin panel, with what's new. It also sends a notification if you've set up notifications.
+
+**From the admin panel.** With the Docker socket mounted (the `/var/run/docker.sock` line in the Quick start), **Update now** installs the new version. Tick **Install new versions automatically** to have it happen at night.
+- Axdio downloads the new image, and a short-lived helper container recreates Axdio from it with the same settings: ports, folders, environment, networks and restart policy.
+- Listeners are interrupted for about a minute.
+- If the new version doesn't report healthy within 5 minutes, the helper puts the previous version back, and the Updates page says what went wrong.
+
+Mounting the socket gives Axdio control over Docker on that machine, which it needs to replace its own container. Leave the line out if you'd rather not allow that; the Updates page then shows the commands to run.
+
+**By hand**, in the folder with `docker-compose.yml`:
+
 ```bash
 docker compose pull
 docker compose up -d
@@ -281,6 +293,7 @@ Axdio sends no telemetry, and the apps load nothing from other sites (fonts are 
 | LRCLIB (lrclib.net) | A listener opens lyrics for a song that isn't cached yet (turn off under **Features → Lyrics**) |
 | Deezer and iTunes | An admin runs the library audit or metadata fixer, or the downloader checks a match |
 | YouTube / YouTube Music, and the public pages of the service a pasted link comes from | An admin uses the downloader (off by default) |
+| GitHub (ghcr.io, raw.githubusercontent.com) | Checking for new versions of Axdio and reading what's new (turn off under **Updates**) |
 | PyPI | An admin installs or updates a plugin, or looks for new versions; plugins with automatic updates check every 24 hours |
 | Other Axdio servers | You share libraries with them (songs, artwork and the song list travel between the two servers) |
 | Discord | Someone signs in with Discord. The Discord status helper runs on the listener's computer and talks to your server and their Discord app |

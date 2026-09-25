@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.4.0"
+AXDIO_VERSION = "2.5.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -592,7 +592,10 @@ def stream_by_path():
     if not rel_path: abort(404)
     if FED_REMOTE_RE.match(rel_path): return remote_stream(rel_path, QUALITY_KBPS.get(request.args.get("q", "")))
     file_path = resolve_safe_music_file(rel_path)
-    if not file_path or not file_path.exists(): abort(404)
+    if not file_path or not file_path.exists():
+        if library_entry(rel_path) is not None and not (Path(get_real_music_dir()) / rel_path).exists():
+            threading.Thread(target=forget_library_paths, args=([rel_path],), daemon=True).start()   # deleted outside Axdio
+        abort(404)
     return stream_file_response(file_path, rel_path, QUALITY_KBPS.get(request.args.get("q", "")))
 
 def stream_file_response(file_path, rel_path, kbps=None):
@@ -2426,8 +2429,11 @@ def library_copies(target):
     with library_cache_lock:
         found = [(rel, dict(v)) for rel, v in library_cache_data.items()
                  if isinstance(v, dict) and not rel.startswith("@") and title_key(v.get("title")) == tkey]
-    out = []
+    out, missing = [], []
     for rel, v in found:
+        if not (Path(get_real_music_dir()) / rel).is_file():
+            missing.append(rel)                                  # deleted outside Axdio: not a copy, and not in the library
+            continue
         # Same artists too ('Levitating (feat. DaBaby)' isn't a copy of 'Levitating'), from the file's own tags:
         # the library index keeps only the first artist.
         tags = read_track_tags(Path(get_real_music_dir()) / rel) or {}
@@ -2436,6 +2442,7 @@ def library_copies(target):
         if same_credits(target["artists"], target["title"], ", ".join(a for a in credits if a), title) or \
            (v.get("album_artist") and same_credits(target["artists"], target["title"], v["album_artist"], title) and len(credits) <= 1):
             out.append(rel)
+    if missing: forget_library_paths(missing)
     return out
 
 
@@ -3570,29 +3577,119 @@ def api_admin_files_list():
     items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
     return jsonify({"current_path": norm_sub, "items": items})
 
+# The library follows what's done here at once (no rescan): deleted songs leave it, so the downloader can fetch them
+# again straight away, and renamed ones keep their likes, playlist places and history.
+def _library_rels_under(rel):
+    """Library entries at `rel`, or inside the folder `rel`."""
+    rel = rel.strip("/")
+    with library_cache_lock:
+        return [r for r in library_cache_data if r == rel or r.startswith(rel + "/")]
+
+
+def forget_library_paths(rels, rebuild=True):
+    """Take files that are gone out of the library index and the audit."""
+    gone = []
+    with library_cache_lock:
+        for r in rels:
+            if library_cache_data.pop(r, None) is not None: gone.append(r)
+            try: (COVERS_CACHE_DIR / f"{hashlib.md5(r.encode()).hexdigest()}.jpg").unlink(missing_ok=True)
+            except OSError: pass
+    with audit_lock:
+        for r in rels: audit_db.pop(r, None)
+    if gone:
+        audit_flush()
+        if rebuild: save_and_rebuild_cache()
+    return gone
+
+
+def remap_song_paths(moved):
+    """Point likes, history, offline downloads, playlists and collaborative playlists at songs' new paths."""
+    if not moved: return 0
+    changed = 0
+    with users_lock:
+        for name, u in users_data.items():
+            touched = False
+            for key in ("liked_songs", "offline_tracks"):
+                vals = u.get(key) or []
+                new = [moved.get(r, r) for r in vals]
+                if new != vals: u[key] = new; touched = True
+            for h in u.get("history") or []:
+                if h.get("rel_path") in moved: h["rel_path"] = moved[h["rel_path"]]; touched = True
+            for pl, rels in (u.get("playlists") or {}).items():
+                if isinstance(rels, list) and any(r in moved for r in rels):
+                    u["playlists"][pl] = [moved.get(r, r) for r in rels]; touched = True
+            if touched:
+                save_users(name)
+                changed += 1
+    try:
+        for pl in _pl_rows():
+            if any(t.get("r") in moved for t in pl.get("tracks") or []):
+                for t in pl["tracks"]: t["r"] = moved.get(t.get("r"), t.get("r"))
+                pl_save(pl)
+    except NameError:
+        pass
+    return changed
+
+
+def move_library_paths(old, new):
+    """After a rename: entries move with their files (tags don't change), and everything pointing at them follows."""
+    moved = {r: new + r[len(old):] for r in _library_rels_under(old)}
+    with library_cache_lock:
+        for o, n in moved.items():
+            e = library_cache_data.pop(o, None)
+            if e is not None: library_cache_data[n] = e
+            try:
+                src = COVERS_CACHE_DIR / f"{hashlib.md5(o.encode()).hexdigest()}.jpg"
+                if src.exists(): src.rename(COVERS_CACHE_DIR / f"{hashlib.md5(n.encode()).hexdigest()}.jpg")
+            except OSError: pass
+    with audit_lock:
+        for o, n in moved.items():
+            if o in audit_db: audit_db[n] = audit_db.pop(o)
+    audit_flush()
+    remap_song_paths(moved)
+    if old in moved: refresh_library_entry(new)          # a renamed file: an untagged song's title comes from its name
+    else: save_and_rebuild_cache()
+    return moved
+
+
+def _files_target(p):
+    music_dir = Path(get_real_music_dir()).resolve()
+    rel = str(p or "").strip().replace(chr(92), "/").strip("/")
+    target = (music_dir / rel).resolve()
+    if not target.is_relative_to(music_dir) or target == music_dir: return music_dir, None, None
+    return music_dir, target, str(target.relative_to(music_dir))
+
+
 @app.route("/api/admin/files/delete", methods=["POST"])
 def api_admin_files_delete():
-    from flask import request, jsonify
     d = request.get_json(silent=True) or {}
-    p = d.get("path", "").strip().replace(chr(92), "/").strip("/")
-    music_dir = Path(get_real_music_dir()).resolve()
-    target = (music_dir / p).resolve()
-    if not target.is_relative_to(music_dir) or target == music_dir: return jsonify({"error": "Forbidden"}), 403
+    music_dir, target, rel = _files_target(d.get("path"))
+    if target is None: return jsonify({"error": "Forbidden"}), 403
+    if not target.exists(): return jsonify({"error": "It isn't there any more."}), 404
     if target.is_dir(): shutil.rmtree(str(target))
-    elif target.is_file(): target.unlink()
-    return jsonify({"message": "Deleted", "path": p})
+    else: target.unlink()
+    gone = forget_library_paths(_library_rels_under(rel))
+    activity("files", f"Deleted {rel}" + (f" ({len(gone)} song{'s' if len(gone) != 1 else ''} left the library)" if gone else ""), admin_name(), "warn")
+    return jsonify({"message": "Deleted", "path": rel, "removed_songs": len(gone)})
+
 
 @app.route("/api/admin/files/rename", methods=["POST"])
 def api_admin_files_rename():
-    from flask import request, jsonify
     d = request.get_json(silent=True) or {}
-    p = d.get("path", "").strip().replace(chr(92), "/").strip("/")
-    n = clean_filename(d.get("new_name", "").strip())
-    music_dir = Path(get_real_music_dir()).resolve()
-    target = (music_dir / p).resolve()
-    if not target.is_relative_to(music_dir) or target == music_dir: return jsonify({"error": "Forbidden"}), 403
-    target.rename(target.parent / n)
-    return jsonify({"message": "Renamed", "new_name": n})
+    music_dir, target, rel = _files_target(d.get("path"))
+    if target is None: return jsonify({"error": "Forbidden"}), 403
+    if not target.exists(): return jsonify({"error": "It isn't there any more."}), 404
+    n = clean_filename(str(d.get("new_name") or "").strip(), "")
+    if not n: return jsonify({"error": "Enter a name."}), 400
+    if target.is_file() and target.suffix.lower() in AUDIO_TYPES and Path(n).suffix.lower() not in AUDIO_TYPES:
+        n += target.suffix                                     # keep it a song: 'Song' -> 'Song.flac'
+    dest = target.parent / n
+    if dest.exists() and dest.resolve() != target: return jsonify({"error": f"There's already something called '{n}' here."}), 409
+    target.rename(dest)
+    new_rel = str(dest.relative_to(music_dir))
+    moved = move_library_paths(rel, new_rel)
+    activity("files", f"Renamed {rel} to {n}", admin_name())
+    return jsonify({"message": "Renamed", "new_name": n, "moved_songs": len(moved)})
 
 @app.route("/api/admin/clean_temp", methods=["POST"])
 def api_admin_clean_temp():
@@ -3715,6 +3812,14 @@ ADMIN_SCHEMA = [
     {"id": "plugins", "title": "Plugins", "fields": [
         {"key": "plugins_check_hours", "type": "number", "label": "Check for plugin updates every (hours)", "default": 24, "min": 1, "max": 168,
          "help": "Plugins with automatic updates turned on install new versions when they're found, as long as nothing is downloading."},
+    ]},
+    {"id": "updates", "title": "Updates", "fields": [
+        {"key": "updates_check", "type": "bool", "label": "Check for new versions", "default": True,
+         "help": "Looks up the published versions of Axdio a few times a day and tells you (here, and by notification) when there's a new one."},
+        {"key": "updates_auto", "type": "bool", "label": "Install new versions automatically", "default": False,
+         "help": "At the hour below, when nothing is downloading. The server restarts, so listeners are interrupted for about a minute."},
+        {"key": "updates_hour", "type": "select", "label": "Install at", "default": "4",
+         "options": [[str(h), f"{h:02d}:00"] for h in range(24)]},
     ]},
     {"id": "security", "title": "Security", "fields": [
         {"key": "force_ssl", "type": "bool", "label": "Redirect HTTP to HTTPS", "default": False,
@@ -4327,10 +4432,46 @@ _gzip_library = {"key": None, "body": b""}
 
 _request_counts = collections.Counter()
 
+_ASSET_RE = re.compile(r"""(/web/[A-Za-z0-9_./-]+\.(?:js|css))(?:\?v=[^"'&\s)]*)?""")
+_asset_stamps = {}
+
+def _asset_stamp(path):
+    f = SCRIPT_DIR / path.lstrip("/")
+    try: st = f.stat()
+    except OSError: return None
+    key = (st.st_mtime_ns, st.st_size)
+    hit = _asset_stamps.get(path)
+    if hit and hit[0] == key: return hit[1]
+    stamp = hashlib.md5(f"{AXDIO_VERSION}:{key}".encode()).hexdigest()[:10]
+    _asset_stamps[path] = (key, stamp)
+    return stamp
+
+def _stamp_assets(resp):
+    """Point /web/ scripts and stylesheets at their current version (?v=<stamp>), in pages and in the scripts that load
+    other scripts. A new release or an edited file gets a new address; unchanged ones stay cached."""
+    try:
+        if resp.status_code != 200 or resp.mimetype not in ("text/html", "application/javascript", "text/javascript"): return resp
+        if resp.mimetype != "text/html" and not request.path.startswith(("/web/desktop/", "/web/mobile/", "/web/app/")): return resp
+        resp.direct_passthrough = False
+        source = resp.response
+        body = resp.get_data(as_text=True)
+        if hasattr(source, "close"): source.close()          # the file behind a send_file response
+        if "/web/" not in body: return resp
+        new = _ASSET_RE.sub(lambda m: f"{m.group(1)}?v={_asset_stamp(m.group(1)) or AXDIO_VERSION}", body)
+        if new != body:
+            resp.set_data(new)
+            resp.headers.pop("Last-Modified", None)
+            resp.set_etag(hashlib.md5(new.encode()).hexdigest())
+            resp.make_conditional(request)
+    except Exception as ex:
+        print(f"[WARN] asset versioning skipped: {ex}")
+    return resp
+
 @app.after_request
 def finish_response(resp):
     _request_counts[f"{resp.status_code // 100}xx"] += 1
     resp = _inject_head(resp)
+    resp = _stamp_assets(resp)
     for k, v in SECURITY_HEADERS.items(): resp.headers.setdefault(k, v)
     if cfg().get("force_ssl") and (request.is_secure or request.headers.get("X-Forwarded-Proto") == "https"):
         resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
@@ -8494,6 +8635,401 @@ def av2_plugin(pid):
     time.sleep(0.2)
     return jsonify(plugins_view())
 
+# ============================================================
+# UPDATES
+# ============================================================
+# New versions are published as images (ghcr.io/xo907/axdio). The admin panel shows what's new and, when the container
+# can reach Docker (the socket mounted in docker-compose.yml), updates in place: the new image is pulled, and a short-
+# lived helper container stops this one, recreates it from the new image with the same settings (ports, folders,
+# environment, networks, restart policy) and waits for it to report healthy. If it doesn't, the old container comes back.
+import http.client, socket as _socket
+
+UPDATE_IMAGE = os.environ.get("AXDIO_UPDATE_IMAGE", "ghcr.io/xo907/axdio").rstrip("/")
+UPDATE_FILE = CONFIG_DIR / "update.json"
+DOCKER_SOCK = "/var/run/docker.sock"
+_update_lock = threading.Lock()
+_update_job = {"state": "idle", "message": "", "log": collections.deque(maxlen=80)}
+_update_cache = {"checked": 0, "latest": None, "versions": [], "error": "", "notes": {}}
+
+
+class _DockerConnection(http.client.HTTPConnection):
+    def __init__(self, timeout=60):
+        super().__init__("docker", timeout=timeout)
+
+    def connect(self):
+        self.sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(DOCKER_SOCK)
+
+
+def docker_api(method, path, body=None, timeout=60, lines=None):
+    """(status, decoded JSON or text) from the Docker Engine API. `lines(obj)` receives streamed JSON lines."""
+    conn = _DockerConnection(timeout)
+    try:
+        data = json.dumps(body).encode() if body is not None else None
+        conn.request(method, path, body=data, headers={"Content-Type": "application/json"} if data else {})
+        r = conn.getresponse()
+        if lines:
+            buf = b""
+            while True:
+                chunk = r.read1(65536) if hasattr(r, "read1") else r.read(65536)
+                if not chunk: break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    try: lines(json.loads(line))
+                    except ValueError: pass
+            return r.status, None
+        raw = r.read()
+        try: return r.status, json.loads(raw) if raw else None
+        except ValueError: return r.status, raw.decode("utf-8", "replace")
+    finally:
+        conn.close()
+
+
+def self_container_id():
+    try:
+        m = re.search(r"/containers/([0-9a-f]{64})/", Path("/proc/self/mountinfo").read_text())
+        if m: return m.group(1)
+    except OSError: pass
+    return _socket.gethostname()
+
+
+def _split_ref(ref):
+    """'ghcr.io/xo907/axdio:2.4' -> ('ghcr.io/xo907/axdio', '2.4'); digests and missing tags count as 'latest'."""
+    ref = str(ref or "").split("@", 1)[0]
+    name, _, tag = ref.rpartition(":") if ":" in ref.rsplit("/", 1)[-1] else (ref, "", "")
+    return name, tag or "latest"
+
+
+def update_setup():
+    """Can this server update itself, and if not, why not?"""
+    out = {"socket": os.path.exists(DOCKER_SOCK), "can_update": False, "reason": "", "image": "", "dev": False}
+    if not out["socket"]:
+        out["reason"] = "no-socket"
+        return out
+    try:
+        st, me = docker_api("GET", f"/containers/{self_container_id()}/json", timeout=10)
+    except PermissionError:
+        out["reason"] = "no-permission"
+        return out
+    except OSError as ex:
+        out.update(reason="no-docker", detail=str(ex))
+        return out
+    if st != 200 or not isinstance(me, dict):
+        out.update(reason="not-found")
+        return out
+    ref = me["Config"].get("Image") or ""
+    name, tag = _split_ref(ref)
+    dev = [m.get("Destination") for m in me.get("Mounts") or [] if m.get("Destination") in ("/app/server.py", "/app/web")]
+    out.update(image=ref, container=me.get("Name", "").lstrip("/"), container_id=me["Id"], tag=tag, dev=bool(dev))
+    if name != UPDATE_IMAGE: out["reason"] = "other-image"
+    elif dev: out["reason"] = "dev"
+    elif not any(m.get("Destination") == "/app/config" for m in me.get("Mounts") or []): out["reason"] = "no-config-volume"
+    else: out["can_update"] = True
+    return out
+
+
+def _registry_versions():
+    """Version tags published for the image (e.g. 2.4.0)."""
+    url = os.environ.get("AXDIO_UPDATE_TAGS_URL")
+    if not url:
+        host, _, repo = UPDATE_IMAGE.partition("/")
+        token = json.loads(urllib.request.urlopen(urllib.request.Request(
+            f"https://{host}/token?scope=repository:{repo}:pull", headers={"User-Agent": f"Axdio/{AXDIO_VERSION}"}), timeout=15).read())
+        url = f"https://{host}/v2/{repo}/tags/list"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token.get('token', '')}", "User-Agent": f"Axdio/{AXDIO_VERSION}"})
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": f"Axdio/{AXDIO_VERSION}"})
+    tags = json.loads(urllib.request.urlopen(req, timeout=15).read()).get("tags") or []
+    return sorted({t for t in tags if re.fullmatch(r"\d+\.\d+\.\d+", t)}, key=_vtuple)
+
+
+def release_notes(version):
+    """The changelog section of a version, from its tag on GitHub."""
+    if version in _update_cache["notes"]: return _update_cache["notes"][version]
+    notes = ""
+    m = re.fullmatch(r"ghcr\.io/([^/]+)/([^/:]+)", UPDATE_IMAGE)
+    if m:
+        try:
+            text = urllib.request.urlopen(urllib.request.Request(
+                f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/v{version}/CHANGELOG.md",
+                headers={"User-Agent": f"Axdio/{AXDIO_VERSION}"}), timeout=15).read().decode("utf-8", "replace")
+            sec = re.search(r"(?ms)^## %s\s*$(.*?)(?=^## |\Z)" % re.escape(version), text)
+            notes = sec.group(1).strip() if sec else ""
+        except Exception:
+            notes = ""
+    _update_cache["notes"][version] = notes
+    return notes
+
+
+def check_for_update(force=False):
+    if not force and time.time() - _update_cache["checked"] < 3600 and _update_cache["latest"]: return _update_cache
+    try:
+        versions = _registry_versions()
+        _update_cache.update(versions=versions, latest=versions[-1] if versions else None, error="", checked=time.time())
+    except Exception as ex:
+        _update_cache.update(error=f"Couldn't check for updates: {ex}", checked=time.time())
+    latest = _update_cache["latest"]
+    if latest and _vtuple(latest) > _vtuple(AXDIO_VERSION):
+        seen = _load_json_file(UPDATE_FILE, {}).get("announced")
+        if seen != latest:
+            _update_state(announced=latest)
+            activity("updates", f"Axdio {latest} is available (this server runs {AXDIO_VERSION})", None)
+            try: send_discord_notification("Update available", f"Axdio **{latest}** is available. This server runs {AXDIO_VERSION}. Open the admin panel's Updates page to install it.")
+            except Exception: pass
+    return _update_cache
+
+
+def _update_state(**kw):
+    st = _load_json_file(UPDATE_FILE, {})
+    st.update(kw)
+    _save_json_file(UPDATE_FILE, st)
+    return st
+
+
+def _ulog(msg):
+    _update_job["log"].append(f"{time.strftime('%H:%M:%S')} {msg}")
+    _update_job["message"] = msg
+
+
+def update_available():
+    latest = _update_cache.get("latest")
+    return bool(latest and _vtuple(latest) > _vtuple(AXDIO_VERSION))
+
+
+def update_view():
+    setup = update_setup()
+    latest = _update_cache.get("latest")
+    newer = [v for v in _update_cache.get("versions") or [] if _vtuple(v) > _vtuple(AXDIO_VERSION)]
+    st = _load_json_file(UPDATE_FILE, {})
+    return {"current": AXDIO_VERSION, "latest": latest, "available": update_available(), "checked": _update_cache.get("checked"),
+            "error": _update_cache.get("error"), "notes": [{"version": v, "notes": release_notes(v)} for v in reversed(newer[-5:])],
+            "setup": setup, "image": UPDATE_IMAGE, "job": {"state": _update_job["state"], "message": _update_job["message"], "log": list(_update_job["log"])},
+            "last": {k: st.get(k) for k in ("state", "from", "to", "at", "message") if st.get(k)}}
+
+
+def _config_source(me):
+    for m in me.get("Mounts") or []:
+        if m.get("Destination") == "/app/config":
+            return m.get("Name") if m.get("Type") == "volume" else m.get("Source")
+    return None
+
+
+def _run_update(who):
+    try:
+        setup = update_setup()
+        if not setup["can_update"]: raise RuntimeError("This server can't update itself (see the Updates page).")
+        check_for_update(force=True)
+        target = _update_cache.get("latest")
+        if not target or _vtuple(target) <= _vtuple(AXDIO_VERSION): raise RuntimeError("Already up to date.")
+        name, tag = _split_ref(setup["image"])
+        # 'latest' follows the newest release; a pinned version tag moves to the new version.
+        new_tag = tag if tag == "latest" else target
+        new_ref = f"{UPDATE_IMAGE}:{new_tag}"
+        st, me = docker_api("GET", f"/containers/{setup['container_id']}/json")
+        # The running image's defaults, read now: once the tag moves to the new image, Docker may forget the old one.
+        s, old_img = docker_api("GET", f"/images/{me['Image']}/json")
+        old_base = (old_img or {}).get("Config") or {} if s == 200 else {}
+        if not os.environ.get("AXDIO_UPDATE_NO_PULL"):
+            _ulog(f"Downloading {new_ref}…")
+            layers = {}
+            def progress(obj):
+                if obj.get("error"): raise RuntimeError(obj["error"])
+                if obj.get("id") and obj.get("status"): layers[obj["id"]] = obj["status"]
+                if obj.get("status", "").startswith(("Digest", "Status")): _ulog(obj["status"])
+            s, _ = docker_api("POST", f"/images/create?fromImage={urllib.parse.quote(UPDATE_IMAGE)}&tag={urllib.parse.quote(new_tag)}", timeout=1800, lines=progress)
+            if s != 200: raise RuntimeError(f"Docker couldn't download the image (HTTP {s}).")
+        s, img = docker_api("GET", f"/images/{urllib.parse.quote(new_ref, safe='')}/json")
+        if s != 200: raise RuntimeError(f"The image {new_ref} isn't there after downloading.")
+        if img["Id"] == me["Image"]: raise RuntimeError("The downloaded image is the one already running.")
+        version = ((img.get("Config") or {}).get("Labels") or {}).get("org.opencontainers.image.version") or target
+        cfg_src = _config_source(me)
+        sock_src = next((m.get("Source") for m in me.get("Mounts") or [] if m.get("Destination") == DOCKER_SOCK), DOCKER_SOCK)
+        _update_state(state="restarting", **{"from": AXDIO_VERSION, "to": version, "at": time.time(), "message": "Restarting with the new version…",
+                                             "by": who, "container": setup["container"], "old_image": me["Image"], "finished": None, "reported": None, "steps": []})
+        activity("updates", f"Updating Axdio from {AXDIO_VERSION} to {version}", who, "warn")
+        _ulog(f"Restarting with Axdio {version}. The server is back in about a minute.")
+        # The helper runs from the new image (it's certain to exist); it only needs Python's standard library.
+        helper = {"Image": img["Id"], "Entrypoint": ["python", "-c", UPDATER_SCRIPT], "Cmd": [], "User": "0:0",
+                  "Env": [f"TARGET={me['Id']}", f"NEW_IMAGE={new_ref}", "STATE=/cfg/update.json", f"WANT_VERSION={version}",
+                          "OLD_BASE=" + json.dumps({k: old_base.get(k) for k in ("Env", "Labels", "Cmd", "Entrypoint", "WorkingDir", "User", "Healthcheck",
+                                                                                "ExposedPorts", "Volumes", "StopSignal", "Shell", "OnBuild")})],
+                  "Labels": {"axdio.role": "updater"},
+                  "HostConfig": {"Binds": [f"{sock_src}:/var/run/docker.sock", f"{cfg_src}:/cfg"], "AutoRemove": True, "NetworkMode": "none"}}
+        s, made = docker_api("POST", f"/containers/create?name=axdio-updater-{uuid.uuid4().hex[:8]}", helper)
+        if s != 201: raise RuntimeError(f"Couldn't start the update helper: {made}")
+        s, _ = docker_api("POST", f"/containers/{made['Id']}/start")
+        if s not in (204, 304): raise RuntimeError(f"Couldn't start the update helper (HTTP {s}).")
+        _update_job["state"] = "restarting"
+    except Exception as ex:
+        _update_job["state"] = "error"
+        _ulog(f"Update failed: {ex}")
+        _update_state(state="failed", message=str(ex), at=time.time())
+        activity("updates", f"Update failed: {ex}", who, "error")
+
+
+def start_update(who=None):
+    with _update_lock:
+        if _update_job["state"] in ("running", "restarting"): raise ValueError("An update is already running.")
+        if plugins_busy(): raise ValueError("A download or repair is running. Try again when it's finished.")
+        _update_job.update(state="running", message="Starting…")
+        _update_job["log"].clear()
+    threading.Thread(target=_run_update, args=(who,), daemon=True, name="update").start()
+
+
+def update_boot_check():
+    """After a restart: record how an update went."""
+    st = _load_json_file(UPDATE_FILE, {})
+    if st.get("state") in ("restarting", "done") and st.get("to") == AXDIO_VERSION and st.get("finished") is None:
+        _update_state(state="done", finished=time.time(), message=f"Updated from {st.get('from')} to {AXDIO_VERSION}")
+        activity("updates", f"Updated Axdio from {st.get('from')} to {AXDIO_VERSION}", st.get("by"))
+        # The previous image is no longer needed once nothing uses it and no tag points at it.
+        try:
+            s, img = docker_api("GET", f"/images/{st.get('old_image')}/json", timeout=10)
+            if s == 200 and not [t for t in img.get("RepoTags") or [] if t != "<none>:<none>"]:
+                docker_api("DELETE", f"/images/{st['old_image']}", timeout=60)
+        except Exception: pass
+    elif st.get("state") == "failed" and st.get("to") and st.get("to") != AXDIO_VERSION and not st.get("reported"):
+        _update_state(reported=True)
+        activity("updates", f"The update to {st.get('to')} didn't start properly, so {AXDIO_VERSION} came back: {st.get('message')}", None, "error")
+
+
+def updates_loop():
+    time.sleep(60)
+    update_boot_check()
+    while True:
+        try:
+            c = cfg()
+            if c.get("updates_check", True):
+                check_for_update()
+                hour = int(c.get("updates_hour", 4))
+                if (c.get("updates_auto") and update_available() and time.localtime().tm_hour == hour and _update_job["state"] in ("idle", "error")
+                        and not plugins_busy() and update_setup()["can_update"]):
+                    last = _load_json_file(UPDATE_FILE, {})
+                    if not (last.get("state") == "failed" and last.get("to") == _update_cache.get("latest")):   # don't retry a failed version
+                        start_update(None)
+        except Exception as ex:
+            print(f"[ERROR] Update check: {ex}")
+        time.sleep(900)
+
+
+@app.route("/api/admin/v2/updates")
+def av2_updates():
+    if request.args.get("check"): check_for_update(force=True)
+    elif not _update_cache["checked"]: check_for_update()
+    return jsonify(update_view())
+
+
+@app.route("/api/admin/v2/updates/install", methods=["POST"])
+def av2_updates_install():
+    try: start_update(admin_name())
+    except ValueError as ex: return jsonify({"error": str(ex)}), 409
+    time.sleep(0.3)
+    return jsonify(update_view())
+
+
+# The helper that swaps the container. It runs in its own short-lived container (from the current image), so it keeps
+# going while this server stops. Standard library only.
+UPDATER_SCRIPT = r'''
+import http.client, json, os, socket, time, urllib.parse
+T, NEW, STATE = os.environ["TARGET"], os.environ["NEW_IMAGE"], os.environ["STATE"]
+
+class C(http.client.HTTPConnection):
+    def __init__(self): super().__init__("docker", timeout=120)
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); self.sock.settimeout(120); self.sock.connect("/var/run/docker.sock")
+
+def api(method, path, body=None):
+    c = C()
+    try:
+        c.request(method, path, body=json.dumps(body).encode() if body is not None else None, headers={"Content-Type": "application/json"})
+        r = c.getresponse(); raw = r.read()
+        try: return r.status, json.loads(raw) if raw else None
+        except ValueError: return r.status, raw.decode("utf-8", "replace")
+    finally: c.close()
+
+def note(**kw):
+    try: st = json.load(open(STATE))
+    except Exception: st = {}
+    st.update(kw); st.setdefault("steps", []).append(time.strftime("%H:%M:%S ") + kw.get("message", ""))
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f: json.dump(st, f, indent=1)
+    try:
+        d = os.stat(os.path.dirname(STATE)); os.chown(tmp, d.st_uid, d.st_gid)
+    except OSError: pass
+    os.replace(tmp, STATE)
+
+s, old = api("GET", f"/containers/{T}/json")
+name = old["Name"].lstrip("/")
+s, new_img = api("GET", f"/images/{urllib.parse.quote(NEW, safe='')}/json")
+new_base = (new_img or {}).get("Config") or {}
+base = json.loads(os.environ.get("OLD_BASE") or "{}")
+if not base.get("Env"):
+    # The old image's defaults are unknown: its system variables give way to the new image's; everything else stays.
+    system = {e.split("=", 1)[0] for e in new_base.get("Env") or []} & {"PATH", "LANG", "GPG_KEY", "PYTHON_VERSION", "PYTHON_SHA256",
+              "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED", "PIP_NO_CACHE_DIR", "PIP_DISABLE_PIP_VERSION_CHECK"}
+    base = dict(new_base, Env=[e for e in old["Config"].get("Env") or [] if e.split("=", 1)[0] in system])
+cfg = dict(old["Config"])
+# What the old image set by default gives way to the new image's defaults.
+cfg["Env"] = [e for e in cfg.get("Env") or [] if e not in (base.get("Env") or [])]
+cfg["Labels"] = {k: v for k, v in (cfg.get("Labels") or {}).items() if (base.get("Labels") or {}).get(k) != v}
+for key in ("Cmd", "Entrypoint", "WorkingDir", "User", "Healthcheck", "ExposedPorts", "Volumes", "StopSignal", "Shell", "OnBuild"):
+    if cfg.get(key) == base.get(key): cfg.pop(key, None)
+if cfg.get("Hostname") == old["Id"][:12]: cfg.pop("Hostname", None)
+cfg.pop("Domainname", None) if not cfg.get("Domainname") else None
+cfg["Image"] = NEW
+host = old["HostConfig"]
+mode = host.get("NetworkMode") or ""
+body = dict(cfg, HostConfig=host)
+if mode not in ("host", "none") and not mode.startswith("container:"):
+    eps = {}
+    for net, ep in (old["NetworkSettings"].get("Networks") or {}).items():
+        eps[net] = {"Aliases": [a for a in ep.get("Aliases") or [] if a != old["Id"][:12]] or None, "IPAMConfig": ep.get("IPAMConfig"),
+                    "Links": ep.get("Links"), "DriverOpts": ep.get("DriverOpts")}
+    body["NetworkingConfig"] = {"EndpointsConfig": eps}
+
+def restore(why):
+    note(state="failed", message=f"{why} Putting the previous version back.")
+    api("POST", f"/containers/{T}/rename?name={urllib.parse.quote(name)}")
+    s, _ = api("POST", f"/containers/{T}/start")
+    note(state="failed", message=f"{why} The previous version is running again." if s in (204, 304) else f"{why} Starting the previous version failed too (HTTP {s}): start the '{name}' container by hand.")
+
+note(state="restarting", message=f"Stopping {name}")
+api("POST", f"/containers/{T}/rename?name={urllib.parse.quote(name + '-axdio-old')}")
+api("POST", f"/containers/{T}/stop?t=30")
+s, made = api("POST", f"/containers/create?name={urllib.parse.quote(name)}", body)
+if s != 201:
+    restore(f"Docker didn't create the new container (HTTP {s}: {str(made)[:200]}).")
+    raise SystemExit(1)
+new = made["Id"]
+note(message=f"Starting the new version ({NEW})")
+s, _ = api("POST", f"/containers/{new}/start")
+ok, why, t0 = False, "", time.time()
+while time.time() - t0 < 300 and s in (204, 304):
+    time.sleep(3)
+    s2, info = api("GET", f"/containers/{new}/json")
+    state = (info or {}).get("State") or {}
+    health = (state.get("Health") or {}).get("Status")
+    if state.get("Status") in ("exited", "dead") or state.get("Restarting"):
+        why = f"The new version stopped (exit code {state.get('ExitCode')})."; break
+    if health == "healthy" or (health is None and state.get("Running") and time.time() - t0 > 30):
+        ok = True; break
+    if health == "unhealthy":
+        why = "The new version started but doesn't answer."; break
+else:
+    why = why or ("The new version didn't start." if s not in (204, 304) else "The new version didn't become ready within 5 minutes.")
+if ok:
+    api("DELETE", f"/containers/{T}")
+    note(state="done", message="The new version is running.")
+else:
+    s3, logs = api("GET", f"/containers/{new}/logs?stdout=1&stderr=1&tail=20")
+    api("POST", f"/containers/{new}/stop?t=10")
+    api("DELETE", f"/containers/{new}?force=1")
+    note(new_logs=str(logs)[-2000:] if logs else "")
+    restore(why)
+'''
+
 # --- Startup ---
 load_users()
 threading.Thread(target=library_scanner, daemon=True, name="library-scanner").start()
@@ -8503,6 +9039,7 @@ threading.Thread(target=duration_flusher, daemon=True, name="duration-flusher").
 threading.Thread(target=social_janitor, daemon=True, name="social-janitor").start()
 threading.Thread(target=fed_sync_loop, daemon=True, name="library-sharing").start()
 threading.Thread(target=plugins_loop, daemon=True, name="plugins").start()
+threading.Thread(target=updates_loop, daemon=True, name="updates").start()
 if (CONFIG_DIR / "python-packages").is_dir():
     print("[INFO] config/python-packages isn't used any more: yt-dlp is now installed under Plugins. You can delete that folder.")
 rebuild_in_memory_tree()   # again, now that music shared by other servers can be added

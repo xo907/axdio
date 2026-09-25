@@ -15,8 +15,14 @@ if [ "$(id -u)" = "0" ] && [ "$PUID" != "0" ]; then
   find "$CONFIG_DIR" \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown "$PUID:$PGID" {} + 2>/dev/null || true
   export HOME=/tmp/axdio-home
   mkdir -p "$HOME" && chown "$PUID:$PGID" "$HOME"
+  # With the Docker socket mounted (for updates from the admin panel), the server joins the group that owns it.
+  GROUPS_ARG="--clear-groups"
+  if [ -S /var/run/docker.sock ]; then
+    GROUPS_ARG="--groups $(stat -c %g /var/run/docker.sock)"
+    echo "[+] Docker socket found: updates can be installed from the admin panel"
+  fi
   echo "[+] Starting Axdio as uid $PUID"
-  exec setpriv --reuid="$PUID" --regid="$PGID" --clear-groups gunicorn -c /app/gunicorn.conf.py server:app
+  exec setpriv --reuid="$PUID" --regid="$PGID" $GROUPS_ARG gunicorn -c /app/gunicorn.conf.py server:app
 fi
 
 echo "[+] Starting Axdio as uid $(id -u)"

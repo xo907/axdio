@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.0
+
+- **Updates from the admin panel.** A new **Updates** page shows when a new version of Axdio is out and what's new in it. With the Docker socket mounted, **Update now** installs it: the new image is downloaded, and Axdio is recreated from it with the same settings. If the new version doesn't start properly, the previous one comes back by itself. Updates can also be installed automatically at a chosen hour. New versions are announced by notification too.
+- **The Files page keeps the library in step.** Deleting a file or folder removes its songs from the library at once, with no rescan, so the downloader can fetch them again straight away. Renaming moves the songs with their likes, playlist places, offline downloads and history. Renames keep a song's file extension and never overwrite another file.
+- A song deleted outside Axdio leaves the library the first time it's played or the downloader looks for it.
+- Pages always load the current version of their scripts and styles, so a browser or proxy never holds on to an old copy after an update. For example, the downloader's **Check songs I already have** option could stay hidden.
+- To install updates from the panel, add `- /var/run/docker.sock:/var/run/docker.sock` under `volumes:` in `docker-compose.yml` and run `docker compose up -d` once.
+
 ## 2.4.0
 
 **Downloader**
