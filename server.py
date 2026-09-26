@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.10.1"
+AXDIO_VERSION = "2.11.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -1007,8 +1007,9 @@ FP_MISMATCH_BER = 0.33
 FP_ITEM_SEC = 1365 / 11025        # Chromaprint frame hop
 FP_WINDOW_SEC = 150               # catalog previews normally sit in the first two minutes
 WORK_DIR = Path(tempfile.gettempdir()) / "axdio_work"
-QUARANTINE_DIR = CONFIG_DIR / "quarantine"
+QUARANTINE_DIR = CONFIG_DIR / "quarantine"          # copies kept before 2.11; an admin deletes them under Library audit
 QUARANTINE_INDEX = QUARANTINE_DIR / "index.json"
+REMOVED_LOG = CONFIG_DIR / "removed.json"             # what was deleted or replaced, when and why (no copies)
 AUDIT_DB_FILE = CONFIG_DIR / "library_audit.json"
 shutil.rmtree(WORK_DIR, ignore_errors=True)
 
@@ -1631,9 +1632,10 @@ def same_credits(target_artists, target_title, ref_artist, ref_title, strict=Tru
 # ============================================================
 # LIBRARY AUDIT & REPAIR
 # Fingerprints every track against the catalog preview of the song its tags name.
-# Wrong audio is replaced by a fingerprint-verified download (original kept in
-# config/quarantine, same library path so likes/playlists stay valid); tracks whose
-# tags were rewritten to another song are re-tagged from the song they really are.
+# Wrong audio is replaced by a fingerprint-verified download at the same library path,
+# so likes/playlists stay valid; the old file is deleted for good (Axdio keeps no copies:
+# they filled the disk). Tracks whose tags were rewritten to another song are re-tagged
+# from the song they really are, and their old tags are noted in the audit entry.
 # ============================================================
 AUDIT_FINAL = {"ok", "mismatch", "wrong_version", "tags_wrong", "uncertain", "unverified", "ignored", "fixed"}
 AUDIT_FIXABLE = {"mismatch", "wrong_version", "tags_wrong", "uncertain"}
@@ -1858,18 +1860,18 @@ def _fix_worker():
         time.sleep(2)
 
 
-def quarantine_original(rel, reason, extra):
-    src = Path(get_real_music_dir()) / rel
-    qid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
-    dst = QUARANTINE_DIR / qid / Path(rel).name
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dst)
-    item = dict(extra, id=qid, rel_path=rel, file=str(dst), reason=reason, at=time.time())
+def record_removal(rel, reason, extra):
+    """Note that a library file is about to be deleted or replaced. Axdio keeps no copy (until 2.11 they went to
+    config/quarantine and could fill the disk overnight); config/removed.json keeps the newest 2000 notes of what went,
+    when and why."""
+    item = dict(extra, id=time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6], rel_path=rel, reason=reason, at=time.time())
     with quarantine_lock:
-        idx = _load_json_file(QUARANTINE_INDEX, [])
-        idx.insert(0, item)
-        _save_json_file(QUARANTINE_INDEX, idx)
+        log = _load_json_file(REMOVED_LOG, [])
+        log.insert(0, item)
+        _save_json_file(REMOVED_LOG, log[:2000])
     return item
+
+quarantine_original = record_removal      # the name plugins made for Axdio before 2.11 call (Downloader 1.0-1.1)
 
 
 def _mark_fixed(rel, entry, fix, **fields):
@@ -1910,11 +1912,12 @@ def _retag_from_reference(rel, p, entry):
     if not meta.get("title"):
         audit_log(f"[FAILED] {rel}: could not load catalog details for '{ref.get('artist')} - {ref.get('title')}'")
         return False
-    q = quarantine_original(rel, entry.get("reason"), {"kind": "tags"})
+    old = read_track_tags(p) or {}
+    before = {k: old.get(k) for k in ("title", "artists", "album", "albumartist", "date", "tracknumber", "isrc") if old.get(k)}
     cover = fetch_bytes(meta.pop("cover_url", None))
     write_track_tags(p, meta, cover=cover, replace_cover=bool(cover), clear=("source_page",))
     refresh_library_entry(rel)
-    _mark_fixed(rel, entry, {"kind": "retagged", "quarantine_id": q["id"]},
+    _mark_fixed(rel, entry, {"kind": "retagged", "before": before},
                 label={"title": meta["title"], "artist": ", ".join(a for a in meta["artists"] if a), "album": meta.get("album"), "isrc": meta.get("isrc")})
     audit_log(f"[FIXED] {rel}: re-tagged as '{', '.join(a for a in meta['artists'] if a)} - {meta['title']}' (audio verified)")
     return True
@@ -1922,33 +1925,98 @@ def _retag_from_reference(rel, p, entry):
 
 
 
-def restore_quarantined(qid):
+def old_quarantine():
+    """(files, bytes) of the copies Axdio kept in config/quarantine before 2.11."""
+    n = size = 0
+    for root, _, files in os.walk(QUARANTINE_DIR):
+        for f in files:
+            if f == "index.json": continue
+            try: size += os.path.getsize(os.path.join(root, f)); n += 1
+            except OSError: pass
+    return n, size
+
+def delete_old_quarantine():
+    """Delete the copies kept before 2.11, for good. What they were stays listed among the removed files."""
     with quarantine_lock:
-        idx = _load_json_file(QUARANTINE_INDEX, [])
-        item = next((i for i in idx if i.get("id") == qid), None)
-    if not item: raise ValueError("Quarantine entry not found")
-    src = Path(item["file"])
-    if not src.is_file(): raise ValueError("Quarantined file is missing")
-    rel = item["rel_path"]
-    install_library_file(src, rel)
-    refresh_library_entry(rel)
-    p = Path(get_real_music_dir()) / rel
-    st, tags = p.stat(), read_track_tags(p) or {}
-    audit_put(rel, {"status": "ignored", "reason": "Restored from quarantine by an admin", "mtime": st.st_mtime, "size": st.st_size,
-                    "label": {"title": tags.get("title"), "artist": ", ".join(tags.get("artists") or []), "album": tags.get("album"), "isrc": tags.get("isrc")},
-                    "source_id": tags.get("source_id"), "checked_at": time.time()}, flush=True)
-    purge_quarantined(qid)
-    return rel
+        idx = [dict({k: v for k, v in i.items() if k != "file"}) for i in _load_json_file(QUARANTINE_INDEX, []) if isinstance(i, dict)]
+        n, size = old_quarantine()
+        log = _load_json_file(REMOVED_LOG, [])
+        seen = {i.get("id") for i in log}
+        log = sorted(log + [i for i in idx if i.get("id") not in seen], key=lambda i: -(i.get("at") or 0))[:5000]
+        _save_json_file(REMOVED_LOG, log)
+        shutil.rmtree(QUARANTINE_DIR, ignore_errors=True)
+    return n, size
 
 
-def purge_quarantined(qid=None):
-    with quarantine_lock:
-        idx = _load_json_file(QUARANTINE_INDEX, [])
-        keep = [i for i in idx if qid and i.get("id") != qid]
-        for i in idx:
-            if i not in keep: shutil.rmtree(Path(i["file"]).parent, ignore_errors=True)
-        _save_json_file(QUARANTINE_INDEX, keep)
-    return len(idx) - len(keep)
+# --- STORAGE GUARD ---
+# Axdio's own disk (settings, database, caches, the downloader's working files) must never fill up: a full disk breaks
+# the database and every save. Every minute, working files older than two hours go; when less than 1 GB is left, the
+# jobs that are running stop (library audit, duplicates, the fixers, downloads), admins are told, and none start again
+# until there's 1.5 GB free.
+STORAGE_MIN_FREE, STORAGE_OK_FREE = 1 << 30, 3 << 29
+STORAGE = {"low": False, "free": None, "total": None}
+
+def storage_free():
+    """(free, total) bytes of the fuller of the disks Axdio's settings and working files are on."""
+    best = (None, None)
+    for d in (CONFIG_DIR, WORK_DIR.parent):
+        try: u = shutil.disk_usage(d)
+        except OSError: continue
+        if best[0] is None or u.free < best[0]: best = (u.free, u.total)
+    return best
+
+def storage_refuse():
+    """The response for starting a job while the disk is nearly full, or None."""
+    if not STORAGE["low"]: return None
+    return jsonify({"error": f"The disk Axdio's settings are on is almost full ({(STORAGE['free'] or 0) / 1e9:.1f} GB left). "
+                             "Free up space first (Overview shows what's using it)."}), 507
+
+def stop_jobs():
+    """Stop everything that reads or writes the library in the background."""
+    for ev in (audit_stop, dup_stop, tagfix_stop, scrape_stop): ev.set()
+    with audit_lock: fix_queue.clear()
+    for fn in plugin_hook("stop"):
+        try: fn()
+        except Exception as ex: print(f"[WARN] A plugin didn't stop: {ex}")
+
+def storage_check():
+    free, total = storage_free()
+    STORAGE.update(free=free, total=total)
+    if free is None: return
+    if not STORAGE["low"] and free < STORAGE_MIN_FREE:
+        STORAGE["low"] = True
+        stop_jobs()
+        msg = (f"Only {free / 1e9:.1f} GB left on the disk Axdio's settings are on. Running jobs were stopped (library audit, "
+               "duplicates, fixers, downloads), and they won't start again until there's more room.")
+        print(f"[WARN] {msg}")
+        activity("system", msg, level="warn")
+        try: send_discord_notification("Axdio is running out of disk space", msg, color=15158332)
+        except Exception: pass
+    elif STORAGE["low"] and free > STORAGE_OK_FREE:
+        STORAGE["low"] = False
+        activity("system", f"There's room on the disk again ({free / 1e9:.1f} GB free), so jobs can run again.")
+
+def clean_work_dir(max_age=7200):
+    """Delete the downloader's and fingerprinter's working files that were left behind (a crash, a stopped job)."""
+    now, n = time.time(), 0
+    try: entries = list(WORK_DIR.iterdir())
+    except OSError: return 0
+    for f in entries:
+        try:
+            if now - f.stat().st_mtime < max_age: continue
+            if f.is_dir(): shutil.rmtree(f, ignore_errors=True)
+            else: f.unlink(missing_ok=True)
+            n += 1
+        except OSError: pass
+    return n
+
+def storage_guard():
+    while True:
+        try:
+            clean_work_dir()
+            storage_check()
+        except Exception as ex: print(f"[WARN] Checking disk space failed: {ex}")
+        time.sleep(60)
 
 
 # --- METADATA & ARTWORK FIXER ---
@@ -2006,7 +2074,10 @@ def _fix_metadata_for(rel, force_all):
     return "fixed"
 
 
+scrape_stop = threading.Event()
+
 def _run_scrape_task(music_dir, force_all=False, scope=None):
+    scrape_stop.clear()
     with scrape_lock:
         admin_scrape_state.update(status="scraping", scraped=0, scanned=0)
         admin_scrape_state["logs"].clear()
@@ -2018,7 +2089,7 @@ def _run_scrape_task(music_dir, force_all=False, scope=None):
     it, it_lock = iter(rels), threading.Lock()
 
     def worker():
-        while True:
+        while not scrape_stop.is_set():
             with it_lock: rel = next(it, None)
             if rel is None: return
             try: r = _fix_metadata_for(rel, force_all)
@@ -2038,7 +2109,7 @@ def _run_scrape_task(music_dir, force_all=False, scope=None):
     for t in threads: t.join()
     audit_flush()
     with scrape_lock:
-        admin_scrape_state["status"] = "completed"
+        admin_scrape_state["status"] = "stopped" if scrape_stop.is_set() else "completed"
     _fixer_log(f"[FINISH] Updated {counts['fixed']} · already complete {counts['complete']} · flagged {counts['flagged']} · "
                f"not found {counts['skipped']} · errors {counts['error']}")
 
@@ -2290,6 +2361,7 @@ def _run_tagfix(rels, quick):
 @app.route("/api/admin/tagfix/start", methods=["POST"])
 def api_admin_tagfix_start():
     d = _json()
+    if storage_refuse(): return storage_refuse()
     rels = scope_rels(d)
     if not rels: return jsonify({"error": "There are no songs there."}), 400
     with tagfix_lock:
@@ -2334,9 +2406,9 @@ def api_admin_tagfix_undo():
 # the tag fixer does), the same length within 3 seconds, no sign that one is another edit (clean, radio edit), and
 # fingerprints that match closely over the first four minutes, throughout (an instrumental matches on average but not
 # where the vocals are). Of each set, the copy with the most complete tags stays; a lossless copy always beats a lossy
-# one. It gets whatever tags, cover and lyrics file it was missing from the others, the others go to quarantine (Library
-# audit, where they can be restored), and likes, playlists, history and the listening log that pointed at them point at
-# the copy that stays. It ends up in its album's folder when one of the copies was there: the album is what most of that
+# one. It gets whatever tags, cover and lyrics file it was missing from the others, the others are deleted for good (the
+# page warns first; config/removed.json notes them), and likes, playlists, history and the listening log that pointed at
+# them point at the copy that stays. It ends up in its album's folder when one of the copies was there: the album is what most of that
 # folder's songs are tagged with, so an album copy tagged as the single still counts. A song that joins its album that
 # way takes the album's tags, its number on the album and the album's cover.
 DUP_IGNORE = CONFIG_DIR / "duplicates_ignored.json"
@@ -2534,8 +2606,8 @@ def _dup_proposal(rels):
             "copies": [{k: v for k, v in c.items() if k != "tags"} | {"role": "keep" if c is keep else "remove"} for c in copies]}
 
 def resolve_duplicates(group):
-    """Keep the best copy of a confirmed set, and quarantine the others. Returns where the kept copy ends up. One set at a
-    time: the same set asked for twice at once (a second click, Remove all) would otherwise be quarantined twice."""
+    """Keep the best copy of a confirmed set, and delete the others for good. Returns where the kept copy ends up. One set
+    at a time: the same set asked for twice at once (a second click, Remove all) mustn't run twice."""
     with dup_resolve_lock: return _resolve_duplicates(group)
 
 def _resolve_duplicates(group):
@@ -2558,9 +2630,9 @@ def _resolve_duplicates(group):
     if not keep["lyrics"]:
         lrc = next((music / c["rel"] for c in others if c["lyrics"]), None)
         if lrc: shutil.copyfile(lrc.with_suffix(".lrc"), kp.with_suffix(".lrc"))
-    # The others go to quarantine.
+    # The others are deleted for good.
     for c in others:
-        quarantine_original(c["rel"], f"Duplicate of {keep['rel']}", {"kind": "duplicate", "kept": keep["rel"]})
+        record_removal(c["rel"], f"Duplicate of {keep['rel']}", {"kind": "duplicate", "kept": keep["rel"]})
         (music / c["rel"]).unlink(missing_ok=True)
         (music / c["rel"]).with_suffix(".lrc").unlink(missing_ok=True)
     forget_library_paths([c["rel"] for c in others], rebuild=False)
@@ -2582,7 +2654,7 @@ def _resolve_duplicates(group):
     _remove_empty_dirs([c["rel"] for c in others] + [keep["rel"]])
     save_and_rebuild_cache()
     from flask import has_request_context
-    activity("library", f"Removed {len(others)} duplicate{'s' if len(others) != 1 else ''} of {final} (in quarantine)",
+    activity("library", f"Deleted {len(others)} duplicate{'s' if len(others) != 1 else ''} of {final}",
              admin_name() if has_request_context() else None)
     return final
 
@@ -2653,7 +2725,7 @@ def _run_dups(rels, auto):
                         final = resolve_duplicates(prop)
                         prop.update(state="resolved", final=final)
                         with dup_lock: dup_state["removed"] += len(members) - 1
-                        _dup_log(f"[FIXED] Kept {final}; the other{'s' if len(members) > 2 else ''} went to quarantine")
+                        _dup_log(f"[FIXED] Kept {final}; deleted the other{'s' if len(members) > 2 else ''}")
                     except Exception as ex:
                         prop.update(state="error", error=str(ex)[:200])
                         _dup_log(f"[ERR] {ex}")
@@ -2668,9 +2740,10 @@ def _run_dups(rels, auto):
 def repair_duplicate_homes():
     """Axdio 2.10.0 could keep a song in its single's folder when the copy it removed was in the album's folder but tagged
     as the single. Once, after a scan: each such song moves into the album's folder, in the removed copy's place, and takes
-    the album's tags. What was removed stays in quarantine. Returns where the songs went."""
+    the album's tags. Returns where the songs went."""
     music = Path(get_real_music_dir())
-    with quarantine_lock: idx = [i for i in _load_json_file(QUARANTINE_INDEX, []) if i.get("kind") == "duplicate"]
+    with quarantine_lock:
+        idx = [i for i in _load_json_file(QUARANTINE_INDEX, []) + _load_json_file(REMOVED_LOG, []) if i.get("kind") == "duplicate"]
     seen, moved = set(), []
     for item in sorted(idx, key=lambda i: i.get("at") or 0):
         kept, gone = item.get("kept") or "", item.get("rel_path") or ""
@@ -2708,6 +2781,7 @@ def repair_duplicate_homes():
 @app.route("/api/admin/dups/start", methods=["POST"])
 def api_admin_dups_start():
     d = _json()
+    if storage_refuse(): return storage_refuse()
     rels = scope_rels(d)
     if not rels: return jsonify({"error": "There are no songs there."}), 400
     with dup_lock:
@@ -3170,6 +3244,7 @@ def api_admin_lyrics_status():
 @app.route("/api/admin/scrape_art", methods=["POST"])
 def api_admin_scrape_art():
     data = request.get_json(silent=True) or {}
+    if storage_refuse(): return storage_refuse()
     with scrape_lock:
         if admin_scrape_state["status"] == "scraping": return jsonify({"error": "Metadata fixer already running"}), 409
         admin_scrape_state["status"] = "scraping"
@@ -3187,6 +3262,7 @@ def api_admin_audit_start():
     d = request.get_json(silent=True) or {}
     try: workers = max(1, min(4, int(d.get("workers") or 2)))
     except (TypeError, ValueError): workers = 2
+    if storage_refuse(): return storage_refuse()
     opts = {"scope": str(d.get("scope") or "")[:200], "recheck": bool(d.get("recheck")), "auto_fix": bool(d.get("auto_fix")), "workers": workers,
             "paths": [str(x) for x in d.get("paths") or []][:500], "artists": [str(x) for x in d.get("artists") or []][:500]}
     with audit_lock:
@@ -3223,6 +3299,7 @@ def api_admin_audit_results():
 @app.route("/api/admin/audit/fix", methods=["POST"])
 def api_admin_audit_fix():
     d = request.get_json(silent=True) or {}
+    if storage_refuse(): return storage_refuse()
     with audit_lock:
         if d.get("all"):
             rels = [rel for rel, e in audit_db.items() if _auto_fixable(e)]
@@ -3245,22 +3322,20 @@ def api_admin_audit_ignore():
 
 @app.route("/api/admin/audit/quarantine", methods=["GET"])
 def api_admin_audit_quarantine():
-    with quarantine_lock: idx = _load_json_file(QUARANTINE_INDEX, [])
-    for i in idx: i["exists"] = Path(i.get("file", "")).is_file()
-    return jsonify({"items": idx})
+    """What was deleted or replaced (newest first), and the copies still kept from before 2.11."""
+    with quarantine_lock: log = _load_json_file(REMOVED_LOG, [])
+    n, size = old_quarantine()
+    return jsonify({"items": log[:300], "total": len(log), "old": {"files": n, "bytes": size}})
 
 @app.route("/api/admin/audit/restore", methods=["POST"])
 def api_admin_audit_restore():
-    qid = (request.get_json(silent=True) or {}).get("id") or ""
-    try: rel = restore_quarantined(qid)
-    except ValueError as e: return jsonify({"error": str(e)}), 404
-    audit_log(f"[RESTORED] {rel} (original file put back; marked as ignored)")
-    return jsonify({"message": "Restored", "rel_path": rel})
+    return jsonify({"error": "Axdio doesn't keep deleted files any more, so there's nothing to restore."}), 410
 
 @app.route("/api/admin/audit/purge", methods=["POST"])
 def api_admin_audit_purge():
-    qid = (request.get_json(silent=True) or {}).get("id")
-    return jsonify({"message": "Deleted", "removed": purge_quarantined(qid)})
+    n, size = delete_old_quarantine()
+    activity("library", f"Deleted the {n} files kept in quarantine ({size / 1e9:.1f} GB) for good", admin_name())
+    return jsonify({"message": "Deleted", "removed": n, "bytes": size})
 
 # --- FILE BROWSER & USER CONTROLLER ---
 @app.route("/api/admin/files/list", methods=["GET"])
@@ -4869,7 +4944,7 @@ def av2_overview():
     by_user.sort(key=lambda x: x["plays"], reverse=True)
     now = time.time()
     if now - _overview_cache["t"] > 120:
-        _overview_cache["caches"] = {k: _dir_size(str(p)) for k, p in (("covers", COVERS_CACHE_DIR), ("lyrics", LYRICS_CACHE_DIR), ("quarantine", CONFIG_DIR / "quarantine"))}
+        _overview_cache["caches"] = {k: _dir_size(str(p)) for k, p in (("covers", COVERS_CACHE_DIR), ("lyrics", LYRICS_CACHE_DIR), ("quarantine", QUARANTINE_DIR))}
         _overview_cache["t"] = now
     listening = []
     with listeners_lock:
@@ -4883,6 +4958,7 @@ def av2_overview():
         "users": {"total": n_users, "admins": n_admins, "invites": active_invites, "top": by_user[:6]},
         "top_tracks": top_tracks, "listening": listening,
         "caches": {k: {"bytes": v[0], "files": v[1]} for k, v in _overview_cache["caches"].items()},
+        "storage": {"low": STORAGE["low"], "free": STORAGE["free"], "total": STORAGE["total"], "min_free": STORAGE_MIN_FREE},
         "system": _system_stats(),
         "social": social_stats(),
         "activity": list(_activity)[-8:][::-1],
@@ -8589,7 +8665,8 @@ class PluginAPI:
         _plugin_schema.setdefault(self.pid, []).append(section["id"])
 
     def hook(self, name, fn):
-        """Hooks Axdio calls: "busy" (-> bool: don't change plugins now), "replace_audio" (the audit's repairs)."""
+        """Hooks Axdio calls: "busy" (-> bool: don't change plugins now), "replace_audio" (the audit's repairs), "stop"
+        (stop what's running: the disk is nearly full)."""
         PLUGIN_HOOKS.setdefault(name, []).append((self.pid, fn))
 
     def add_plugin(self, pid, entry):
@@ -10401,6 +10478,7 @@ def api_timecapsule():
 load_users()
 load_plugins()
 threading.Thread(target=library_scanner, daemon=True, name="library-scanner").start()
+threading.Thread(target=storage_guard, daemon=True, name="storage-guard").start()
 threading.Thread(target=backfill_durations, daemon=True, name="duration-backfill").start()
 threading.Thread(target=backup_scheduler, daemon=True, name="backup-scheduler").start()
 threading.Thread(target=duration_flusher, daemon=True, name="duration-flusher").start()

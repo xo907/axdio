@@ -1975,12 +1975,11 @@ class TestDuplicates(Social):
         self.assertEqual(liked, [final, self.rel("Opening")])
         with server._db_lock:
             self.assertEqual(server.db().execute("SELECT COUNT(*) FROM plays WHERE rel = ?", (final,)).fetchone()[0], 1)
-        q = [i for i in server._load_json_file(server.QUARANTINE_INDEX, []) if i.get("kind") == "duplicate" and i.get("kept") == g["keep"]]
-        self.assertEqual(len(q), 2)
-        # The copies can come back from quarantine.
-        back = server.restore_quarantined(q[0]["id"])
-        self.assertTrue((MUSIC / back).is_file())
-        self.made.append(back)
+        # The others are deleted for good: no copy is kept anywhere, but what went is noted.
+        q = [i for i in server._load_json_file(server.REMOVED_LOG, []) if i.get("kind") == "duplicate" and i.get("kept") == g["keep"]]
+        self.assertEqual(sorted(i["rel_path"] for i in q), sorted(r for r in g["rels"] if r != g["keep"]))
+        self.assertEqual([f for f in server.QUARANTINE_DIR.rglob("*") if f.is_file()] if server.QUARANTINE_DIR.exists() else [], [])
+        self.assertEqual(a.post("/api/admin/audit/restore", json={"id": q[0]["id"]}).status_code, 410)
 
     def test_a_single_joins_its_album(self):
         # Better tags on the single, but the song belongs on the album: it keeps its audio and tags, takes the album's place.
@@ -2073,7 +2072,7 @@ class TestDuplicates(Social):
         self.audio("DupArtist/Two/Twice.flac", 71, title="Twice", artist="DupArtist")
         a = self.admin()
         g = self.run_finder(a)["groups"][0]
-        before = len(server._load_json_file(server.QUARANTINE_INDEX, []))
+        before = len(server._load_json_file(server.REMOVED_LOG, []))
         errors = []
         def go():
             try: server.resolve_duplicates(g)
@@ -2081,11 +2080,21 @@ class TestDuplicates(Social):
         threads = [threading.Thread(target=go) for _ in range(3)]
         for t in threads: t.start()
         for t in threads: t.join()
-        self.assertEqual(len(server._load_json_file(server.QUARANTINE_INDEX, [])) - before, 1)
+        self.assertEqual(len(server._load_json_file(server.REMOVED_LOG, [])) - before, 1)
         self.assertEqual(len(errors), 2)
         self.assertEqual(a.post("/api/admin/dups/resolve", json={"id": g["id"]}).status_code, 400)   # nothing left to remove
         g2 = self.run_finder(a)["groups"]
         self.assertEqual(g2, [])
+
+    def old_quarantine(self, rel, kept):
+        """What Axdio before 2.11 left behind for a removed duplicate: a copy in config/quarantine and an index entry."""
+        qid = f"old-{len(list(server.QUARANTINE_DIR.glob('old-*'))) if server.QUARANTINE_DIR.exists() else 0}"
+        dst = server.QUARANTINE_DIR / qid / Path(rel).name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(MUSIC / rel, dst)
+        idx = server._load_json_file(server.QUARANTINE_INDEX, [])
+        idx.insert(0, {"kind": "duplicate", "kept": kept, "id": qid, "rel_path": rel, "file": str(dst), "reason": f"Duplicate of {kept}", "at": time.time()})
+        server._save_json_file(server.QUARANTINE_INDEX, idx)
 
     def test_what_2_10_0_misplaced_is_put_right(self):
         # 2.10.0 removed the album's copy (tagged as the single) and kept the single's; the first scan after updating moves
@@ -2094,11 +2103,11 @@ class TestDuplicates(Social):
         self.audio("DupArtist/WHO/WHO.flac", 81, title="WHO", artist="DupArtist", album="WHO - Single", track="1")
         gone = self.audio("DupArtist/Only If/WHO.flac", 81, title="WHO", artist="DupArtist", album="WHO - Single", track="10")
         for _ in range(3):                                                   # the same copy removed three times over
-            server.quarantine_original("DupArtist/Only If/WHO.flac", "Duplicate of DupArtist/WHO/WHO.flac", {"kind": "duplicate", "kept": "DupArtist/WHO/WHO.flac"})
+            self.old_quarantine("DupArtist/Only If/WHO.flac", "DupArtist/WHO/WHO.flac")
         self.album("DupArtist/Burn", "Burn")
         self.audio("DupArtist/Burn (Instrumental)/Coil.flac", 53, title="Coil", artist="DupArtist", album="Burn (Instrumental)", track="5")
         self.audio("DupArtist/Burn/Coil.flac", 53, title="Coil", artist="DupArtist", album="Burn (Instrumental)", track="5")
-        server.quarantine_original("DupArtist/Burn/Coil.flac", "Duplicate", {"kind": "duplicate", "kept": "DupArtist/Burn (Instrumental)/Coil.flac"})
+        self.old_quarantine("DupArtist/Burn/Coil.flac", "DupArtist/Burn (Instrumental)/Coil.flac")
         for rel in ("DupArtist/Only If/WHO.flac", "DupArtist/Burn/Coil.flac"): (MUSIC / rel).unlink()
         server.forget_library_paths(["DupArtist/Only If/WHO.flac", "DupArtist/Burn/Coil.flac"])
         self.deezer({})
@@ -2111,6 +2120,18 @@ class TestDuplicates(Social):
         self.assertTrue((MUSIC / "DupArtist/Burn (Instrumental)/Coil.flac").is_file())
         self.assertTrue(server.DUP_REPAIR_MARK.exists())
         self.assertEqual(server.repair_duplicate_homes(), [])                # nothing left to do
+        # The copies kept before 2.11 are listed with their size, and go for good when an admin says so.
+        a = self.admin()
+        d = a.get("/api/admin/audit/quarantine").get_json()
+        self.assertEqual(d["old"]["files"], 4)
+        self.assertGreater(d["old"]["bytes"], 0)
+        r = a.post("/api/admin/audit/purge", json={}).get_json()
+        self.assertEqual(r["removed"], 4)
+        self.assertFalse(server.QUARANTINE_DIR.exists())
+        d = a.get("/api/admin/audit/quarantine").get_json()
+        self.assertEqual(d["old"], {"files": 0, "bytes": 0})
+        self.assertIn("DupArtist/Burn/Coil.flac", [i["rel_path"] for i in d["items"]])      # still on record
+        self.assertNotIn("file", d["items"][0])
 
     def test_not_duplicates_is_remembered(self):
         self.audio("DupArtist/One/Echo.flac", 21, title="Echo", artist="DupArtist")
@@ -2125,6 +2146,69 @@ class TestDuplicates(Social):
         st = self.run_finder(a, auto=True)
         self.assertEqual((len(st["groups"]), st["groups"][0]["state"], st["removed"]), (1, "resolved", 1))
 
+
+
+class TestStorage(Social):
+    """Axdio's own disk never fills up: no copies are kept, stray working files go, and jobs stop when space runs out."""
+    def test_jobs_stop_and_wait_while_the_disk_is_nearly_full(self):
+        a = self.admin()
+        orig, notes = server.storage_free, []
+        orig_discord = server.send_discord_notification
+        server.send_discord_notification = lambda *x, **k: notes.append(x)
+        self.addCleanup(setattr, server, "send_discord_notification", orig_discord)
+        self.addCleanup(setattr, server, "storage_free", orig)
+        stopped = []
+        server.PLUGIN_HOOKS.setdefault("stop", []).append(("test", lambda: stopped.append(1)))
+        self.addCleanup(lambda: server.PLUGIN_HOOKS["stop"].pop())
+        try:
+            server.storage_free = lambda: (600 << 20, 100 << 30)
+            server.storage_check()
+            self.assertTrue(server.STORAGE["low"])
+            self.assertTrue(server.dup_stop.is_set() and server.audit_stop.is_set() and server.tagfix_stop.is_set() and server.scrape_stop.is_set())
+            self.assertEqual((stopped, len(notes)), ([1], 1))
+            for url in ("/api/admin/dups/start", "/api/admin/audit/start", "/api/admin/tagfix/start", "/api/admin/scrape_art"):
+                self.assertEqual(a.post(url, json={}).status_code, 507, url)
+            ov = a.get("/api/admin/v2/overview").get_json()["storage"]
+            self.assertTrue(ov["low"])
+            server.storage_free = lambda: (1200 << 20, 100 << 30)     # not enough room yet to call it fine
+            server.storage_check()
+            self.assertTrue(server.STORAGE["low"])
+            server.storage_free = lambda: (5 << 30, 100 << 30)
+            server.storage_check()
+            self.assertFalse(server.STORAGE["low"])
+            self.assertNotEqual(a.post("/api/admin/dups/start", json={"paths": ["Test Artist"]}).status_code, 507)
+            for _ in range(100):
+                if a.get("/api/admin/dups/status").get_json()["status"] != "running": break
+                time.sleep(0.1)
+        finally:
+            server.STORAGE["low"] = False
+
+    def test_left_over_working_files_are_cleared(self):
+        server.WORK_DIR.mkdir(parents=True, exist_ok=True)
+        old, new = server.WORK_DIR / "old.m4a", server.WORK_DIR / "new.m4a"
+        old.write_bytes(b"x" * 10); new.write_bytes(b"x" * 10)
+        os.utime(old, (time.time() - 3 * 3600,) * 2)
+        self.assertEqual(server.clean_work_dir(), 1)
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
+        new.unlink()
+
+    def test_a_retagged_song_keeps_no_copy(self):
+        # The audit rewrites wrong tags without copying the song; what they were is kept with the audit entry.
+        rel = self.rel("Something Else")
+        p = MUSIC / rel
+        orig = server.reference_metadata
+        server.reference_metadata = lambda ref: {"title": "Right Title", "artists": ["Right Artist"], "album": "Right Album"}
+        self.addCleanup(setattr, server, "reference_metadata", orig)
+        before = server.read_track_tags(p)
+        try:
+            self.assertTrue(server._retag_from_reference(rel, p, {"status": "tags_wrong", "ref": {"source": "deezer", "id": 1}}))
+            fix = server.audit_db[rel]["fix"]
+            self.assertEqual((fix["kind"], fix["before"]["title"], fix["before"]["album"]), ("retagged", before["title"], before["album"]))
+            self.assertFalse(server.QUARANTINE_DIR.exists() and any(p.name == f.name for f in server.QUARANTINE_DIR.rglob("*")))
+        finally:
+            server.write_track_tags(p, {"title": before["title"], "artists": before["artists"], "album": before["album"]})
+            server.refresh_library_entry(rel)
 
 
 def tearDownModule():

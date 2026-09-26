@@ -379,8 +379,10 @@ async function pageOverview(el) {
       ? d.users.top.filter(u => u.plays).map((u, i) => `<div class="li"><span class="rank">${i + 1}</span><div class="avatar">${esc((u.display_name || u.username)[0].toUpperCase())}</div><div class="grow"><div class="t ell">${esc(u.display_name)}</div><div class="s">@${esc(u.username)}</div></div><span class="n">${plural(u.plays, 'play')}</span></div>`).join('')
       : '<div class="empty">No listening history yet.</div>';
     const formats = Object.entries(lib.formats).map(([k, n]) => `<span class="badge">${esc(k.toUpperCase())} · ${nf(n)}</span>`).join(' ');
-    const caches = d.caches;
-    el.innerHTML = `<div class="chips">${chips}</div>
+    const caches = d.caches, st = d.storage || {};
+    const warn = (st.low ? `<div class="callout bad"><span><b>The disk is almost full.</b> Only ${fmtBytes(st.free)} left on the disk Axdio's settings are on, so the library audit, duplicate finder, fixers and downloads were stopped. They can start again once there's more room.</span></div>` : '')
+      + (caches.quarantine && caches.quarantine.bytes ? `<div class="callout"><span>${fmtBytes(caches.quarantine.bytes)} of copies are still kept from before Axdio 2.11 (config/quarantine). Axdio doesn't keep copies any more.</span><a class="btn ghost sm" href="#/audit">Review and delete</a></div>` : '');
+    el.innerHTML = `${warn}<div class="chips">${chips}</div>
       <div class="stats">
         ${stat('Songs', nf(lib.tracks), formats ? '' : '')}
         ${stat('Artists', nf(lib.artists))}
@@ -406,7 +408,7 @@ async function pageOverview(el) {
         <dt>Without embedded artwork</dt><dd>${nf(lib.missing_art)} songs · <a class="link" href="#/metadata">Fix artwork</a></dd>
         <dt>Cover cache</dt><dd>${fmtBytes(caches.covers.bytes)} · ${plural(caches.covers.files, 'image')}</dd>
         <dt>Lyrics cache</dt><dd>${fmtBytes(caches.lyrics.bytes)} · ${plural(caches.lyrics.files, 'song')}</dd>
-        <dt>Quarantine</dt><dd>${fmtBytes(caches.quarantine.bytes)} · ${plural(caches.quarantine.files, 'file')}</dd>
+        ${caches.quarantine && caches.quarantine.bytes ? `<dt>Old quarantine</dt><dd>${fmtBytes(caches.quarantine.bytes)} · ${plural(caches.quarantine.files, 'file')} · <a class="link" href="#/audit">Delete</a></dd>` : ''}
       </dl></div></section>
       ${d.social ? `<section class="card"><div class="card-h"><h2>Social</h2><a class="link" href="#/features">Settings</a></div><div class="card-b"><dl class="kv">
         <dt>Friendships</dt><dd>${nf(d.social.friendships)}</dd>
@@ -831,13 +833,14 @@ function fillTerm(term, lines) {
 /* Duplicates */
 function pageDuplicates(el) {
   el.innerHTML = `<section class="card"><div class="card-h"><h2>Find duplicates</h2><span class="badge" id="dp-badge">Idle</span></div>
-      <p class="desc">Finds songs you have more than once, in the same folder or different ones. Two files count as the same only when the audio says so: the same title and artist, the same length, and fingerprints that match closely. Remixes, live takes and clean or radio edits aren't duplicates. Of each set, the copy with the most complete tags stays (a lossless copy always beats a lossy one) and gets whatever tags, cover or lyrics it was missing from the others. The others go to quarantine under Library audit, where they can be restored, and likes, playlists and history move to the copy that stays. If that copy isn't in its album's folder and another one was, it moves there.</p>
+      <p class="desc">Finds songs you have more than once, in the same folder or different ones. Two files count as the same only when the audio says so: the same title and artist, the same length, and fingerprints that match closely. Remixes, live takes and clean or radio edits aren't duplicates. Of each set, the copy with the most complete tags stays (a lossless copy always beats a lossy one) and gets whatever tags, cover or lyrics it was missing from the others. Likes, playlists and history move to the copy that stays. If that copy isn't in its album's folder and another one was, it moves there.</p>
+      <p class="desc" style="color:var(--warn)">The other copies are deleted for good. Axdio doesn't keep them, so this can't be undone.</p>
       <div class="card-b">${scopeHtml('dups')}
-        <div class="row wrap" style="margin-top:12px"><button class="btn primary" id="dp-start">Find duplicates</button><button class="btn danger" id="dp-stop" disabled>Stop</button><label class="check"><input type="checkbox" id="dp-auto"> Remove them as soon as they're confirmed</label></div>
+        <div class="row wrap" style="margin-top:12px"><button class="btn primary" id="dp-start">Find duplicates</button><button class="btn danger" id="dp-stop" disabled>Stop</button><label class="check"><input type="checkbox" id="dp-auto"> Delete duplicates as soon as they're confirmed, without asking</label></div>
         <div class="progress"><i id="dp-bar"></i></div><div class="muted" id="dp-progress" style="font-size:13px">Checking a big library takes a while: every song that shares a title with another is fingerprinted.</div>
         <div class="term" id="dp-term" style="margin-top:14px;height:180px"><span class="ln c-dim">Ready.</span></div></div></section>
-    <section class="card" id="dp-res" hidden><div class="card-h"><h2>Duplicates found</h2><button class="btn primary sm" id="dp-all">Remove all duplicates</button></div><div id="dp-list" class="stack" style="padding:0 20px 20px"></div></section>`;
-  let seen = '';
+    <section class="card" id="dp-res" hidden><div class="card-h"><h2>Duplicates found</h2><button class="btn danger sm" id="dp-all">Delete all duplicates</button></div><div id="dp-list" class="stack" style="padding:0 20px 20px"></div></section>`;
+  let seen = '', groups = [];
   const fmt = c => `${esc(c.format)}${c.lossless ? ' · lossless' : c.bitrate ? ` · ${c.bitrate} kbps` : ''}`;
   const poll = async () => {
     const d = await api('/api/admin/dups/status').catch(() => null); if (!d || !$('#dp-term')) return;
@@ -848,6 +851,7 @@ function pageDuplicates(el) {
     $('#dp-bar').style.width = d.total ? Math.round(100 * d.scanned / d.total) + '%' : (busy ? '5%' : '0');
     if (d.started_at) $('#dp-progress').textContent = `${d.total ? `${nf(d.scanned)} of ${plural(d.total, 'file')} fingerprinted` : 'Looking for titles that appear more than once…'} in ${d.scope} · ${plural(d.groups.length, 'set')} found${d.removed ? ` · ${nf(d.removed)} removed` : ''}`;
     if (d.logs && d.logs.length) fillTerm($('#dp-term'), d.logs);
+    groups = d.groups;
     const key = JSON.stringify(d.groups.map(g => [g.id, g.state]));
     if (key === seen) return;
     seen = key;
@@ -859,25 +863,35 @@ function pageDuplicates(el) {
         <div class="muted" style="font-size:12.5px">${esc(c.title || '—')}${c.artist ? ' · ' + esc(c.artist) : ''}${c.album ? ' · ' + esc(c.album) : ''} · ${fmt(c)}${c.missing.length ? ` · missing ${esc(c.missing.join(', '))}` : ' · complete tags'}${c.lyrics ? ' · lyrics' : ''}</div></div></div>`).join('')}
       ${g.move_to ? `<div class="muted" style="font-size:12.5px;margin-top:6px">The copy that stays moves to its album: ${esc(g.move_to)}/${esc(g.move_as || '')}</div>` : ''}
       ${g.joins ? `<div class="muted" style="font-size:12.5px;margin-top:4px">It becomes part of ${esc(g.joins)}, with that album's tags, track number and cover</div>` : ''}
-      <div class="row" style="margin-top:10px">${g.state === 'found' ? `<button class="btn primary sm" data-dp="resolve" data-id="${g.id}">Remove ${g.copies.length > 2 ? 'duplicates' : 'duplicate'}</button><button class="btn ghost sm" data-dp="ignore" data-id="${g.id}">Not duplicates</button>`
-        : g.state === 'removing' ? '<span class="badge">Removing…</span>'
+      <div class="row" style="margin-top:10px">${g.state === 'found' ? `<button class="btn danger sm" data-dp="resolve" data-id="${g.id}">Delete ${g.copies.length > 2 ? 'duplicates' : 'duplicate'}</button><button class="btn ghost sm" data-dp="ignore" data-id="${g.id}">Not duplicates</button>`
+        : g.state === 'removing' ? '<span class="badge">Deleting…</span>'
         : g.state === 'resolved' ? `<span class="badge ok">Done</span><span class="muted" style="font-size:12.5px">Kept ${esc(g.final || g.keep)}</span>` : g.state === 'ignored' ? '<span class="badge">Left alone</span>' : `<span class="badge bad">Error</span><span class="muted" style="font-size:12.5px">${esc(g.error || '')}</span>`}</div></div>`).join('');
   };
   try { $('#dp-auto').checked = localStorage.getItem('axdio-dp-auto') === '1'; } catch (e) { /* storage unavailable */ }
   $('#dp-auto').onchange = e => { try { localStorage.setItem('axdio-dp-auto', e.target.checked ? '1' : '0'); } catch (x) { /* ignore */ } };
-  $('#dp-start').onclick = () => api('/api/admin/dups/start', Object.assign(scopeBody('dups'), { auto: $('#dp-auto').checked })).then(poll, fail);
+  $('#dp-start').onclick = async () => {
+    const auto = $('#dp-auto').checked;
+    if (auto && !(await confirmDlg('Delete duplicates as they\'re found?', 'Every confirmed duplicate is deleted for good as soon as it\'s found, without asking again. Deleted files can\'t be brought back.', 'Find and delete', true))) return;
+    api('/api/admin/dups/start', Object.assign(scopeBody('dups'), { auto })).then(poll, fail);
+  };
   $('#dp-stop').onclick = () => api('/api/admin/dups/stop', {}).then(poll, fail);
   $('#dp-all').onclick = async () => {
-    if (!(await confirmDlg('Remove every duplicate?', 'Of each set, the copy shown as Keep stays. The others go to quarantine, where they can be restored.', 'Remove all'))) return;
+    const n = groups.filter(g => g.state === 'found').reduce((a, g) => a + g.copies.length - 1, 0);
+    if (!(await confirmDlg('Delete every duplicate for good?', `Of each set, the copy shown as Keep stays. The other ${plural(n, 'file')} are deleted for good and can't be brought back.`, 'Delete all', true))) return;
     const b = $('#dp-all'); b.disabled = true;
     document.querySelectorAll('#dp-list [data-dp]').forEach(x => { x.disabled = true; });
-    api('/api/admin/dups/resolve', { all: true }).then(r => { b.disabled = false; toast(`Removed ${plural(r.removed, 'duplicate')}`); poll(); }, err => { b.disabled = false; fail(err); });
+    api('/api/admin/dups/resolve', { all: true }).then(r => { b.disabled = false; toast(`Deleted ${plural(r.removed, 'duplicate')}`); poll(); }, err => { b.disabled = false; fail(err); });
     setTimeout(poll, 600);
   };
-  el.addEventListener('click', e => {
+  el.addEventListener('click', async e => {
     const b = e.target.closest('[data-dp]'); if (!b) return;
+    if (b.dataset.dp === 'resolve') {
+      const g = groups.find(x => x.id === b.dataset.id), gone = g ? g.copies.filter(c => c.role !== 'keep').map(c => c.rel) : [];
+      const html = `<div class="mono" style="font-size:12.5px;word-break:break-all;display:grid;gap:4px">${gone.map(esc).join('<br>')}</div><p class="muted" style="margin-top:10px">${gone.length > 1 ? 'They' : 'It'} can't be brought back. The copy shown as Keep stays.</p>`;
+      if (!(await dialog({ title: gone.length > 1 ? `Delete ${gone.length} copies for good?` : 'Delete this copy for good?', html, ok: 'Delete', danger: true }))) return;
+    }
     b.parentNode.querySelectorAll('[data-dp]').forEach(x => { x.disabled = true; });
-    api('/api/admin/dups/' + b.dataset.dp, { id: b.dataset.id }).then(() => { toast(b.dataset.dp === 'resolve' ? 'Removed; the copy that stays has everything' : 'Left alone, and left out of later searches'); poll(); }, err => { b.parentNode.querySelectorAll('[data-dp]').forEach(x => { x.disabled = false; }); fail(err); });
+    api('/api/admin/dups/' + b.dataset.dp, { id: b.dataset.id }).then(() => { toast(b.dataset.dp === 'resolve' ? 'Deleted; the copy that stays has everything' : 'Left alone, and left out of later searches'); poll(); }, err => { b.parentNode.querySelectorAll('[data-dp]').forEach(x => { x.disabled = false; }); fail(err); });
     if (b.dataset.dp === 'resolve') setTimeout(poll, 600);
   });
   drawScope('dups'); poll();
@@ -891,13 +905,14 @@ const encArg = v => encodeURIComponent(v);
 function fmtSecs(s) { s = Math.max(0, Math.round(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; }
 function pageAudit(el) {
   el.innerHTML = `<section class="card"><div class="card-h"><h2>Check the library</h2><span class="badge" id="au-badge">Idle</span></div>
-    <p class="desc">Fingerprints each song and compares it with the Deezer/iTunes preview of the song its tags name. Wrong tags can be rewritten from the song the audio really is. With the Downloader plugin, wrong audio can also be replaced by a verified download at the same path, so likes and playlists keep working. Replaced originals go to quarantine and can be restored.</p>
+    <p class="desc">Fingerprints each song and compares it with the Deezer/iTunes preview of the song its tags name. Wrong tags can be rewritten from the song the audio really is. With the Downloader plugin, wrong audio can also be replaced by a verified download at the same path, so likes and playlists keep working.</p>
+    <p class="desc" style="color:var(--warn)">Replaced audio is deleted for good; Axdio doesn't keep a copy. Rewritten tags are noted, so you can see what they were.</p>
     <div class="card-b">
       ${scopeHtml('audit')}
       <div class="row wrap" style="margin-top:12px">
         <select class="select" id="au-workers" style="width:auto" aria-label="Parallel reads"><option value="1">1 worker</option><option value="2">2 workers</option><option value="3" selected>3 workers</option><option value="4">4 workers</option></select>
         <button class="btn primary" id="au-start">Start audit</button><button class="btn danger" id="au-stop" disabled>Stop</button></div>
-      <div class="row wrap" style="margin-top:12px;gap:18px"><label class="check"><input type="checkbox" id="au-fix"> Repair confirmed problems automatically</label><label class="check"><input type="checkbox" id="au-recheck"> Re-check songs that were already audited</label></div>
+      <div class="row wrap" style="margin-top:12px;gap:18px"><label class="check"><input type="checkbox" id="au-fix"> Repair confirmed problems automatically (replaced audio is deleted for good)</label><label class="check"><input type="checkbox" id="au-recheck"> Re-check songs that were already audited</label></div>
       <div class="progress"><i id="au-bar"></i></div><div class="muted" id="au-progress" style="font-size:13px">No audit has run since the server started.</div>
       <div class="audit-totals" id="au-totals"></div>
       <div class="term" id="au-term" style="margin-top:14px;height:220px"><span class="ln c-dim">A first pass reads every file from storage, so expect several hours for a large library. Results are saved as it goes; later runs only check new or changed files.</span></div>
@@ -906,8 +921,9 @@ function pageAudit(el) {
       <option value="mismatch,tags_wrong,wrong_version,uncertain">Needs attention</option><option value="mismatch">Wrong audio</option><option value="tags_wrong">Wrong tags</option><option value="wrong_version">Wrong cut</option><option value="uncertain">Uncertain</option><option value="unverified">Unverifiable</option><option value="fixed">Repaired</option><option value="ignored">Ignored</option><option value="error">Errors</option></select>
       <input class="input" id="au-q" placeholder="Filter by path" style="max-width:180px"><button class="btn ghost sm" id="au-fixall">Repair all confirmed</button></div>
       <p class="desc" id="au-note"></p><div class="card-b flush"><div class="table-wrap"><table><thead><tr><th>Song</th><th>Problem</th><th>Evidence</th><th></th></tr></thead><tbody id="au-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div></div></section>
-    <section class="card"><div class="card-h"><h2>Quarantine</h2><button class="btn danger sm" id="qu-purge">Delete all</button></div><p class="desc">Originals of repaired songs (config/quarantine). Restoring puts the original back and marks the song as ignored.</p>
-      <div class="card-b flush"><div class="table-wrap"><table><thead><tr><th>When</th><th>Song</th><th>Repair</th><th></th></tr></thead><tbody id="qu-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div></div></section>`;
+    <section class="card"><div class="card-h"><h2>Deleted and replaced</h2><span class="sub" id="qu-count"></span></div><p class="desc">What the audit, the duplicate finder and the Downloader deleted or replaced. Axdio doesn't keep copies, so these can't be brought back; this is the record of what went and why.</p>
+      <div id="qu-old"></div>
+      <div class="card-b flush"><div class="table-wrap"><table><thead><tr><th>When</th><th>File</th><th>What happened</th></tr></thead><tbody id="qu-body"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody></table></div></div></section>`;
   let wasBusy = false;
   const status = async () => {
     const d = await api('/api/admin/audit/status').catch(() => null); if (!d || !$('#au-badge')) return;
@@ -939,7 +955,7 @@ function pageAudit(el) {
   };
   const actions = r => {
     const rel = encArg(r.rel_path), out = [];
-    if (['mismatch', 'wrong_version', 'uncertain'].includes(r.status)) out.push(`<button class="btn ghost sm" data-act="au-fix" data-rel="${rel}">Replace audio</button>`);
+    if (['mismatch', 'wrong_version', 'uncertain'].includes(r.status)) out.push(`<button class="btn ghost sm" data-act="au-fix" data-audio="1" data-rel="${rel}">Replace audio</button>`);
     if (r.status === 'tags_wrong') out.push(`<button class="btn ghost sm" data-act="au-fix" data-rel="${rel}">Fix tags</button>`);
     if (['mismatch', 'wrong_version', 'uncertain', 'tags_wrong', 'unverified', 'error'].includes(r.status)) out.push(`<button class="btn ghost sm" data-act="au-ignore" data-rel="${rel}">Ignore</button>`);
     return `<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">${out.join('')}</div>`;
@@ -954,16 +970,19 @@ function pageAudit(el) {
         <td class="evidence" style="min-width:240px">${evidence(r)}</td><td class="act">${actions(r)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">Nothing here.</td></tr>';
     } catch (e) { body.innerHTML = `<tr><td colspan="4" class="empty">Couldn't load results: ${esc(e.message)}</td></tr>`; }
   };
+  const KINDS = { duplicate: 'Duplicate deleted', audio: 'Audio replaced', download: 'Audio replaced', tags: 'Tags rewritten (a copy was kept)' };
   const quarantine = async () => {
     const body = $('#qu-body'); if (!body) return;
     try {
       const d = await api('/api/admin/audit/quarantine');
+      $('#qu-count').textContent = d.total ? plural(d.total, 'file') : '';
+      $('#qu-old').innerHTML = d.old.files ? `<div class="callout" style="margin:0 20px 14px"><span><b>${fmtBytes(d.old.bytes)}</b> in ${plural(d.old.files, 'copy', 'copies')} ${d.old.files === 1 ? 'is' : 'are'} still kept from before Axdio 2.11, in config/quarantine. Deleting ${d.old.files === 1 ? 'it' : 'them'} frees the space for good; ${d.old.files === 1 ? 'it' : 'they'} can't be restored afterwards.</span><button class="btn danger sm" id="qu-purge" data-act="qu-purge">Delete for good</button></div>` : '';
       body.innerHTML = d.items.length ? d.items.map(i => `<tr><td class="muted" style="white-space:nowrap">${fmtTime(i.at)}</td><td><div class="path" style="color:var(--text)">${esc(i.rel_path)}</div><div class="evidence">${esc(i.reason || '')}</div></td>
-        <td>${i.kind === 'tags' ? 'Tags rewritten' : 'Audio replaced'}${i.exists ? '' : '<div class="st-error" style="font-size:12px">file missing</div>'}</td>
-        <td class="act"><button class="btn ghost sm" data-act="qu-restore" data-id="${encArg(i.id)}"${i.exists ? '' : ' disabled'}>Restore</button> <button class="icon-btn" data-act="qu-delete" data-id="${encArg(i.id)}" aria-label="Delete">${ic('close')}</button></td></tr>`).join('') : '<tr><td colspan="4" class="empty">Empty.</td></tr>';
-    } catch (e) { body.innerHTML = `<tr><td colspan="4" class="empty">Couldn't load quarantine.</td></tr>`; }
+        <td>${esc(KINDS[i.kind] || 'Deleted')}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">Nothing has been deleted.</td></tr>';
+    } catch (e) { body.innerHTML = `<tr><td colspan="3" class="empty">Couldn't load the list.</td></tr>`; }
   };
   $('#au-start').onclick = async () => {
+    if ($('#au-fix').checked && !(await confirmDlg('Repair automatically?', 'Wrong tags are rewritten, and songs whose audio is wrong are replaced by a verified download as soon as they\'re confirmed. The old audio is deleted for good.', 'Start audit', true))) return;
     try { await api('/api/admin/audit/start', Object.assign(scopeBody('audit'), { workers: +$('#au-workers').value, auto_fix: $('#au-fix').checked, recheck: $('#au-recheck').checked })); status(); }
     catch (e) { fail(e); }
   };
@@ -972,25 +991,23 @@ function pageAudit(el) {
   $('#au-filter').onchange = results;
   let qt; $('#au-q').oninput = () => { clearTimeout(qt); qt = setTimeout(results, 300); };
   $('#au-fixall').onclick = async () => {
-    if (!(await confirmDlg('Repair every confirmed problem?', 'Wrong tags are rewritten, and wrong audio is replaced if the Downloader plugin is installed. Originals go to quarantine.', 'Repair all'))) return;
+    if (!(await confirmDlg('Repair every confirmed problem?', 'Wrong tags are rewritten, and wrong audio is replaced if the Downloader plugin is installed. The old audio is deleted for good and can\'t be brought back.', 'Repair all', true))) return;
     api('/api/admin/audit/fix', { all: true }).then(status, fail);
-  };
-  $('#qu-purge').onclick = async () => {
-    if (!(await confirmDlg('Delete all quarantined originals?', 'They are removed from disk permanently.', 'Delete all', true))) return;
-    api('/api/admin/audit/purge', {}).then(quarantine, fail);
   };
   el.addEventListener('click', async e => {
     const b = e.target.closest('[data-act]'); if (!b) return;
     const act = b.dataset.act;
     if (act === 'au-show') { const sel = $('#au-filter'); if ([...sel.options].some(o => o.value === b.dataset.k)) { sel.value = b.dataset.k; results(); sel.scrollIntoView({ behavior: 'smooth', block: 'center' }); } }
-    else if (act === 'au-fix') api('/api/admin/audit/fix', { rel_paths: [decodeURIComponent(b.dataset.rel)] }).then(status, fail);
+    else if (act === 'au-fix') {
+      const html = `<div class="mono" style="font-size:12.5px;word-break:break-all">${esc(decodeURIComponent(b.dataset.rel))}</div><p class="muted" style="margin-top:10px">Its audio is replaced by a verified download of the right recording. The old audio is deleted for good.</p>`;
+      if (b.dataset.audio && !(await dialog({ title: 'Replace this song\'s audio?', html, ok: 'Replace', danger: true }))) return;
+      api('/api/admin/audit/fix', { rel_paths: [decodeURIComponent(b.dataset.rel)] }).then(status, fail);
+    }
     else if (act === 'au-ignore') { await api('/api/admin/audit/ignore', { rel_path: decodeURIComponent(b.dataset.rel) }).catch(fail); results(); status(); }
-    else if (act === 'qu-restore') {
-      if (!(await confirmDlg('Put the original back?', 'The song will be marked as ignored by future audits.', 'Restore'))) return;
-      await api('/api/admin/audit/restore', { id: decodeURIComponent(b.dataset.id) }).catch(fail); quarantine(); results(); status();
-    } else if (act === 'qu-delete') {
-      if (!(await confirmDlg('Delete this original?', 'It is removed from disk permanently.', 'Delete', true))) return;
-      await api('/api/admin/audit/purge', { id: decodeURIComponent(b.dataset.id) }).catch(fail); quarantine();
+    else if (act === 'qu-purge') {
+      if (!(await confirmDlg('Delete the old quarantine for good?', 'The copies Axdio kept before 2.11 are deleted from the disk. They can\'t be restored afterwards.', 'Delete for good', true))) return;
+      b.disabled = true;
+      api('/api/admin/audit/purge', {}).then(r => { toast(`Deleted ${plural(r.removed, 'file')} (${fmtBytes(r.bytes)})`); quarantine(); }, err => { b.disabled = false; fail(err); });
     }
   });
   status(); results(); quarantine();

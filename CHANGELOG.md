@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.11.0
+
+- **Axdio no longer keeps copies of what it deletes or replaces.** Until now, every duplicate removed, every song whose audio the audit replaced, and every song whose tags it rewrote was first copied whole into `config/quarantine`. Nothing ever cleaned that folder up, so a night of the duplicate finder and the audit could fill the disk. Now:
+  - Duplicates and replaced audio are deleted for good. Tag rewrites keep no copy of the song; the old tags are noted with the song's audit entry.
+  - Every button and option that deletes or replaces files says so, and asks first: removing a duplicate or all of them, deleting duplicates as they're found, repairing automatically, replacing a song's audio, and repairing everything.
+  - **Library audit** now lists what was deleted or replaced, when and why (the newest 2000, in `config/removed.json`), in place of the quarantine.
+  - Copies kept by earlier versions stay until you delete them: **Library audit** and **Overview** show how much space they take, with a button to delete them for good. Axdio doesn't delete them on its own.
+- **Axdio watches its own disk.** Every minute it checks the disk its settings, database and working files are on.
+  - When less than 1 GB is left, the library audit, duplicate finder, fixers and plugin jobs (like downloads) are stopped. The admins are told on the Overview, in the activity log and on Discord. New jobs can't start until there's 1.5 GB free again.
+  - Working files left behind by a stopped or failed job are deleted after two hours.
+- Plugins can register a "stop" hook, which Axdio calls when the disk is nearly full.
+- The metadata fixer can be stopped (Axdio stops it when the disk is nearly full).
+
 ## 2.10.1
 
 - Fixed: the duplicate finder could keep a song in its single's folder instead of its album's. This happened when the album's copy carried the single's tags ("LATELY - Single"), because the album folder was only recognized by the copy's own tag. Now a folder counts as an album's home when most of its songs are tagged with that album. A song that joins its album this way also takes the album's name, artist, date and cover, and its track number on the album (from the copy it replaces, or from Deezer).
