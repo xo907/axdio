@@ -321,3 +321,9 @@ td.act { text-align: right; white-space: nowrap; width: 1%; }
 #tf-body .t { font-weight: 600; }
 #tf-body .s { font-size: 12.5px; }
 #files-body td.act { white-space: nowrap; }
+/* Duplicates */
+.dup { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.dup.done { opacity: .65; }
+.dup-row { display: flex; align-items: flex-start; gap: 12px; padding: 6px 0; }
+.dup-row .badge { flex-shrink: 0; min-width: 64px; justify-content: center; margin-top: 2px; }
+

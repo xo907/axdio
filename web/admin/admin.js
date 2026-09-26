@@ -299,6 +299,7 @@ const PAGES = [
   { id: 'notifications', title: 'Notifications', icon: 'notifications', render: pageNotifications },
   { group: 'Library' },
   { id: 'audit', title: 'Library audit', icon: 'audit', render: pageAudit },
+  { id: 'duplicates', title: 'Duplicates', icon: 'copy', render: pageDuplicates },
   { id: 'metadata', title: 'Metadata & lyrics', icon: 'metadata', render: pageMetadata },
   { id: 'files', title: 'Files', icon: 'files', render: pageFiles },
   { id: 'sharing', title: 'Library sharing', icon: 'sharing', render: pageSharing },
@@ -813,7 +814,7 @@ function pageNotifications(el) {
 
 /* Log lines in the job terminals (the audit, plugins, and pages from plugins) */
 const TAG_CLASS = [
-  [/\[(ACCEPT|SAVED|REPLACED|FINISH|FIXED|RESTORED|OK)\]/g, 'c-ok'], [/\[(SKIP|SKIPPED|FLAGGED|FILTER|PAUSED|STOPPED|VERIFY|UNVERIFIED|TAGS_WRONG|WRONG_VERSION|UNCERTAIN|WARN|KEEP)\]/g, 'c-warn'],
+  [/\[(ACCEPT|SAVED|REPLACED|FINISH|FIXED|RESTORED|OK|FOUND)\]/g, 'c-ok'], [/\[(SKIP|SKIPPED|FLAGGED|FILTER|PAUSED|STOPPED|VERIFY|UNVERIFIED|TAGS_WRONG|WRONG_VERSION|UNCERTAIN|WARN|KEEP)\]/g, 'c-warn'],
   [/\[((?:FATAL )?ERR(?:OR)?|MISMATCH|FAILED)\]/g, 'c-bad'], [/\[(INIT|FIX|PROGRESS|RESUMED|INFO|CHECK|IDENTIFY|CLEANED|RE-READ)\]/g, 'c-info'], [/\[(DISCOVERY)\]/g, 'c-vio'],
   [/\[(CONFIG|REJECT|download|ExtractAudio)\]/g, 'c-dim'],
 ];
@@ -827,6 +828,56 @@ function fillTerm(term, lines) {
   term.innerHTML = lines.map(termLine).join('');
   if (atBottom) term.scrollTop = term.scrollHeight;
 }
+/* Duplicates */
+function pageDuplicates(el) {
+  el.innerHTML = `<section class="card"><div class="card-h"><h2>Find duplicates</h2><span class="badge" id="dp-badge">Idle</span></div>
+      <p class="desc">Finds songs you have more than once, in the same folder or different ones. Two files count as the same only when the audio says so: the same title and artist, the same length, and fingerprints that match closely. Remixes, live takes and clean or radio edits aren't duplicates. Of each set, the copy with the most complete tags stays (a lossless copy always beats a lossy one) and gets whatever tags, cover or lyrics it was missing from the others. The others go to quarantine under Library audit, where they can be restored, and likes, playlists and history move to the copy that stays. If that copy isn't in its album's folder and another one was, it moves there.</p>
+      <div class="card-b">${scopeHtml('dups')}
+        <div class="row wrap" style="margin-top:12px"><button class="btn primary" id="dp-start">Find duplicates</button><button class="btn danger" id="dp-stop" disabled>Stop</button><label class="check"><input type="checkbox" id="dp-auto"> Remove them as soon as they're confirmed</label></div>
+        <div class="progress"><i id="dp-bar"></i></div><div class="muted" id="dp-progress" style="font-size:13px">Checking a big library takes a while: every song that shares a title with another is fingerprinted.</div>
+        <div class="term" id="dp-term" style="margin-top:14px;height:180px"><span class="ln c-dim">Ready.</span></div></div></section>
+    <section class="card" id="dp-res" hidden><div class="card-h"><h2>Duplicates found</h2><button class="btn primary sm" id="dp-all">Remove all duplicates</button></div><div id="dp-list" class="stack" style="padding:0 20px 20px"></div></section>`;
+  let seen = '';
+  const fmt = c => `${esc(c.format)}${c.lossless ? ' · lossless' : c.bitrate ? ` · ${c.bitrate} kbps` : ''}`;
+  const poll = async () => {
+    const d = await api('/api/admin/dups/status').catch(() => null); if (!d || !$('#dp-term')) return;
+    const busy = d.status === 'running';
+    $('#dp-start').disabled = busy; $('#dp-stop').disabled = !busy;
+    $('#dp-badge').textContent = busy ? 'Running' : d.status[0].toUpperCase() + d.status.slice(1);
+    $('#dp-badge').className = 'badge ' + (busy ? 'ok' : '');
+    $('#dp-bar').style.width = d.total ? Math.round(100 * d.scanned / d.total) + '%' : (busy ? '5%' : '0');
+    if (d.started_at) $('#dp-progress').textContent = `${d.total ? `${nf(d.scanned)} of ${plural(d.total, 'file')} fingerprinted` : 'Looking for titles that appear more than once…'} in ${d.scope} · ${plural(d.groups.length, 'set')} found${d.removed ? ` · ${nf(d.removed)} removed` : ''}`;
+    if (d.logs && d.logs.length) fillTerm($('#dp-term'), d.logs);
+    const key = JSON.stringify(d.groups.map(g => [g.id, g.state]));
+    if (key === seen) return;
+    seen = key;
+    $('#dp-res').hidden = !d.groups.length;
+    $('#dp-all').hidden = !d.groups.some(g => g.state === 'found');
+    $('#dp-list').innerHTML = d.groups.map(g => `<div class="dup${g.state !== 'found' ? ' done' : ''}">
+      ${g.copies.map(c => `<div class="dup-row"><span class="badge ${c.role === 'keep' ? 'ok' : 'warn'}">${c.role === 'keep' ? 'Keep' : 'Remove'}</span>
+        <div class="grow"><div class="mono" style="font-size:12.5px;word-break:break-all">${esc(c.rel)}</div>
+        <div class="muted" style="font-size:12.5px">${esc(c.title || '—')}${c.artist ? ' · ' + esc(c.artist) : ''}${c.album ? ' · ' + esc(c.album) : ''} · ${fmt(c)}${c.missing.length ? ` · missing ${esc(c.missing.join(', '))}` : ' · complete tags'}${c.lyrics ? ' · lyrics' : ''}</div></div></div>`).join('')}
+      ${g.move_to ? `<div class="muted" style="font-size:12.5px;margin-top:6px">The copy that stays moves to its album: ${esc(g.move_to)}/${esc(g.move_as || '')}</div>` : ''}
+      <div class="row" style="margin-top:10px">${g.state === 'found' ? `<button class="btn primary sm" data-dp="resolve" data-id="${g.id}">Remove ${g.copies.length > 2 ? 'duplicates' : 'duplicate'}</button><button class="btn ghost sm" data-dp="ignore" data-id="${g.id}">Not duplicates</button>`
+        : g.state === 'resolved' ? `<span class="badge ok">Done</span><span class="muted" style="font-size:12.5px">Kept ${esc(g.final || g.keep)}</span>` : g.state === 'ignored' ? '<span class="badge">Left alone</span>' : `<span class="badge bad">Error</span><span class="muted" style="font-size:12.5px">${esc(g.error || '')}</span>`}</div></div>`).join('');
+  };
+  try { $('#dp-auto').checked = localStorage.getItem('axdio-dp-auto') === '1'; } catch (e) { /* storage unavailable */ }
+  $('#dp-auto').onchange = e => { try { localStorage.setItem('axdio-dp-auto', e.target.checked ? '1' : '0'); } catch (x) { /* ignore */ } };
+  $('#dp-start').onclick = () => api('/api/admin/dups/start', Object.assign(scopeBody('dups'), { auto: $('#dp-auto').checked })).then(poll, fail);
+  $('#dp-stop').onclick = () => api('/api/admin/dups/stop', {}).then(poll, fail);
+  $('#dp-all').onclick = async () => {
+    if (!(await confirmDlg('Remove every duplicate?', 'Of each set, the copy shown as Keep stays. The others go to quarantine, where they can be restored.', 'Remove all'))) return;
+    api('/api/admin/dups/resolve', { all: true }).then(r => { toast(`Removed ${plural(r.removed, 'duplicate')}`); poll(); }, fail);
+  };
+  el.addEventListener('click', e => {
+    const b = e.target.closest('[data-dp]'); if (!b) return;
+    b.disabled = true;
+    api('/api/admin/dups/' + b.dataset.dp, { id: b.dataset.id }).then(() => { toast(b.dataset.dp === 'resolve' ? 'Removed; the copy that stays has everything' : 'Left alone, and left out of later searches'); poll(); }, err => { b.disabled = false; fail(err); });
+  });
+  drawScope('dups'); poll();
+  every(poll, 2000);
+}
+
 /* Library audit (existing /api/admin/audit endpoints) */
 const AUDIT_LABELS = { ok: 'Verified', mismatch: 'Wrong audio', tags_wrong: 'Wrong tags', wrong_version: 'Wrong cut', uncertain: 'Uncertain', unverified: 'Unverifiable', fixed: 'Repaired', ignored: 'Ignored', error: 'Errors' };
 const AUDIT_ORDER = ['ok', 'mismatch', 'tags_wrong', 'wrong_version', 'uncertain', 'unverified', 'fixed', 'error'];

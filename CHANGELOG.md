@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.10.0
+
+- **Find duplicate songs.** A new **Duplicates** page under Tools finds the same song saved more than once, even in different folders, for the whole library or chosen folders or artists.
+  - Two files count as the same song only when the audio says so: the same title and an artist in common (after the same clean-up the tag fixer does), the same length within 3 seconds, and audio fingerprints that match closely. A clean or radio edit is never taken for the explicit version.
+  - Of each set, the copy with the most complete tags stays; a lossless copy always wins over a lossy one. Each set shows which copy stays, and what the others are missing.
+  - The copy that stays first gets whatever it lacks from the others (tags, cover, lyrics file). The others go to quarantine under **Library audit**, where they can be restored.
+  - When one of the copies was in its album's folder, the one that stays moves there and takes that album's name, track number and date. A single that's also on its album ends up on the album. Folders left empty are removed.
+  - Likes, playlists, offline songs, play counts and listening history that pointed at a removed copy now point at the one that stays.
+  - Remove sets one at a time, all at once, or have them removed as they're found. **Not duplicates** remembers a set so it isn't shown again.
+- Fixed: after a plugin was installed or updated, its pages and routes could be missing for a moment after it showed as done.
+
 ## 2.9.0
 
 - **Fix titles and tags of a folder, a song or chosen artists.** A new **Fix** button on the Files page (and a **Titles & tags** tool under **Metadata & lyrics**) cleans up titles that carry something that isn't the title:

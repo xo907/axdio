@@ -1893,6 +1893,118 @@ class TestTitleFixer(Social):
 
 
 
+
+class TestDuplicates(Social):
+    """Finding the same song twice, keeping the best copy and putting it where it belongs."""
+    def audio(self, rel, seed, codec=(), **tags):
+        p = MUSIC / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        meta = sum([["-metadata", f"{k}={v}"] for k, v in tags.items() if v], [])
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", f"anoisesrc=d=14:c=pink:r=44100:a=0.4:s={seed}",
+                        "-ac", "2", *codec, *meta, str(p)], check=True)
+        server.refresh_library_entry(rel)
+        self.made.append(rel)
+        return p
+
+    def setUp(self):
+        super().setUp()
+        self.made = []
+
+    def tearDown(self):
+        for rel in self.made:
+            (MUSIC / rel).unlink(missing_ok=True)
+            with server.library_cache_lock: server.library_cache_data.pop(rel, None)
+        shutil.rmtree(MUSIC / "DupArtist", ignore_errors=True)
+        with server.library_cache_lock:
+            for rel in [r for r in server.library_cache_data if r.startswith("DupArtist/")]: server.library_cache_data.pop(rel)
+        super().tearDown()
+
+    def run_finder(self, a, **body):
+        self.assertEqual(a.post("/api/admin/dups/start", json=dict({"paths": ["DupArtist"]}, **body)).status_code, 200)
+        for _ in range(300):
+            st = a.get("/api/admin/dups/status").get_json()
+            if st["status"] != "running": break
+            time.sleep(0.1)
+        self.assertEqual(st["status"], "completed", st["logs"])
+        return st
+
+    def test_find_keep_move_and_remap(self):
+        # The same recording three times: a sparsely tagged FLAC loose in the artist's folder, a well-tagged MP3 in the
+        # album's folder, and a FLAC titled "DupArtist - Glow" elsewhere. Plus look-alikes that aren't duplicates.
+        loose = self.audio("DupArtist/Glow.flac", 11, title="Glow", artist="DupArtist")
+        mp3 = self.audio("DupArtist/Night Drive/03 - Glow.mp3", 11, ("-b:a", "192k"), title="Glow", artist="DupArtist", album="Night Drive",
+                         album_artist="DupArtist", track="3", date="2021", TSRC="USXX12100003")
+        self.audio("DupArtist/Downloads/DupArtist - Glow.flac", 11, title="DupArtist - Glow", artist="DupArtist")
+        self.audio("DupArtist/Downloads/Glow (Clean).flac", 11, title="Glow (Clean)", artist="DupArtist")        # another edit
+        self.audio("DupArtist/Other/Glow.flac", 12, title="Glow", artist="DupArtist")                             # another recording
+        self.audio("DupArtist/Covers/Glow.flac", 11, title="Glow", artist="Someone Else")                         # another artist
+        (MUSIC / "DupArtist/Night Drive/03 - Glow.lrc").write_text("[00:01.00] la\n")
+        a = self.admin()
+        ha = self.friends("dupfan", "dupbuddy")[0]
+        loose_rel, down_rel = "DupArtist/Glow.flac", "DupArtist/Downloads/DupArtist - Glow.flac"
+        self.c.post("/api/user/sync", json={"liked_songs": [down_rel, self.rel("Opening")]}, headers=ha)
+        with server._db_lock: server.db().execute("INSERT INTO plays (user, ts, rel, secs) VALUES ('dupfan', ?, ?, 14)", (time.time(), down_rel))
+        st = self.run_finder(a)
+        self.assertEqual(len(st["groups"]), 1, st["logs"])
+        g = st["groups"][0]
+        self.assertEqual(g["rels"], sorted(["DupArtist/Glow.flac", "DupArtist/Night Drive/03 - Glow.mp3", down_rel]))
+        # Lossless wins over the better-tagged MP3; it belongs in the album folder the MP3 is in.
+        self.assertIn(g["keep"], (loose_rel, down_rel))
+        self.assertEqual((g["move_to"], g["move_as"]), ("DupArtist/Night Drive", "03 - Glow.flac"))
+        self.assertTrue(loose.exists())                                  # nothing happens until asked
+        r = a.post("/api/admin/dups/resolve", json={"id": g["id"]}).get_json()
+        self.assertEqual(r["removed"], 2)
+        st = a.get("/api/admin/dups/status").get_json()
+        final = st["groups"][0]["final"]
+        self.assertTrue(final.startswith("DupArtist/Night Drive/"))
+        fp = MUSIC / final
+        self.assertTrue(fp.is_file() and fp.suffix == ".flac")
+        self.assertFalse(mp3.exists())
+        t = server.read_track_tags(fp)
+        self.assertEqual((t["album"], t["tracknumber"], t["isrc"], t["date"]), ("Night Drive", "3", "USXX12100003", "2021"))   # from the MP3
+        self.assertTrue(fp.with_suffix(".lrc").is_file())                # its lyrics too
+        self.assertIn(final, server.library_cache_data)
+        for gone in g["rels"]:
+            if gone != final: self.assertNotIn(gone, server.library_cache_data)
+        liked = self.c.get("/api/user/sync", headers=ha).get_json()["liked_songs"]
+        self.assertEqual(liked, [final, self.rel("Opening")])
+        with server._db_lock:
+            self.assertEqual(server.db().execute("SELECT COUNT(*) FROM plays WHERE rel = ?", (final,)).fetchone()[0], 1)
+        q = [i for i in server._load_json_file(server.QUARANTINE_INDEX, []) if i.get("kind") == "duplicate" and i.get("kept") == g["keep"]]
+        self.assertEqual(len(q), 2)
+        # The copies can come back from quarantine.
+        back = server.restore_quarantined(q[0]["id"])
+        self.assertTrue((MUSIC / back).is_file())
+        self.made.append(back)
+
+    def test_a_single_joins_its_album(self):
+        # Better tags on the single, but the song belongs on the album: it keeps its audio and tags, takes the album's place.
+        self.audio("DupArtist/FLY/FLY.flac", 31, title="FLY", artist="DupArtist", album="FLY", date="2022", genre="Hip-Hop", ISRC="QZXX12200001")
+        self.audio("DupArtist/Only If/05 - FLY.flac", 31, title="FLY", artist="DupArtist", album="Only If", track="5")
+        for n, seed in ((1, 41), (2, 42)): self.audio(f"DupArtist/Only If/0{n} - Song {n}.flac", seed, title=f"Song {n}", artist="DupArtist", album="Only If", track=str(n))
+        a = self.admin()
+        g = self.run_finder(a)["groups"][0]
+        self.assertEqual((g["keep"], g["move_to"], g["move_as"]), ("DupArtist/FLY/FLY.flac", "DupArtist/Only If", "05 - FLY.flac"))
+        a.post("/api/admin/dups/resolve", json={"id": g["id"]})
+        t = server.read_track_tags(MUSIC / "DupArtist/Only If/05 - FLY.flac")
+        self.assertEqual((t["album"], t["tracknumber"], t["genre"], t["isrc"]), ("Only If", "5", "Hip-Hop", "QZXX12200001"))
+        self.assertFalse((MUSIC / "DupArtist/FLY").exists())               # the single's folder was left empty, so it went too
+
+    def test_not_duplicates_is_remembered(self):
+        self.audio("DupArtist/One/Echo.flac", 21, title="Echo", artist="DupArtist")
+        self.audio("DupArtist/Two/Echo.flac", 21, title="Echo", artist="DupArtist")
+        a = self.admin()
+        st = self.run_finder(a)
+        self.assertEqual(len(st["groups"]), 1)
+        self.assertEqual(a.post("/api/admin/dups/ignore", json={"id": st["groups"][0]["id"]}).status_code, 200)
+        self.assertEqual(self.run_finder(a)["groups"], [])
+        server._save_json_file(server.DUP_IGNORE, [])
+        # And with automatic removal on, they're resolved as they're found.
+        st = self.run_finder(a, auto=True)
+        self.assertEqual((len(st["groups"]), st["groups"][0]["state"], st["removed"]), (1, "resolved", 1))
+
+
+
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
 
