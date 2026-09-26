@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.10.1
+
+- Fixed: the duplicate finder could keep a song in its single's folder instead of its album's. This happened when the album's copy carried the single's tags ("LATELY - Single"), because the album folder was only recognized by the copy's own tag. Now a folder counts as an album's home when most of its songs are tagged with that album. A song that joins its album this way also takes the album's name, artist, date and cover, and its track number on the album (from the copy it replaces, or from Deezer).
+  - Songs that 2.10.0 left in their single's folder this way move into their album once, after the first library scan. What was removed stays in quarantine.
+  - A song is never pulled into a folder of another album than the one its copies are tagged with.
+- Fixed: the same set of duplicates could be removed more than once at the same time, for example by clicking again while it was still working, or by Remove all. This left extra copies in quarantine, which you can delete under **Library audit**. Sets are now removed one at a time, and show "Removing…" while they are.
+- The duplicate finder now also requires the audio to match throughout, not only on average. A version that differs in one stretch (like an instrumental where the vocals come in) is no longer taken for the same song.
+
 ## 2.10.0
 
 - **Find duplicate songs.** A new **Duplicates** page under Tools finds the same song saved more than once, even in different folders, for the whole library or chosen folders or artists.

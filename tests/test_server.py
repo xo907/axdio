@@ -1896,12 +1896,17 @@ class TestTitleFixer(Social):
 
 class TestDuplicates(Social):
     """Finding the same song twice, keeping the best copy and putting it where it belongs."""
-    def audio(self, rel, seed, codec=(), **tags):
+    def audio(self, rel, seed, codec=(), secs=14, swap=None, **tags):
+        """A song of pink noise; the same seed is the same recording. `swap` = (start, seconds, seed) puts other noise there."""
         p = MUSIC / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         meta = sum([["-metadata", f"{k}={v}"] for k, v in tags.items() if v], [])
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", f"anoisesrc=d=14:c=pink:r=44100:a=0.4:s={seed}",
-                        "-ac", "2", *codec, *meta, str(p)], check=True)
+        src = ["-f", "lavfi", "-i", f"anoisesrc=d={secs}:c=pink:r=44100:a=0.4:s={seed}"]
+        if swap:
+            at, n, other = swap
+            src += ["-f", "lavfi", "-i", f"anoisesrc=d={n}:c=pink:r=44100:a=0.4:s={other}", "-filter_complex",
+                    f"[0]atrim=0:{at}[a];[0]atrim={at + n}:{secs},asetpts=PTS-STARTPTS[c];[a][1][c]concat=n=3:v=0:a=1"]
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", *src, "-ac", "2", *codec, *meta, str(p)], check=True)
         server.refresh_library_entry(rel)
         self.made.append(rel)
         return p
@@ -1989,6 +1994,123 @@ class TestDuplicates(Social):
         t = server.read_track_tags(MUSIC / "DupArtist/Only If/05 - FLY.flac")
         self.assertEqual((t["album"], t["tracknumber"], t["genre"], t["isrc"]), ("Only If", "5", "Hip-Hop", "QZXX12200001"))
         self.assertFalse((MUSIC / "DupArtist/FLY").exists())               # the single's folder was left empty, so it went too
+
+    def cover(self, color):
+        out = TMP / f"cover-{color}.png"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", f"color={color}:s=16x16", "-frames:v", "1", str(out)], check=True)
+        return out.read_bytes()
+
+    def album(self, folder="DupArtist/Only If", name="Only If", n=2, cover=None):
+        """A few songs of an album in its folder, with the album's artist, date and (on the first) cover."""
+        for i in range(1, n + 1):
+            p = self.audio(f"{folder}/Song {i}.flac", 40 + i, title=f"Song {i}", artist="DupArtist", album=name, album_artist="DupArtist",
+                           date="2023", track=str(i))
+            if cover and i == 1:
+                server.write_track_tags(p, {}, cover=cover)
+                server.refresh_library_entry(f"{folder}/Song {i}.flac")
+
+    def deezer(self, tracks):
+        """server.http_json answering Deezer searches from {(album, title): track number}."""
+        albums = sorted({a for a, _ in tracks})
+        def fake(url, **k):
+            if "api.deezer.com/search/album" in url:
+                return {"data": [{"id": 700 + i, "title": a, "artist": {"name": "DupArtist"}} for i, a in enumerate(albums)]}
+            m = re.search(r"api.deezer.com/album/(\d+)/tracks", url)
+            if m: return {"data": [{"id": 900 + n, "title": t, "track_position": n, "disk_number": 1}
+                                   for (a, t), n in tracks.items() if a == albums[int(m.group(1)) - 700]]}
+            return {}
+        orig, server.http_json = server.http_json, fake
+        self.addCleanup(setattr, server, "http_json", orig)
+
+    def test_album_copy_tagged_as_the_single(self):
+        # The album's copy carries the single's tags, and the single's copy has more of them: the song still goes to the
+        # album (what the rest of that folder is tagged with), and takes the album's name, artist, date, cover and number.
+        red = self.cover("red")
+        self.album(cover=red)
+        self.audio("DupArtist/LATELY/LATELY.flac", 51, title="LATELY", artist="DupArtist", album="LATELY - Single", track="1",
+                   date="2022", genre="Hip-Hop")
+        self.audio("DupArtist/Only If/LATELY.flac", 51, title="LATELY", artist="DupArtist", album="LATELY - Single", track="1")
+        self.deezer({("Only If", "LATELY"): 6})
+        a = self.admin()
+        g = self.run_finder(a)["groups"][0]
+        self.assertEqual((g["keep"], g["move_to"], g["move_as"], g["joins"]), ("DupArtist/LATELY/LATELY.flac", "DupArtist/Only If", "LATELY.flac", "Only If"))
+        a.post("/api/admin/dups/resolve", json={"id": g["id"]})
+        fp = MUSIC / "DupArtist/Only If/LATELY.flac"
+        t = server.read_track_tags(fp)
+        self.assertEqual((t["album"], t["albumartist"], t["date"], t["tracknumber"], t["genre"]), ("Only If", "DupArtist", "2023", "6", "Hip-Hop"))
+        self.assertEqual(server._cover_data(fp), red)
+        self.assertFalse((MUSIC / "DupArtist/LATELY").exists())
+        # Without Deezer, the album copy's own number counts when no other song of the album has it.
+        self.audio("DupArtist/SLIDE/SLIDE.flac", 52, title="SLIDE", artist="DupArtist", album="SLIDE - Single", track="1", genre="Rap")
+        self.audio("DupArtist/Only If/SLIDE.flac", 52, title="SLIDE", artist="DupArtist", album="SLIDE - Single", track="10")
+        self.deezer({})
+        g = next(x for x in self.run_finder(a)["groups"] if "SLIDE" in x["keep"])
+        a.post("/api/admin/dups/resolve", json={"id": g["id"]})
+        self.assertEqual(server.read_track_tags(MUSIC / "DupArtist/Only If/SLIDE.flac")["tracknumber"], "10")
+
+    def test_another_albums_song_stays_on_its_album(self):
+        # Both copies say they're on the instrumental album; the one in the other album's folder doesn't pull it over.
+        self.album("DupArtist/Burn", "Burn")
+        self.audio("DupArtist/Burn/Coil.flac", 53, title="Coil", artist="DupArtist", album="Burn (Instrumental)", track="5")
+        self.audio("DupArtist/Burn (Instrumental)/Coil.flac", 53, title="Coil", artist="DupArtist", album="Burn (Instrumental)", track="5", genre="Rock")
+        self.audio("DupArtist/Burn (Instrumental)/Ash.flac", 54, title="Ash", artist="DupArtist", album="Burn (Instrumental)", track="1")
+        a = self.admin()
+        g = self.run_finder(a)["groups"][0]
+        self.assertEqual((g["keep"], g["move_to"], g["joins"]), ("DupArtist/Burn (Instrumental)/Coil.flac", None, None))
+
+    def test_the_same_all_along_but_not_throughout(self):
+        # Mostly the same audio, but a stretch differs (like an instrumental where the vocals come in): not duplicates.
+        self.audio("DupArtist/A/Verse.flac", 61, secs=30, title="Verse", artist="DupArtist")
+        self.audio("DupArtist/B/Verse.flac", 61, secs=30, swap=(12, 3, 62), title="Verse", artist="DupArtist")
+        fa, fb = (server.audio_fingerprint(MUSIC / f"DupArtist/{x}/Verse.flac") for x in "AB")
+        ber, worst = server._fp_match(fa, fb)
+        self.assertLessEqual(ber, server.DUP_BER)
+        self.assertGreater(worst, server.DUP_WORST)
+        self.assertEqual(self.run_finder(self.admin())["groups"], [])
+
+    def test_removing_a_set_twice_at_once(self):
+        self.audio("DupArtist/One/Twice.flac", 71, title="Twice", artist="DupArtist", genre="Pop")
+        self.audio("DupArtist/Two/Twice.flac", 71, title="Twice", artist="DupArtist")
+        a = self.admin()
+        g = self.run_finder(a)["groups"][0]
+        before = len(server._load_json_file(server.QUARANTINE_INDEX, []))
+        errors = []
+        def go():
+            try: server.resolve_duplicates(g)
+            except ValueError as ex: errors.append(str(ex))
+        threads = [threading.Thread(target=go) for _ in range(3)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual(len(server._load_json_file(server.QUARANTINE_INDEX, [])) - before, 1)
+        self.assertEqual(len(errors), 2)
+        self.assertEqual(a.post("/api/admin/dups/resolve", json={"id": g["id"]}).status_code, 400)   # nothing left to remove
+        g2 = self.run_finder(a)["groups"]
+        self.assertEqual(g2, [])
+
+    def test_what_2_10_0_misplaced_is_put_right(self):
+        # 2.10.0 removed the album's copy (tagged as the single) and kept the single's; the first scan after updating moves
+        # the song into the album. A set whose copies are on another album is left alone.
+        self.album()
+        self.audio("DupArtist/WHO/WHO.flac", 81, title="WHO", artist="DupArtist", album="WHO - Single", track="1")
+        gone = self.audio("DupArtist/Only If/WHO.flac", 81, title="WHO", artist="DupArtist", album="WHO - Single", track="10")
+        for _ in range(3):                                                   # the same copy removed three times over
+            server.quarantine_original("DupArtist/Only If/WHO.flac", "Duplicate of DupArtist/WHO/WHO.flac", {"kind": "duplicate", "kept": "DupArtist/WHO/WHO.flac"})
+        self.album("DupArtist/Burn", "Burn")
+        self.audio("DupArtist/Burn (Instrumental)/Coil.flac", 53, title="Coil", artist="DupArtist", album="Burn (Instrumental)", track="5")
+        self.audio("DupArtist/Burn/Coil.flac", 53, title="Coil", artist="DupArtist", album="Burn (Instrumental)", track="5")
+        server.quarantine_original("DupArtist/Burn/Coil.flac", "Duplicate", {"kind": "duplicate", "kept": "DupArtist/Burn (Instrumental)/Coil.flac"})
+        for rel in ("DupArtist/Only If/WHO.flac", "DupArtist/Burn/Coil.flac"): (MUSIC / rel).unlink()
+        server.forget_library_paths(["DupArtist/Only If/WHO.flac", "DupArtist/Burn/Coil.flac"])
+        self.deezer({})
+        server.DUP_REPAIR_MARK.unlink(missing_ok=True)
+        self.assertEqual(server.repair_duplicate_homes(), ["DupArtist/Only If/WHO.flac"])
+        t = server.read_track_tags(gone)
+        self.assertEqual((t["album"], t["tracknumber"], t["date"]), ("Only If", "10", "2023"))
+        self.assertIn("DupArtist/Only If/WHO.flac", server.library_cache_data)
+        self.assertFalse((MUSIC / "DupArtist/WHO").exists())
+        self.assertTrue((MUSIC / "DupArtist/Burn (Instrumental)/Coil.flac").is_file())
+        self.assertTrue(server.DUP_REPAIR_MARK.exists())
+        self.assertEqual(server.repair_duplicate_homes(), [])                # nothing left to do
 
     def test_not_duplicates_is_remembered(self):
         self.audio("DupArtist/One/Echo.flac", 21, title="Echo", artist="DupArtist")

@@ -292,7 +292,7 @@ Axdio sends no telemetry, and the apps load nothing from other sites (fonts are 
 | Service | When |
 |---|---|
 | LRCLIB (lrclib.net) | A listener opens lyrics for a song that isn't cached yet (turn off under **Features → Lyrics**) |
-| Deezer and iTunes | An admin runs the library audit or metadata fixer |
+| Deezer and iTunes | An admin runs the library audit or metadata fixer, or the duplicate finder moves a song into its album and looks up its track number there |
 | GitHub (ghcr.io, raw.githubusercontent.com, api.github.com) | Checking for new versions of Axdio and reading what's new (turn off under **Updates**), and installing or updating plugins that come from GitHub |
 | PyPI | An admin installs or updates a plugin, or looks for new versions; plugins with automatic updates check every 24 hours |
 | Other Axdio servers | You share libraries with them (songs, artwork and the song list travel between the two servers) |

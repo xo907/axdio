@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.10.0"
+AXDIO_VERSION = "2.10.1"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -408,6 +408,9 @@ def library_scanner():
     time.sleep(3)
     while True:
         scan_library()
+        if not DUP_REPAIR_MARK.exists() and not SCAN["error"]:
+            try: repair_duplicate_homes()
+            except Exception as ex: print(f"[WARN] Checking where duplicates were kept failed: {ex}")
         minutes = int(cfg().get("scan_interval") or 0)
         _scan_now.wait(timeout=minutes * 60 if minutes > 0 else None)
         _scan_now.clear()
@@ -2329,13 +2332,19 @@ def api_admin_tagfix_undo():
 # --- DUPLICATES ---
 # Two files are the same song only when the audio says so: the same title and an artist in common (once cleaned up, as
 # the tag fixer does), the same length within 3 seconds, no sign that one is another edit (clean, radio edit), and
-# fingerprints that match closely over the first four minutes. Of each set, the copy with the most complete tags stays;
-# a lossless copy always beats a lossy one. It gets whatever tags, cover and lyrics file it was missing from the others,
-# the others go to quarantine (Library audit, where they can be restored), and likes, playlists, history and the
-# listening log that pointed at them point at the copy that stays. When one of the others was in its album's folder
-# and the one that stays isn't, it moves there.
+# fingerprints that match closely over the first four minutes, throughout (an instrumental matches on average but not
+# where the vocals are). Of each set, the copy with the most complete tags stays; a lossless copy always beats a lossy
+# one. It gets whatever tags, cover and lyrics file it was missing from the others, the others go to quarantine (Library
+# audit, where they can be restored), and likes, playlists, history and the listening log that pointed at them point at
+# the copy that stays. It ends up in its album's folder when one of the copies was there: the album is what most of that
+# folder's songs are tagged with, so an album copy tagged as the single still counts. A song that joins its album that
+# way takes the album's tags, its number on the album and the album's cover.
 DUP_IGNORE = CONFIG_DIR / "duplicates_ignored.json"
-DUP_BER, DUP_SECONDS, DUP_FP_SECONDS = 0.10, 3.0, 240
+DUP_REPAIR_MARK = CONFIG_DIR / "duplicates_repair_v1"
+DUP_BER, DUP_WORST, DUP_SECONDS, DUP_FP_SECONDS = 0.10, 0.15, 3.0, 240
+_SINGLE_RE = re.compile(r"(?i)\s*(?:[-\u2013]\s*single|[\(\[]single[\)\]])\s*$")
+_EDITION_RE = re.compile(r"(?i)\s*[\(\[][^\)\]]*\b(?:deluxe|remaster(?:ed)?|edition|expanded|anniversary|bonus|explicit|clean)\b[^\)\]]*[\)\]]")
+dup_resolve_lock = threading.Lock()
 _EDIT_RE = re.compile(r"(?i)\b(?:clean|radio\s+edit|censored|explicit|edited)\b")
 dup_state = {"status": "idle", "logs": collections.deque(maxlen=800), "total": 0, "scanned": 0, "groups": [], "scope": "",
              "auto": False, "started_at": 0, "removed": 0}
@@ -2403,40 +2412,133 @@ def _keeper(copies):
         return bool(a) and _norm(Path(c["rel"]).parent.name) == _norm(a)
     return max(copies, key=lambda c: (c["lossless"], c["score"], c["bitrate"], in_album(c), -len(c["rel"])))
 
+def _album_base(name):
+    """An album or folder name for comparing the two: without ' - Single' / ' - EP' or an edition ('(Deluxe)')."""
+    return _norm(_EDITION_RE.sub("", re.sub(r"(?i)\s*[-\u2013]\s*(?:single|ep)\s*$", "", name or "")))
+
+def _single_like(album, title):
+    """Tagged as a single: no album, '... - Single', or the album is named after the song."""
+    return not album or bool(_SINGLE_RE.search(album)) or _album_base(album) == title_key(title)[0]
+
+def _folder_album(folder):
+    """(the album most of a folder's songs are tagged with, how many are, how many songs it has), from the library index."""
+    with library_cache_lock:
+        albums = [e.get("album") or "" for r, e in library_cache_data.items() if isinstance(e, dict) and str(Path(r).parent) == folder]
+    if not albums: return "", 0, 0
+    album, n = collections.Counter(albums).most_common(1)[0]
+    return album, n, len(albums)
+
+def _home_rank(folder):
+    """(rank, album) of a folder as an album's home, or (None, album) when it isn't one: it has to be named after the
+    album most of its songs are tagged with. A real album (more than one song, not a single) ranks first, then fuller."""
+    album, n, total = _folder_album(folder)
+    if folder in ("", ".") or not album or _album_base(Path(folder).name) != _album_base(album): return None, album
+    return (not _SINGLE_RE.search(album) and total >= 2, n, total), album
+
 def _album_home(keep, copies):
-    """Where the kept copy belongs: (folder, the copy whose place and album details it takes), or (None, None) when it
-    stays put. A copy in a folder named after its own album marks that album; of those, the fullest folder wins, so a
-    song that's both a single and on its album ends up on the album. Without one, an existing folder of the album the
-    kept copy has (or gets) in the artist's folder."""
-    base = lambda s: _norm(re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", s or ""))
-    def folder_songs(folder):
-        with library_cache_lock: return sum(1 for r in library_cache_data if str(Path(r).parent) == folder)
-    albums = [c for c in copies if c["tags"].get("album") and base(Path(c["rel"]).parent.name) == base(c["tags"]["album"])]
+    """Where the kept copy belongs: (folder to move it to or None, the copy whose place it takes, the album that folder
+    holds or None). Of the copies' folders that are an album's home, a real album comes before a single, then the fullest;
+    and it has to be an album one of the copies is tagged with, unless they're all tagged as the single (a single that's
+    also on its album). Without one, an existing folder of the album the kept copy has, in the artist's folder."""
     here = str(Path(keep["rel"]).parent)
-    if albums:
-        best = max(albums, key=lambda c: (folder_songs(str(Path(c["rel"]).parent)), c is keep))
-        return (None, None) if str(Path(best["rel"]).parent) == here else (str(Path(best["rel"]).parent), best)
+    tagged = {_album_base(c["tags"].get("album")) for c in copies if c["tags"].get("album")}
+    singles = all(_single_like(c["tags"].get("album"), c["tags"].get("title") or c["title"]) for c in copies)
+    ranked = []
+    for c in copies:
+        folder = str(Path(c["rel"]).parent)
+        rank, album = _home_rank(folder)
+        if rank and (_album_base(album) in tagged or (singles and rank[0])): ranked.append((rank, c is keep, c, folder, album))
+    if ranked:
+        _, _, best, folder, album = max(ranked, key=lambda x: (x[0], x[1]))
+        return (None, None, album) if folder == here else (folder, best, album)
     album = keep["tags"].get("album") or next((c["tags"].get("album") for c in copies if c["tags"].get("album")), "")
-    if not album or _norm(album) in ("singles", "single") or base(Path(here).name) == base(album): return None, None
+    if _single_like(album, keep["tags"].get("title") or keep["title"]) or _norm(album) == "singles": return None, None, None
+    if _album_base(Path(here).name) == _album_base(album): return None, None, album
     top = keep["rel"].split("/")[0] if "/" in keep["rel"] else ""
     root = Path(get_real_music_dir()) / top
     if top and root.is_dir():
         for sub in root.iterdir():
-            if sub.is_dir() and base(sub.name) == base(album): return f"{top}/{sub.name}", None
+            if sub.is_dir() and _album_base(sub.name) == _album_base(album): return f"{top}/{sub.name}", None, album
+    return None, None, None
+
+def _joins_album(tags, album, place_tags):
+    """Whether a song in `album`'s folder takes that album's tags: it's tagged as the single (or nothing), or the copy
+    whose place it took was on that album. A song tagged as some other album is left as it is."""
+    if not album or _album_base(tags.get("album")) == _album_base(album): return False
+    return bool(place_tags) and _album_base(place_tags.get("album")) == _album_base(album) or _single_like(tags.get("album"), tags.get("title"))
+
+def _album_track_number(artist, album, title):
+    """(track, disc) of a song on an album, from the album's track list on Deezer, or (None, None)."""
+    try:
+        for a in (http_json("https://api.deezer.com/search/album?limit=10&q=" + urllib.parse.quote(f"{artist} {album}")) or {}).get("data") or []:
+            if _album_base(a.get("title")) != _album_base(album) or not artist_keys([artist]) & artist_keys([(a.get("artist") or {}).get("name") or ""]):
+                continue
+            for t in (http_json(f"https://api.deezer.com/album/{a['id']}/tracks?limit=300") or {}).get("data") or []:
+                if t.get("track_position") and title_match(title, t.get("title") or "")[0]:
+                    return int(t["track_position"]), int(t.get("disk_number") or 1)
+    except Exception: pass
     return None, None
+
+def _fit_album(rel, album, place_tags=None):
+    """The kept copy is in `album`'s folder. If it's tagged as the single, it takes the album's name, artist, date and
+    cover, and its number on the album: the number of the copy it replaced when that one was on the album, otherwise
+    Deezer's, otherwise the replaced copy's when no other song of the album has it. Returns the album, or None."""
+    music = Path(get_real_music_dir())
+    p = music / rel
+    tags = read_track_tags(p) or {}
+    if not _joins_album(tags, album, place_tags): return None
+    place_fits = bool(place_tags) and _album_base(place_tags.get("album")) == _album_base(album)
+    folder = str(Path(rel).parent)
+    with library_cache_lock:
+        sibs = [(r, dict(e)) for r, e in library_cache_data.items() if isinstance(e, dict) and r != rel and str(Path(r).parent) == folder
+                and _album_base(e.get("album")) == _album_base(album)]
+    ref = next((music / r for r, _ in sibs if (music / r).is_file()), None)
+    rt = (read_track_tags(ref) or {}) if ref else {}
+    src = place_tags if place_fits else rt
+    num = lambda v: str(v or "").split("/")[0].strip().lstrip("0")
+    used = {num(e.get("track_number")) for _, e in sibs} - {""}
+    theirs = num((place_tags or {}).get("tracknumber"))
+    track, disc = (theirs, (place_tags or {}).get("discnumber")) if place_fits and theirs else (None, None)
+    if not track:
+        artist = (tags.get("artists") or [tags.get("albumartist") or ""])[0]
+        track, disc = _album_track_number(artist, album, tags.get("title") or Path(rel).stem)
+        track = num(track)
+        if not track or track in used: track, disc = (theirs, None) if theirs and theirs not in used else (None, None)
+    meta = {"album": album, "albumartist": src.get("albumartist") or rt.get("albumartist"), "date": src.get("date") or rt.get("date"),
+            "tracknumber": track, "discnumber": disc}
+    cover = _cover_data(ref) if ref and rt.get("has_cover") else None
+    write_track_tags(p, meta, cover=cover, replace_cover=True, clear=() if track else ("tracknumber",))
+    return album
+
+def _remove_empty_dirs(rels):
+    """Folders these files left completely empty go (anything still in them, even a cover image, keeps them)."""
+    music = Path(get_real_music_dir())
+    for rel in rels:
+        d = (music / rel).parent
+        while d != music and d.is_relative_to(music):
+            try: d.rmdir()
+            except OSError: break
+            d = d.parent
 
 def _dup_proposal(rels):
     copies = [_copy_facts(r) for r in rels if (Path(get_real_music_dir()) / r).is_file()]
     if len(copies) < 2: return None
     keep = _keeper(copies)
-    home, place = _album_home(keep, copies)
+    home, place, album = _album_home(keep, copies)
     gid = hashlib.sha1("\n".join(sorted(rels)).encode()).hexdigest()[:12]
     name = (Path(place["rel"]).stem if place else Path(keep["rel"]).stem) + Path(keep["rel"]).suffix
-    return {"id": gid, "rels": sorted(rels), "keep": keep["rel"], "move_to": home, "move_as": name if home else None, "state": "found",
+    tags = dict(keep["tags"])
+    if not tags.get("album"): tags["album"] = next((c["tags"].get("album") for c in copies if c["tags"].get("album")), "")
+    joins = album if _joins_album(tags, album, place["tags"] if place else None) else None
+    return {"id": gid, "rels": sorted(rels), "keep": keep["rel"], "move_to": home, "move_as": name if home else None, "joins": joins, "state": "found",
             "copies": [{k: v for k, v in c.items() if k != "tags"} | {"role": "keep" if c is keep else "remove"} for c in copies]}
 
 def resolve_duplicates(group):
-    """Keep the best copy of a confirmed set, and quarantine the others. Returns where the kept copy ends up."""
+    """Keep the best copy of a confirmed set, and quarantine the others. Returns where the kept copy ends up. One set at a
+    time: the same set asked for twice at once (a second click, Remove all) would otherwise be quarantined twice."""
+    with dup_resolve_lock: return _resolve_duplicates(group)
+
+def _resolve_duplicates(group):
     music = Path(get_real_music_dir())
     copies = [_copy_facts(r) for r in group["rels"] if (music / r).is_file()]
     if len(copies) < 2: raise ValueError("Only one copy is left.")
@@ -2452,11 +2554,7 @@ def resolve_duplicates(group):
     if not keep["tags"].get("has_cover"):
         cover = next((d for d in (_cover_data(music / c["rel"]) for c in others if c["tags"].get("has_cover")) if d), None)
     if fill or cover: write_track_tags(kp, fill, cover=cover, only_missing=True, replace_cover=False)
-    home, place = _album_home(keep, copies)
-    if place:
-        # It joins that album: the album's name, artist, track and disc number and date, as the copy there had them.
-        fit = {k: place["tags"][k] for k in ("album", "albumartist", "tracknumber", "discnumber", "date") if place["tags"].get(k)}
-        if fit: write_track_tags(kp, fit)
+    home, place, album = _album_home(keep, copies)
     if not keep["lyrics"]:
         lrc = next((music / c["rel"] for c in others if c["lyrics"]), None)
         if lrc: shutil.copyfile(lrc.with_suffix(".lrc"), kp.with_suffix(".lrc"))
@@ -2479,19 +2577,25 @@ def resolve_duplicates(group):
         final = str(dest.relative_to(music))
         move_library_paths(keep["rel"], final)
     remap_song_paths({c["rel"]: final for c in others})
+    if album: _fit_album(final, album, place["tags"] if place else None)
     refresh_library_entry(final)
-    # Folders this left completely empty go too (anything still in them, even a cover image, keeps them).
-    for rel in [c["rel"] for c in others] + [keep["rel"]]:
-        d = (music / rel).parent
-        while d != music and d.is_relative_to(music):
-            try: d.rmdir()
-            except OSError: break
-            d = d.parent
+    _remove_empty_dirs([c["rel"] for c in others] + [keep["rel"]])
     save_and_rebuild_cache()
     from flask import has_request_context
     activity("library", f"Removed {len(others)} duplicate{'s' if len(others) != 1 else ''} of {final} (in quarantine)",
              admin_name() if has_request_context() else None)
     return final
+
+def _fp_match(a, b):
+    """(average, worst-stretch) bit error of two songs' fingerprints at their best alignment: the worst 10% of 2-second
+    stretches, where an instrumental or another take of the song gives itself away."""
+    if len(a) > len(b): a, b = b, a
+    ber, off = fingerprint_similarity(a, b)
+    if ber >= 1.0: return 1.0, 1.0
+    o = int(round(off / FP_ITEM_SEC))
+    errs = [(a[i] ^ b[i + o]).bit_count() / 32.0 for i in range(max(0, -o), min(len(a), len(b) - o))]
+    wins = sorted(sum(errs[i:i + 16]) / 16 for i in range(0, max(1, len(errs) - 15), 4))
+    return ber, (wins[int(len(wins) * 0.9)] if wins else ber)
 
 def _ignored_sets():
     return [set(x) for x in _load_json_file(DUP_IGNORE, []) if isinstance(x, list)]
@@ -2532,17 +2636,18 @@ def _run_dups(rels, auto):
                        bool(_EDIT_RE.search(entries[a].get("title") or "")) != bool(_EDIT_RE.search(entries[b].get("title") or "")): continue
                     fa, fb = fp(a), fp(b)
                     if abs(durs[a] - durs[b]) > DUP_SECONDS or len(fa) < 60 or len(fb) < 60: continue
-                    ber = fingerprint_similarity(fa if len(fa) <= len(fb) else fb, fb if len(fa) <= len(fb) else fa)[0]
-                    if ber <= DUP_BER: parent[root(b)] = root(a)
+                    ber, worst = _fp_match(fa, fb)
+                    if ber <= DUP_BER and worst <= DUP_WORST: parent[root(b)] = root(a)
             sets = collections.defaultdict(list)
             for r, _ in bucket: sets[root(r)].append(r)
             for members in sets.values():
                 if len(members) < 2 or any(set(members) <= s for s in ignored): continue
                 prop = _dup_proposal(members)
                 if not prop: continue
+                if auto: prop["state"] = "removing"
                 with dup_lock: dup_state["groups"].append(prop)
                 _dup_log(f"[FOUND] {len(members)} copies of '{prop['copies'][0]['title'] or Path(members[0]).stem}': keeping {prop['keep']}"
-                         + (f", moving it to {prop['move_to']}/" if prop["move_to"] else ""))
+                         + (f", moving it to {prop['move_to']}/" if prop["move_to"] else "") + (f", as part of {prop['joins']}" if prop["joins"] else ""))
                 if auto:
                     try:
                         final = resolve_duplicates(prop)
@@ -2559,6 +2664,46 @@ def _run_dups(rels, auto):
         with dup_lock: dup_state["status"] = "error"
         _dup_log(f"[ERR] {ex}")
         _dup_log(traceback.format_exc())
+
+def repair_duplicate_homes():
+    """Axdio 2.10.0 could keep a song in its single's folder when the copy it removed was in the album's folder but tagged
+    as the single. Once, after a scan: each such song moves into the album's folder, in the removed copy's place, and takes
+    the album's tags. What was removed stays in quarantine. Returns where the songs went."""
+    music = Path(get_real_music_dir())
+    with quarantine_lock: idx = [i for i in _load_json_file(QUARANTINE_INDEX, []) if i.get("kind") == "duplicate"]
+    seen, moved = set(), []
+    for item in sorted(idx, key=lambda i: i.get("at") or 0):
+        kept, gone = item.get("kept") or "", item.get("rel_path") or ""
+        if not kept or not gone or (kept, gone) in seen: continue
+        seen.add((kept, gone))
+        kp, folder, here = music / kept, str(Path(gone).parent), str(Path(kept).parent)
+        if folder == here or not kp.is_file() or not (music / folder).is_dir(): continue
+        (rank, album), (mine, _) = _home_rank(folder), _home_rank(here)
+        if not rank or not rank[0] or (mine and mine >= rank): continue
+        try: gtags = read_track_tags(Path(item.get("file") or "")) or {}
+        except Exception: gtags = {}
+        ktags = read_track_tags(kp) or {}
+        if not (_album_base(gtags.get("album")) == _album_base(album) or
+                (_single_like(gtags.get("album"), gtags.get("title")) and _single_like(ktags.get("album"), ktags.get("title")))): continue
+        dest = music / folder / (Path(gone).stem + kp.suffix)
+        if dest.exists(): continue
+        try:
+            shutil.move(str(kp), str(dest))
+            if kp.with_suffix(".lrc").is_file(): shutil.move(str(kp.with_suffix(".lrc")), str(dest.with_suffix(".lrc")))
+            final = str(dest.relative_to(music))
+            move_library_paths(kept, final)
+            _fit_album(final, album, gtags)
+            refresh_library_entry(final)
+            _remove_empty_dirs([kept])
+            moved.append(final)
+            activity("library", f"Moved {final} into its album (a duplicate removed by 2.10.0 was the album's copy)")
+        except Exception as ex:
+            print(f"[WARN] Couldn't move {kept} into its album: {ex}")
+    if moved:
+        save_and_rebuild_cache()
+        print(f"[INFO] Duplicates: moved {len(moved)} song(s) into their albums: {', '.join(moved)}")
+    DUP_REPAIR_MARK.touch()
+    return moved
 
 @app.route("/api/admin/dups/start", methods=["POST"])
 def api_admin_dups_start():
@@ -2589,6 +2734,7 @@ def api_admin_dups_resolve():
     d = _json()
     with dup_lock:
         todo = [g for g in dup_state["groups"] if g["state"] == "found" and (d.get("all") or g["id"] == d.get("id"))]
+        for g in todo: g["state"] = "removing"
     if not todo: return jsonify({"error": "There's nothing to remove there."}), 404
     done, errors = 0, []
     for g in todo:

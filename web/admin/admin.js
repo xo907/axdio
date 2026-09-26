@@ -858,7 +858,9 @@ function pageDuplicates(el) {
         <div class="grow"><div class="mono" style="font-size:12.5px;word-break:break-all">${esc(c.rel)}</div>
         <div class="muted" style="font-size:12.5px">${esc(c.title || '—')}${c.artist ? ' · ' + esc(c.artist) : ''}${c.album ? ' · ' + esc(c.album) : ''} · ${fmt(c)}${c.missing.length ? ` · missing ${esc(c.missing.join(', '))}` : ' · complete tags'}${c.lyrics ? ' · lyrics' : ''}</div></div></div>`).join('')}
       ${g.move_to ? `<div class="muted" style="font-size:12.5px;margin-top:6px">The copy that stays moves to its album: ${esc(g.move_to)}/${esc(g.move_as || '')}</div>` : ''}
+      ${g.joins ? `<div class="muted" style="font-size:12.5px;margin-top:4px">It becomes part of ${esc(g.joins)}, with that album's tags, track number and cover</div>` : ''}
       <div class="row" style="margin-top:10px">${g.state === 'found' ? `<button class="btn primary sm" data-dp="resolve" data-id="${g.id}">Remove ${g.copies.length > 2 ? 'duplicates' : 'duplicate'}</button><button class="btn ghost sm" data-dp="ignore" data-id="${g.id}">Not duplicates</button>`
+        : g.state === 'removing' ? '<span class="badge">Removing…</span>'
         : g.state === 'resolved' ? `<span class="badge ok">Done</span><span class="muted" style="font-size:12.5px">Kept ${esc(g.final || g.keep)}</span>` : g.state === 'ignored' ? '<span class="badge">Left alone</span>' : `<span class="badge bad">Error</span><span class="muted" style="font-size:12.5px">${esc(g.error || '')}</span>`}</div></div>`).join('');
   };
   try { $('#dp-auto').checked = localStorage.getItem('axdio-dp-auto') === '1'; } catch (e) { /* storage unavailable */ }
@@ -867,12 +869,16 @@ function pageDuplicates(el) {
   $('#dp-stop').onclick = () => api('/api/admin/dups/stop', {}).then(poll, fail);
   $('#dp-all').onclick = async () => {
     if (!(await confirmDlg('Remove every duplicate?', 'Of each set, the copy shown as Keep stays. The others go to quarantine, where they can be restored.', 'Remove all'))) return;
-    api('/api/admin/dups/resolve', { all: true }).then(r => { toast(`Removed ${plural(r.removed, 'duplicate')}`); poll(); }, fail);
+    const b = $('#dp-all'); b.disabled = true;
+    document.querySelectorAll('#dp-list [data-dp]').forEach(x => { x.disabled = true; });
+    api('/api/admin/dups/resolve', { all: true }).then(r => { b.disabled = false; toast(`Removed ${plural(r.removed, 'duplicate')}`); poll(); }, err => { b.disabled = false; fail(err); });
+    setTimeout(poll, 600);
   };
   el.addEventListener('click', e => {
     const b = e.target.closest('[data-dp]'); if (!b) return;
-    b.disabled = true;
-    api('/api/admin/dups/' + b.dataset.dp, { id: b.dataset.id }).then(() => { toast(b.dataset.dp === 'resolve' ? 'Removed; the copy that stays has everything' : 'Left alone, and left out of later searches'); poll(); }, err => { b.disabled = false; fail(err); });
+    b.parentNode.querySelectorAll('[data-dp]').forEach(x => { x.disabled = true; });
+    api('/api/admin/dups/' + b.dataset.dp, { id: b.dataset.id }).then(() => { toast(b.dataset.dp === 'resolve' ? 'Removed; the copy that stays has everything' : 'Left alone, and left out of later searches'); poll(); }, err => { b.parentNode.querySelectorAll('[data-dp]').forEach(x => { x.disabled = false; }); fail(err); });
+    if (b.dataset.dp === 'resolve') setTimeout(poll, 600);
   });
   drawScope('dups'); poll();
   every(poll, 2000);
