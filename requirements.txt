@@ -1,5 +1,5 @@
 # Pinned so every install and rebuild gets the same, tested versions.
-# yt-dlp and spotDL aren't included: an admin installs them under Plugins in the admin panel.
+# Nothing here downloads music. Plugins (like the Downloader) are installed under Plugins in the admin panel.
 Flask==3.1.3
 Werkzeug==3.1.8
 mutagen==1.48.1

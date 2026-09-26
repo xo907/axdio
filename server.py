@@ -24,12 +24,12 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.7.1"
+AXDIO_VERSION = "2.8.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
-# Plugins (yt-dlp, spotDL) aren't part of Axdio. An admin installs them from the Plugins page into a Python
-# environment of their own in config/plugins/env, which joins the import path here. See PLUGINS.
+# Plugins aren't part of Axdio. An admin installs them from the Plugins page into a Python environment of their
+# own in config/plugins/env, which joins the import path here. See PLUGINS.
 PLUGINS_DIR = CONFIG_DIR / "plugins"
 PLUGIN_ENV = PLUGINS_DIR / "env"
 PY_DIR = f"python{sys.version_info[0]}.{sys.version_info[1]}"
@@ -961,9 +961,6 @@ from pathlib import Path
 def get_real_music_dir():
     return str(Path(config["music_dir"]).resolve())
 
-admin_dl_state = {"status": "idle", "url": "", "logs": collections.deque(maxlen=500), "returncode": None, "pid": None, "completed_tracks": 0, "total_tracks": 0}
-dl_lock = threading.Lock()
-active_proc = None
 
 admin_scrape_state = {"status": "idle", "logs": collections.deque(maxlen=400), "scraped": 0, "total": 0, "scanned": 0}
 scrape_lock = threading.Lock()
@@ -975,49 +972,6 @@ def clean_filename(text, fallback="Unknown"):
     if not text: return fallback
     s = re.sub(r'[\\/*?:"<>|]', "", str(text).strip()).strip(". ")
     return s if s else fallback
-
-# ============================================================
-# FILTER RULES: VIDEOS, EXTRAS & ALTERNATE EDITIONS
-# ============================================================
-# ============================================================
-# PRECISION METADATA & EXTRAS ENGINE
-# ============================================================
-VIDEO_REJECT_PATTERNS = [
-    r"(?i)\b(official\s*(music\s*)?video)\b",
-    r"(?i)\[\s*official\s*(music\s*)?video\s*\]",
-    r"(?i)\(\s*official\s*(music\s*)?video\s*\)",
-    r"(?i)\b(official\s+video)\b",
-    r"(?i)\[\s*official\s+video\s*\]",
-    r"(?i)\(\s*official\s+video\s*\)",
-    r"(?i)\b(music\s+video)\b",
-    r"(?i)\[\s*music\s+video\s*\]",
-    r"(?i)\(\s*music\s+video\s*\)",
-    r"(?i)\b(official\s+mv)\b",
-    r"(?i)\[\s*mv\s*\]",
-    r"(?i)\(\s*mv\s*\)",
-    r"(?i)\b(visualizer|visualiser)\b",
-    r"(?i)\b(lyric\s+visualizer|lyric\s+video|lyrics\s+video)\b",
-    r"(?i)\b(official\s+lyrics?)\b",
-    r"(?i)\b(behind\s+the\s+scenes|\bbts\b|interview|vlog|teaser|trailer|episode|snippet|preview)\b"
-]
-
-EXTRAS_REJECT_PATTERNS = [
-    r"(?i)\b(instrumental|instrumentals)\b",
-    r"(?i)\b(a\s*cappella|acapella|a\s*capella)\b",
-    r"(?i)\b(karaoke)\b",
-    r"(?i)\b(orchestral(\s+version)?|string\s+version|piano\s+version)\b",
-    r"(?i)\b(slowed(\s*(\+|and|\&)\s*reverb)?|sped\s*up)\b",
-    r"(?i)\b(live\s+(version|at|from|session))\b",
-    r"(?i)\b(acoustic\s+(version|session|live))\b"
-]
-
-def is_extra_edition(text):
-    if not text: return False
-    s = str(text)
-    for pat in EXTRAS_REJECT_PATTERNS:
-        if re.search(pat, s):
-            return True
-    return False
 
 # ============================================================
 # AUDIO IDENTITY VERIFICATION
@@ -1539,38 +1493,8 @@ def write_track_tags(path, meta, cover=None, only_missing=False, replace_cover=T
         f.save()
 
 
-def copy_track_tags(src, dst, source_url=None):
-    """Carry every tag and picture of `src` over to `dst` (same container format)."""
-    from mutagen.flac import FLAC
-    from mutagen.mp4 import MP4
-    from mutagen.id3 import ID3, ID3NoHeaderError
-    ext = Path(dst).suffix.lower()
-    if ext == ".flac":
-        s, d = FLAC(str(src)), FLAC(str(dst))
-        if d.tags is None: d.add_tags()
-        for k in list(d.tags.keys()): del d.tags[k]
-        for k in {k.lower() for k in (s.tags.keys() if s.tags else [])}: d.tags[k] = s.tags[k]
-        d.clear_pictures()
-        for p in s.pictures: d.add_picture(p)
-        d.save()
-    elif ext == ".mp3":
-        try: ID3(str(src)).save(str(dst))
-        except ID3NoHeaderError: pass
-    elif ext in (".m4a", ".mp4"):
-        s, d = MP4(str(src)), MP4(str(dst))
-        if d.tags is None: d.add_tags()
-        for k, v in (s.tags or {}).items(): d.tags[k] = v
-        d.save()
-    if source_url: write_track_tags(dst, {"source_url": source_url})
 
 
-def transcode_audio(src, ext):
-    dst = _work_path(ext)
-    codec = {".flac": ["-c:a", "flac", "-compression_level", "5"], ".mp3": ["-c:a", "libmp3lame", "-b:a", "320k"],
-             ".m4a": ["-c:a", "aac", "-b:a", "256k"]}.get(ext, ["-c:a", "flac"])
-    subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(src), "-vn", "-map", "0:a:0", "-map_metadata", "-1", *codec, str(dst)],
-                   check=True, capture_output=True, timeout=900)
-    return dst
 
 
 def install_library_file(src, rel):
@@ -1620,97 +1544,19 @@ def reference_metadata(ref):
             "copyright": t.get("copyright"), "cover_url": (t.get("artworkUrl100") or "").replace("100x100bb", "1400x1400bb")}
 
 
-# --- Finding the right audio on YouTube ---
-# A YouTube upload is only ever saved as a song once its audio has been matched against a preview of that exact
-# recording. Measured on real uploads (bit error of a Chromaprint alignment against a 30 s catalog preview):
-#   the right recording                        0.01 - 0.08 on average, worst 2-second stretches under 0.10
-#   the same song's instrumental / live take   0.14 - 0.40, with long stretches far off (where the vocals differ)
-#   remixes, covers, sped-up or slowed edits   0.21 - 0.47
-# so an upload must score under FP_STRICT_BER on average AND stay close throughout (FP_STRICT_WINDOW), be closer to the
-# recording than to any other version of the song the catalogs know (live, remix, instrumental...), and be as long as
-# the recording. Music videos pass the audio test but fail on length (intros, skits), so the plain song is found instead.
-FP_STRICT_BER = 0.12
-FP_STRICT_WINDOW = 0.20       # the worst 10% of 2-second stretches (instrumentals fail here: no vocals where there should be)
-FP_CLEARLY_OTHER = 0.25       # an existing file this far from the recording is some other audio
-# Two whole files against each other (another upload of the same recording: 0.01-0.07 on average, worst stretches under
-# 0.08; instrumentals and live takes: 0.13-0.23, worst 0.25-0.34):
-FP_SAME_FULL, FP_SAME_FULL_WORST = 0.08, 0.12      # the same recording
-FP_OTHER_FULL, FP_OTHER_FULL_WORST = 0.11, 0.18    # clearly another one
-_JUNK_UPLOAD_RE = re.compile(r"(?i)\b(?:reaction|tutorial|lesson|karaoke|bass\s*boosted|432\s*hz|chipmunk|1\s*hour|10\s*hours?|loop|8d\s*audio|nightcore|lyrics?\s*(?:translation|tradu[cç][aã]o)|subtitulad[ao])\b")
-_OFFICIAL_RE = re.compile(r"(?i)[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|visuali[sz]er|lyric\s*video)|(?:official\s*)?lyric\s*video|audio|visuali[sz]er)\s*[\)\]]")
 
 
-def dur_tolerance(seconds):
-    """How far an upload's length may be from the recording's (right uploads were at most 1.7 s off)."""
-    return max(4.0, 0.015 * (seconds or 0))
 
 
-def ytdl_options(**extra):
-    opts = {"quiet": True, "no_warnings": True, "socket_timeout": 20}
-    deno = PLUGIN_ENV / "bin" / "deno"
-    if deno.exists(): opts["js_runtimes"] = {"deno": {"path": str(deno)}}   # YouTube needs a JavaScript runtime
-    opts.update(extra)
-    return opts
 
 
-def youtube_search(query, music=True, limit=5):
-    url = ("https://music.youtube.com/search?q=" + urllib.parse.quote_plus(query) + "#songs") if music else f"ytsearch{limit}:{query}"
-    try:
-        with ytdlp_session() as yd, yd.YoutubeDL(ytdl_options(extract_flat=True, skip_download=True)) as y:
-            r = y.extract_info(url, download=False) or {}
-    except PluginMissing:
-        raise
-    except Exception as e:
-        if "not a bot" in str(e).lower(): raise YouTubeBlocked(str(e))
-        return []
-    out = []
-    for e in (r.get("entries") or [])[:limit]:
-        vid = e.get("id") or ""
-        if len(vid) == 11:
-            out.append({"id": vid, "title": e.get("title") or "", "duration": e.get("duration") or 0, "music": music,
-                        "channel": e.get("channel") or e.get("uploader") or ""})
-    return out
 
 
-def youtube_info(url):
-    """What YouTube knows about a video, without downloading it."""
-    try:
-        with ytdlp_session() as yd, yd.YoutubeDL(ytdl_options(noplaylist=True)) as y:
-            return y.extract_info(url, download=False)
-    except PluginMissing:
-        raise
-    except Exception as e:
-        if "not a bot" in str(e).lower(): raise YouTubeBlocked(str(e))
-        raise
 
 
-def youtube_download(url, accept=None):
-    """Download a video's best audio stream. `accept(info)` can veto before any bytes are fetched."""
-    opts = ytdl_options(noplaylist=True, format="bestaudio/best", noprogress=True, retries=3, socket_timeout=30,
-                        outtmpl=str(WORK_DIR / f"yt-{uuid.uuid4().hex[:10]}-%(id)s.%(ext)s"))
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        with ytdlp_session() as yd, yd.YoutubeDL(opts) as y:
-            info = y.extract_info(url, download=False)
-            if accept and not accept(info): return info, None
-            info = y.process_ie_result(info, download=True)
-            dl = (info.get("requested_downloads") or [{}])[0]
-            return info, dl.get("filepath") or y.prepare_filename(info)
-    except PluginMissing:
-        raise
-    except Exception as e:
-        if "not a bot" in str(e).lower(): raise YouTubeBlocked(str(e))
-        raise
 
 
-# --- What counts as the same recording ---
-_VERSION_SEG_RE = re.compile(r"\s*(?:[\(\[][^\)\]]*[\)\]]|\s-\s.*$)")
 
-def base_title(title):
-    """A title without featured artists and without any version part: 'Levitating (Live From Mexico)' -> 'levitating'."""
-    t = _NOISE_RE.sub(" ", _FROM_RE.sub(" ", _FEAT_RE.sub(" ", str(title or ""))))
-    t = _VERSION_SEG_RE.sub(lambda m: "" if version_markers(m.group(0)) or not _norm(m.group(0)) else m.group(0), t)
-    return _norm(t)
 
 
 def _credit_pieces(names):
@@ -1739,223 +1585,33 @@ def same_credits(target_artists, target_title, ref_artist, ref_title, strict=Tru
     return any(close(p, ref) for p in primary) and all(close(r, tgt) for r in ref) and (not strict or all(close(f, ref) for f in named))
 
 
-def same_recording_credits(a, b):
-    """Could two catalog entries be the same recording by their credits? (One may leave featured artists out.)"""
-    return (same_credits([a["artist"]], a["title"], b["artist"], b["title"], strict=False)
-            or same_credits([b["artist"]], b["title"], a["artist"], a["title"], strict=False))
 
 
-# --- Catalog versions of a song (Deezer and iTunes) ---
-_catalog_cache = collections.OrderedDict()
-
-def catalog_versions(title, artists):
-    """Every catalog entry (any version, with an audio preview) of this song by this artist."""
-    primary = (list(artists or []) or [""])[0]
-    base = base_title(title)
-    if not base or not primary: return []
-    key = (base, _norm(primary))
-    if key in _catalog_cache: return _catalog_cache[key]
-    akeys = artist_keys([primary])
-    words = _FEAT_RE.sub(" ", _VERSION_SEG_RE.sub(" ", str(title))).strip() or str(title)
-    out, seen = [], set()
-
-    def add(ref):
-        if ref["id"] and (ref["source"], ref["id"]) not in seen and ref.get("preview"):
-            seen.add((ref["source"], ref["id"]))
-            ref["markers"] = version_markers(ref["title"])
-            out.append(ref)
-    for q in (f"{primary} {words}", 'artist:"%s" track:"%s"' % (primary.replace('"', ""), words.replace('"', ""))):
-        d = http_json("https://api.deezer.com/search?limit=25&q=" + urllib.parse.quote(q))
-        for t in (d or {}).get("data") or []:
-            if base_title(t.get("title")) == base and artist_match(akeys, (t.get("artist") or {}).get("name")):
-                r = _deezer_ref(t, True, "search")
-                r["explicit"] = bool(t.get("explicit_lyrics"))
-                add(r)
-    d = http_json("https://itunes.apple.com/search?entity=song&limit=25&term=" + urllib.parse.quote(f"{primary} {words}"), host_gap=3.2)
-    for t in (d or {}).get("results") or []:
-        if base_title(t.get("trackName")) == base and artist_match(akeys, t.get("artistName")):
-            r = _itunes_ref(t, True)
-            r["explicit"] = t.get("trackExplicitness") == "explicit"
-            add(r)
-    _catalog_cache[key] = out
-    while len(_catalog_cache) > 200: _catalog_cache.popitem(last=False)
-    return out
 
 
-def link_reference(target):
-    """The preview a streaming link carries: a clip of exactly the linked recording."""
-    if not target.get("preview_url"): return None
-    return {"source": "link", "id": target.get("source_page") or target["preview_url"], "title": target["title"],
-            "artist": ", ".join(target.get("artists") or []), "album": target.get("album") or "", "duration": int(round(target.get("duration") or 0)),
-            "preview": target["preview_url"], "isrc": target.get("isrc") or "", "strong": True, "via": "link", "markers": version_markers(target["title"])}
 
 
-def reference_sets(target, log=None):
-    """(recording, others, isrcs): previews of the recording `target` names, previews of the song's other versions, and
-    the ISRCs of catalog entries that are that recording (for finding the exact upload on YouTube Music)."""
-    versions = catalog_versions(target["title"], target.get("artists"))
-    marks, dur = version_markers(target["title"]), target.get("duration") or 0
-    same, others = [], []
-    for r in versions:
-        credits = same_credits(target.get("artists"), target["title"], r["artist"], r["title"], strict=False)
-        this = (r["markers"] == marks and credits and (not dur or not r["duration"] or abs(r["duration"] - dur) <= dur_tolerance(dur) + 1))
-        r["_other"] = r["markers"] != marks or not credits      # another version, or credits an artist the target doesn't
-        (same if this else others).append(r)
-    link = link_reference(target)
-    rec = []
-    if link and len(reference_fingerprint(link)) >= 60:
-        # The link's clip is the recording. Catalog clips of the same title are often another part of the song,
-        # so they only count when they overlap the link's clip and match it.
-        rec.append((link, reference_fingerprint(link)))
-        rec += [(r, fp) for r, fp in preview_fingerprints(same, limit=4) if fingerprint_similarity(rec[0][1], fp)[0] <= FP_STRICT_BER]
-    else:
-        rec += preview_fingerprints(same, limit=3)
-    target["_same"] = same             # candidates for the recording's catalog entry (ISRC), confirmed after download
-    alts = preview_fingerprints([r for r in others if r["_other"]], limit=4)
-    want = target.get("explicit")
-    isrcs = [r["isrc"] for r in sorted(same, key=lambda r: (want is not None and r.get("explicit") != want)) if r.get("isrc")]
-    if log and not rec: log("  [VERIFY] No preview of this recording in the link or the catalogs (Deezer, iTunes)")
-    return rec, alts, list(dict.fromkeys(isrcs))
 
 
-# --- Scoring an upload ---
-def fingerprint_match(ref, sample):
-    """(average bit error, worst-stretch bit error, offset seconds) of the best alignment of `ref` inside `sample`."""
-    ber, off = fingerprint_similarity(ref, sample)
-    if ber >= 1.0: return 1.0, 1.0, 0.0
-    o = int(round(off / FP_ITEM_SEC))
-    lo, hi = max(0, -o), min(len(ref), len(sample) - o)
-    errs = [(ref[i] ^ sample[i + o]).bit_count() / 32.0 for i in range(lo, hi)]
-    w = 16                                                   # ~2 seconds
-    wins = sorted(sum(errs[i:i + w]) / w for i in range(0, max(1, len(errs) - w + 1), 4))
-    return ber, (wins[int(len(wins) * 0.9)] if wins else ber), off
 
 
-def score_audio(fp, rec, alts):
-    best = {"ber": 1.0, "worst": 1.0, "ref": None, "alt_ber": 1.0, "alt": None}
-    for ref, rfp in rec:
-        ber, worst, _ = fingerprint_match(rfp, fp)
-        if ber < best["ber"]: best.update(ber=ber, worst=worst, ref=ref)
-    for ref, rfp in alts:
-        ber, _ = fingerprint_similarity(rfp, fp)
-        if ber < best["alt_ber"]: best.update(alt_ber=ber, alt=ref)
-    return best
 
 
-def judge_upload(score, duration, target_duration):
-    """(ok, reason). Every test must pass: this is what keeps wrong songs out of the library."""
-    if score["ber"] > FP_STRICT_BER:
-        return False, f"different audio (bit error {score['ber']:.2f}; the right recording scores under {FP_STRICT_BER:.2f})"
-    if score["worst"] > FP_STRICT_WINDOW:
-        return False, f"parts of it differ (bit error {score['worst']:.2f} in places): another version, such as an instrumental"
-    if score["alt"] is not None and score["alt_ber"] <= score["ber"] + 0.02:
-        return False, f"sounds like '{score['alt']['title']}' at least as much as the song"
-    if target_duration and duration and abs(duration - target_duration) > dur_tolerance(target_duration):
-        return False, f"{_fmt_dur(duration)} long; the recording is {_fmt_dur(target_duration)}"
-    return True, ""
 
 
-def _candidate_ok(c, marks, target_duration):
-    if not version_markers(c["title"]) <= marks: return False
-    if _JUNK_UPLOAD_RE.search(c["title"]) and "karaoke" not in marks: return False
-    return not (target_duration and c["duration"] and abs(c["duration"] - target_duration) > dur_tolerance(target_duration) + 2)
 
 
-def upload_candidates(target, isrcs, exclude_ids=()):
-    """YouTube uploads that might be the recording, most likely first: ISRC hits on YouTube Music, then YouTube Music
-    songs, then ordinary videos."""
-    title, artist = target["title"], (target.get("artists") or [""])[0]
-    marks, dur = version_markers(title), target.get("duration") or 0
-    found = []
-    for isrc in isrcs[:2]:   # YouTube Music answers unknown ISRCs with unrelated songs
-        found += [dict(c, isrc=True) for c in youtube_search(isrc, music=True, limit=2) if base_title(c["title"]) == base_title(title)]
-    music = youtube_search(f"{artist} {title}", music=True, limit=6)
-    music.sort(key=lambda c: abs((c["duration"] or dur) - dur) if dur else 0)
-    found += music + youtube_search(f"{artist} - {title}", music=False, limit=6)
-    seen, out = set(i for i in exclude_ids if i), []
-    for c in found:
-        if c["id"] in seen: continue
-        seen.add(c["id"])
-        if _candidate_ok(c, marks, dur): out.append(c)
-    return out
 
 
-def try_upload(c, rec, alts, target_duration, log):
-    """Download one candidate and test it. Returns the accepted result or None (the file is removed)."""
-    url = ("https://music.youtube.com/watch?v=" if c.get("music") else "https://www.youtube.com/watch?v=") + c["id"]
-    tol = dur_tolerance(target_duration) if target_duration else None
-    accept = (lambda i: not i.get("duration") or abs(i["duration"] - target_duration) <= tol) if target_duration else None
-    try:
-        info, path = youtube_download(url, accept)
-    except (YouTubeBlocked, PluginMissing):
-        raise
-    except Exception as e:
-        log(f"    [REJECT] {c['id']}: {str(e)[:140]}")
-        return None
-    if not path:
-        log(f"    [REJECT] {c['id']} '{c['title']}': {_fmt_dur(info.get('duration'))} long, the recording is {_fmt_dur(target_duration)}")
-        return None
-    fp = audio_fingerprint(path)
-    score = score_audio(fp, rec, alts)
-    ok, why = judge_upload(score, info.get("duration") or 0, target_duration)
-    if not ok:
-        log(f"    [REJECT] {c['id']} '{info.get('title')}': {why}")
-        Path(path).unlink(missing_ok=True)
-        return None
-    return {"method": "fingerprint", "ber": score["ber"], "worst": score["worst"], "ref": score["ref"], "path": path, "url": url,
-            "video_id": c["id"], "duration": info.get("duration") or 0, "title": info.get("title") or "", "info": info, "fp": fp}
 
 
-def acquire_recording(target, rec, alts, isrcs, log=print, exclude_ids=(), max_downloads=5):
-    """Download the upload that is the recording `target` names, or None."""
-    if not rec: return None
-    dur = target.get("duration") or next((r["duration"] for r, _ in rec if r.get("duration")), 0)
-    tried = 0
-    for c in upload_candidates(target, isrcs, exclude_ids):
-        if tried >= max_downloads: break
-        tried += 1
-        got = try_upload(c, rec, alts, dur, log)
-        if got: return got
-        time.sleep(1)
-    return None
 
 
-def acquire_unverified(target, log=print):
-    """For songs no catalog has a preview of: a YouTube Music upload whose own title, artist, album and length all agree."""
-    title, akeys, dur = target["title"], artist_keys(target.get("artists")), target.get("duration") or 0
-    for c in youtube_search(f"{(target.get('artists') or [''])[0]} {title}", music=True, limit=5):
-        if not _candidate_ok(c, version_markers(title), dur): continue
-        url = "https://music.youtube.com/watch?v=" + c["id"]
-        def accept(info):
-            same_album = not target.get("album") or not info.get("album") or base_title(info["album"]) == base_title(target["album"])
-            return (title_match(title, info.get("track") or "")[1] and artist_match(akeys, info.get("artists") or info.get("artist") or "")
-                    and same_album and (not dur or abs((info.get("duration") or 0) - dur) <= 2))
-        info, path = youtube_download(url, accept)
-        if path:
-            return {"method": "metadata", "ber": None, "worst": None, "ref": None, "path": path, "url": url, "video_id": c["id"],
-                    "duration": info.get("duration") or 0, "title": info.get("title") or "", "info": info,
-                    "note": "No preview of this recording anywhere to compare with; YouTube Music's title, artist, album and length all agree"}
-        log(f"    [REJECT] {c['id']} '{c['title']}': YouTube Music's details don't match")
-    return None
 
 
-def acquire_verified_audio(label, refs, exclude_ids=(), expected_duration=None, log=print, allow_metadata_match=False, max_downloads=6):
-    """Download the song `label` names (used by the library audit's repairs)."""
-    target = {"title": label.get("title") or "", "artists": label.get("artists") or [], "album": label.get("album") or "",
-              "isrc": label.get("isrc") or "", "duration": expected_duration or next((r["duration"] for r in refs if r.get("strong") and r["duration"]), 0)}
-    rec = preview_fingerprints(refs)
-    if not rec: return acquire_unverified(target, log) if allow_metadata_match else None
-    marks = version_markers(target["title"])
-    alts = preview_fingerprints([r for r in catalog_versions(target["title"], target["artists"]) if version_markers(r["title"]) != marks], limit=3)
-    isrcs = list(dict.fromkeys(i for i in [target["isrc"]] + [r.get("isrc") for r in refs] if i))
-    return acquire_recording(target, rec, alts, isrcs, log=log, exclude_ids=exclude_ids, max_downloads=max_downloads)
 
 
-def same_recording(fp_a, fp_b):
-    """(average, worst-stretch) bit error of two whole files against each other (both full-length fingerprints)."""
-    if len(fp_a) > len(fp_b): fp_a, fp_b = fp_b, fp_a
-    ber, worst, _ = fingerprint_match(fp_a, fp_b)
-    return ber, worst
+
 
 # ============================================================
 # LIBRARY AUDIT & REPAIR
@@ -2225,7 +1881,11 @@ def repair_track(rel):
     if not tags or not tags["title"] or not tags["artists"]:
         audit_log(f"[SKIP] {rel}: no title/artist tags to say which song it should be")
         return False
-    return _replace_audio(rel, p, entry, tags)
+    fix = plugin_hook("replace_audio")        # the Downloader plugin fetches the right recording
+    if not fix:
+        audit_log(f"[SKIP] {rel}: replacing wrong audio needs the Downloader plugin (Plugins)")
+        return False
+    return fix[0](rel, p, entry, tags)
 
 
 def _retag_from_reference(rel, p, entry):
@@ -2244,42 +1904,6 @@ def _retag_from_reference(rel, p, entry):
     return True
 
 
-def _replace_audio(rel, p, entry, tags):
-    label = {"title": tags["title"], "artists": tags["artists"], "album": tags["album"], "isrc": tags["isrc"]}
-    if not plugin_version("yt-dlp"):
-        entry["fix_error"] = "Replacing audio needs yt-dlp. Install it under Plugins, then try again"
-        audit_put(rel, entry, flush=True)
-        audit_log(f"[FAILED] {rel}: {entry['fix_error']}")
-        return False
-    audit_log(f"[FIX] {rel}: looking for the real '{_label_text(label)}'")
-    refs = [r for r in find_references(label) if r.get("strong")]
-    if not refs:
-        entry["fix_error"] = "No exact catalog entry for this title/artist; replace it manually"
-        audit_put(rel, entry, flush=True)
-        audit_log(f"[FAILED] {rel}: {entry['fix_error']}")
-        return False
-    target = next((r["duration"] for r in refs if r["duration"]), None)
-    got = acquire_verified_audio(label, refs, exclude_ids={tags["source_id"]}, expected_duration=target, log=audit_log)
-    if not got:
-        entry["fix_error"] = "No YouTube upload matched the catalog audio"
-        audit_put(rel, entry, flush=True)
-        audit_log(f"[FAILED] {rel}: {entry['fix_error']}")
-        return False
-    new = None
-    try:
-        new = transcode_audio(got["path"], p.suffix.lower())
-        copy_track_tags(p, new, source_url=got["url"])
-        q = quarantine_original(rel, entry.get("reason"), {"kind": "audio", "old_source": tags["source_id"], "new_source": got["video_id"],
-                                                            "old_ber": entry.get("ber"), "new_ber": round(got["ber"], 3)})
-        install_library_file(new, rel)
-    finally:
-        Path(got["path"]).unlink(missing_ok=True)
-        if new: Path(new).unlink(missing_ok=True)
-    refresh_library_entry(rel)
-    _mark_fixed(rel, entry, {"kind": "replaced", "quarantine_id": q["id"], "source": got["url"]},
-                ber=round(got["ber"], 3), ref=ref_summary(got["ref"]), source_id=got["video_id"], duration=got["duration"])
-    audit_log(f"[FIXED] {rel} ← {got['url']} (fingerprint bit error {got['ber']:.2f})")
-    return True
 
 
 def restore_quarantined(qid):
@@ -2403,24 +2027,10 @@ def _run_scrape_task(music_dir, force_all=False):
                f"not found {counts['skipped']} · errors {counts['error']}")
 
 
-# --- DOWNLOADER ---
-# Each link becomes a list of targets: the exact recordings to save. Streaming links name them directly (title, artists,
-# length and a preview clip of the recording, read from the service's public pages). YouTube links are identified by
-# their audio: the catalogs' versions of the song the video names are compared with what the video really contains.
-# Nothing reaches the library unless an upload's audio has matched the recording (see "Finding the right audio").
-def _dl_log(msg):
-    admin_dl_state["logs"].append(msg)
 
 
-def _dl_should_continue():
-    while admin_dl_state["status"] == "paused": time.sleep(1)
-    return admin_dl_state["status"] != "stopped"
 
 
-def _library_rel(artist, album, title, track_number=None, ext=".flac"):
-    tn = re.findall(r"\d+", str(track_number or ""))
-    prefix = f"{int(tn[0]):02d} - " if tn and int(tn[0]) > 0 else ""
-    return "/".join([clean_filename(artist, "Unknown Artist"), clean_filename(album, "Singles"), prefix + clean_filename(title, "Unknown Track") + ext])
 
 
 def library_copies(target):
@@ -2453,626 +2063,59 @@ def _find_in_library(artists, title):
     return found[0] if found else None
 
 
-# --- Streaming links (read from the service's public pages; no account or API key) ---
-STREAM_LINK_RE = re.compile(r"(?:open\.spotify\.com/(?:intl-[a-z]{2}(?:-[a-z]{2})?/)?|spotify:)(track|album|playlist|artist)[/:]([A-Za-z0-9]{22})")
-_STREAM_HOSTS = ("open.spotify.com", "spotify.link", "spoti.fi", "spotify:")
-
-def is_streaming_link(url):
-    return any(h in str(url).lower() for h in _STREAM_HOSTS)
 
 
-def _stream_get(url):
-    # A plain user agent gets the server-rendered page (with its details in meta tags); a full browser one gets an empty app shell.
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r: return r.geturl(), r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503) and attempt < 2: time.sleep(3 * (attempt + 1)); continue
-            raise
-        except urllib.error.URLError:
-            if attempt < 2: time.sleep(2); continue
-            raise
 
 
-def streaming_link(url):
-    """(kind, id) of a streaming link; short links are followed."""
-    url = str(url).strip()
-    if "spotify.link" in url or "spoti.fi" in url:
-        url, html = _stream_get(url)
-        m = STREAM_LINK_RE.search(url) or STREAM_LINK_RE.search(html)
-    else:
-        m = STREAM_LINK_RE.search(url)
-    if not m: raise ValueError("That streaming link isn't a song, album, playlist or artist link.")
-    return m.group(1), m.group(2)
 
 
-def _embed_entity(kind, sid):
-    _, html = _stream_get(f"https://open.spotify.com/embed/{kind}/{sid}")
-    m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.S)
-    if not m: raise ValueError("The streaming service's page has changed; it couldn't be read.")
-    return json.loads(m.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
 
 
-def _page_meta(kind, sid):
-    """The Open Graph / music tags of a public page (album, track number, release date, artwork)."""
-    import html as _html
-    _, page = _stream_get(f"https://open.spotify.com/{kind}/{sid}")
-    meta = {}
-    for tag in re.findall(r"<meta\s[^>]*>", page):
-        k = re.search(r'(?:property|name)="((?:og|music):[^"]+)"', tag)
-        v = re.search(r'content="([^"]*)"', tag)
-        if k and v: meta.setdefault(k.group(1), []).append(_html.unescape(v.group(1)))
-    return meta
 
 
-def _preview(entry):
-    return ((entry or {}).get("audioPreview") or {}).get("url") or ""
 
 
-def _stream_target(entry, album=None):
-    """A target from an embed track entry (details are filled in by enrich_stream_target)."""
-    uri = entry.get("uri") or ""
-    sid = uri.rsplit(":", 1)[-1]
-    artists = [a.get("name") for a in entry.get("artists") or [] if a.get("name")] or \
-              ([entry["subtitle"]] if entry.get("subtitle") else [])   # "A, B" is split once the track's own page is read
-    return {"kind": "stream", "id": sid, "title": entry.get("title") or entry.get("name") or "", "artists": artists,
-            "duration": (entry.get("duration") or 0) / 1000.0, "explicit": bool(entry.get("isExplicit")), "preview_url": _preview(entry),
-            "source_page": f"https://open.spotify.com/track/{sid}", "album": (album or {}).get("name") or "",
-            "albumartist": (album or {}).get("artist") or "", "cover_url": (album or {}).get("cover") or "", "date": (album or {}).get("date") or "",
-            "playable": entry.get("isPlayable", True), "enriched": False}
 
 
-def enrich_stream_target(t):
-    """Fill in exact artists, album, track number, release date and artwork from the track's own pages."""
-    if t.get("enriched") or t.get("kind") != "stream": return t
-    try:
-        e = _embed_entity("track", t["id"])
-        t["artists"] = [a.get("name") for a in e.get("artists") or [] if a.get("name")] or t["artists"]
-        t["title"] = e.get("title") or e.get("name") or t["title"]
-        t["duration"] = (e.get("duration") or 0) / 1000.0 or t["duration"]
-        t["preview_url"] = _preview(e) or t["preview_url"]
-        t["explicit"] = bool(e.get("isExplicit")) if "isExplicit" in e else t.get("explicit")
-        t["date"] = t.get("date") or ((e.get("releaseDate") or {}).get("isoString") or "")[:10]
-    except Exception:
-        pass
-    try:
-        meta = _page_meta("track", t["id"])
-        desc = (meta.get("og:description") or [""])[0].split(" · ")      # "Artist · Album · Song · 2020"
-        if not t.get("album") and len(desc) >= 2: t["album"] = desc[1]
-        t["tracknumber"] = t.get("tracknumber") or (meta.get("music:album:track") or [""])[0]
-        t["date"] = t.get("date") or (meta.get("music:release_date") or [""])[0]
-        t["cover_url"] = t.get("cover_url") or (meta.get("og:image") or [""])[0]
-        album_url = (meta.get("music:album") or [""])[0]
-        if album_url and not t.get("albumartist"):
-            m = STREAM_LINK_RE.search(album_url)
-            if m:
-                try: t["albumartist"] = _embed_entity("album", m.group(2)).get("subtitle", "").split(", ")[0]
-                except Exception: pass
-    except Exception:
-        pass
-    t["tracknumber"] = t.get("tracknumber") or t.get("tracknumber_hint") or ""
-    t["albumartist"] = t.get("albumartist") or (t.get("artists") or [""])[0]
-    t["enriched"] = True
-    return t
 
 
-def streaming_targets(url, log=_dl_log):
-    """(targets, list name) for a streaming link."""
-    kind, sid = streaming_link(url)
-    if kind == "track":
-        e = _embed_entity("track", sid)
-        e.setdefault("uri", f"spotify:track:{sid}")
-        return [_stream_target(e)], ""
-    if kind == "album":
-        e = _embed_entity("album", sid)
-        album = {"name": e.get("name") or e.get("title") or "", "artist": (e.get("subtitle") or "").split(", ")[0]}
-        try:
-            meta = _page_meta("album", sid)
-            album.update(cover=(meta.get("og:image") or [""])[0], date=(meta.get("music:release_date") or [""])[0])
-        except Exception: pass
-        items = []
-        for i, x in enumerate(e.get("trackList") or [], 1):
-            if str(x.get("uri") or "").startswith("spotify:track:"):
-                items.append(dict(_stream_target(x, album), tracknumber_hint=i))
-        return items, album["name"]
-    if kind == "playlist":
-        e = _embed_entity("playlist", sid)
-        items = [_stream_target(x) for x in e.get("trackList") or [] if str(x.get("uri") or "").startswith("spotify:track:")]
-        if len(items) >= 100:
-            listed = spotdl_targets(url, log)   # the page only shows the first 100
-            if listed: return listed, e.get("name") or ""
-            log(f"[DISCOVERY] The page lists only the first {len(items)} songs of this playlist; install spotDL under Plugins for all of them")
-        return items, e.get("name") or ""
-    # artist
-    listed = spotdl_targets(url, log)
-    if listed: return listed, ""
-    e = _embed_entity("artist", sid)
-    log("[DISCOVERY] Without spotDL only the artist's 10 most popular songs can be listed; install it under Plugins for all of them")
-    return [_stream_target(x) for x in e.get("trackList") or [] if str(x.get("uri") or "").startswith("spotify:track:")], e.get("name") or ""
 
 
-def spotdl_targets(url, log=_dl_log):
-    """Song list from spotDL (optional plugin), for artist links and very long playlists."""
-    global active_proc
-    cmd = plugin_command("spotdl")
-    if not cmd: return []
-    save_file = _work_path(".spotdl")
-    home = PLUGINS_DIR / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    log("[DISCOVERY] Listing the songs with spotDL (this can take a few minutes)...")
-    proc = subprocess.Popen([cmd, "save", url, "--lyrics", "--save-file", str(save_file)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1, preexec_fn=os.setsid, env={**os.environ, "HOME": str(home)})
-    active_proc = proc
-    admin_dl_state["pid"] = proc.pid
-    for line in iter(proc.stdout.readline, ""):
-        if admin_dl_state["status"] == "stopped": break
-    proc.stdout.close()
-    proc.wait()
-    active_proc = None
-    songs = _load_json_file(save_file, [])
-    save_file.unlink(missing_ok=True)
-    out = []
-    for s in songs or []:
-        sid = s.get("song_id") or (STREAM_LINK_RE.search(s.get("url") or "") or [None, None, ""])[2]
-        if not sid: continue
-        out.append({"kind": "stream", "id": sid, "title": s.get("name") or "", "artists": [a for a in s.get("artists") or [] if a],
-                    "duration": float(s.get("duration") or 0), "explicit": s.get("explicit"), "preview_url": "",
-                    "source_page": f"https://open.spotify.com/track/{sid}", "album": s.get("album_name") or "",
-                    "albumartist": s.get("album_artist") or "", "tracknumber": s.get("track_number"), "discnumber": s.get("disc_number"),
-                    "date": s.get("date") or "", "cover_url": s.get("cover_url") or "", "playable": True, "enriched": False})
-    return out
 
 
-# --- YouTube links ---
-# "(Official Lyrics Video)", "[HD]", "(Audio)"...: how the video presents the song, not part of its title.
-_PRESENTATION_RE = re.compile(r"(?i)\s*[\[\(](?:\s*(?:official|music|lyrics?|video|audio|visuali[sz]er|hd|hq|4k|explicit|clean|full|song|mv)\b[\s/&+-]*)+[\]\)]")
 
 
-def _youtube_guess(info, album_hint="", artist_hint=""):
-    """What a YouTube upload claims to be. YouTube Music uploads carry real track/artist fields."""
-    if info.get("track") and (info.get("artists") or info.get("artist")):
-        artists = info.get("artists") or [a.strip() for a in str(info.get("artist")).split(",") if a.strip()]
-        return {"title": info["track"], "artists": artists, "album": info.get("album") or album_hint or "", "music": True}
-    title = _PRESENTATION_RE.sub("", info.get("title") or "").strip()
-    channel = re.sub(r"(?i)\s*(?:-\s*Topic|VEVO|\s+Official)$", "", info.get("channel") or info.get("uploader") or artist_hint or "").strip()
-    if " - " in title:
-        artist, title = [x.strip() for x in title.split(" - ", 1)]
-    else:
-        artist = channel
-    title = _PRESENTATION_RE.sub("", title).strip()
-    return {"title": title, "artists": [artist] if artist else [], "album": album_hint or "", "music": False}
 
 
-def resolve_youtube_targets(raw_url, include_extras=False):
-    clean = raw_url.strip().split("?si=")[0].split("&si=")[0]
-    if "music.youtube.com" in clean and "/browse/" not in clean:
-        clean = clean.replace("music.youtube.com", "www.youtube.com")
-    is_channel = any(k in clean for k in ["/@", "/channel/", "/c/", "/user/"]) and "watch" not in clean and "list=" not in clean
-    is_list = "list=" in clean or "/playlist" in clean or "/browse/" in clean
-    if not is_channel and not is_list:
-        return [{"url": raw_url.strip(), "title": "", "album": "", "artist": "", "single": True}]
-    track_list, seen_ids = [], set()
-    with ytdlp_session() as yd, yd.YoutubeDL(ytdl_options(extract_flat=True, skip_download=True)) as ydl:
-        if is_channel:
-            base_channel = clean.rstrip("/")
-            artist_name = base_channel.split("/@")[-1].replace("-", " ")
-            _dl_log(f"[DISCOVERY] Resolving artist channel: {base_channel}")
-            found_entries = []
-            for cand in (base_channel + "/releases", base_channel + "/playlists", base_channel + "/videos", base_channel):
-                try:
-                    res = ydl.extract_info(cand, download=False)
-                    entries = [e for e in (res or {}).get("entries") or [] if e]
-                    if entries:
-                        _dl_log(f"  --> {cand} ({len(entries)} items)")
-                        found_entries = entries
-                        break
-                except Exception as e:
-                    _dl_log(f"  --> Skip section ({cand}): {str(e)[:120]}")
-            for item in found_entries:
-                item_title, item_id, item_url = item.get("title", ""), item.get("id", ""), item.get("url") or ""
-                if any(x in item_title.lower() for x in ["shorts", "community"]): continue
-                if not include_extras and is_extra_edition(item_title):
-                    _dl_log(f"  [FILTER] Skipping alternate/instrumental release: {item_title}")
-                    continue
-                is_sub_pl = (item.get("_type") in ("playlist", "multi_video") or "playlist?list=" in item_url or (item_id and item_id.startswith(("OLAK", "PL", "UU", "RD"))))
-                if is_sub_pl:
-                    sub_url = item_url if item_url.startswith("http") else f"https://www.youtube.com/playlist?list={item_id}"
-                    try:
-                        sub_res = ydl.extract_info(sub_url, download=False) or {}
-                        for sub in sub_res.get("entries") or []:
-                            if not sub: continue
-                            vid, sub_t = sub.get("id"), sub.get("title") or ""
-                            if not include_extras and is_extra_edition(sub_t): continue
-                            if vid and vid not in seen_ids:
-                                seen_ids.add(vid)
-                                track_list.append({"url": f"https://www.youtube.com/watch?v={vid}", "title": sub_t, "album": sub_res.get("title") or item_title,
-                                                   "artist": sub.get("uploader") or artist_name})
-                    except Exception: pass
-                else:
-                    vid = item_id if (len(item_id) == 11 and not item_id.startswith("UC")) else None
-                    if not vid and item_url:
-                        m = re.search(r"[?&]v=([a-zA-Z0-9_-]{11})", item_url)
-                        if m: vid = m.group(1)
-                    if vid and vid not in seen_ids:
-                        seen_ids.add(vid)
-                        track_list.append({"url": f"https://www.youtube.com/watch?v={vid}", "title": item_title, "album": "", "artist": artist_name})
-        elif is_list:
-            _dl_log("[DISCOVERY] Reading the playlist...")
-            try:
-                res = ydl.extract_info(clean, download=False) or {}
-                name = re.sub(r"^Album\s*-\s*", "", res.get("title") or "")
-                for track in res.get("entries") or []:
-                    if not track: continue
-                    vid, tr_title = track.get("id"), track.get("title") or ""
-                    if not include_extras and is_extra_edition(tr_title):
-                        _dl_log(f"  [FILTER] Skipping alternate version: {tr_title}")
-                        continue
-                    if vid and vid not in seen_ids:
-                        seen_ids.add(vid)
-                        track_list.append({"url": f"https://www.youtube.com/watch?v={vid}", "title": tr_title, "album": name,
-                                           "artist": track.get("uploader") or track.get("channel") or ""})
-            except Exception as e:
-                _dl_log(f"[ERR] Couldn't read the playlist: {str(e)[:200]}")
-    return track_list
 
 
-def identify_youtube(item, include_extras, log=_dl_log):
-    """Which recording is this video? Returns (target, rec, alts, isrcs, video audio result or None) or None to skip."""
-    info = youtube_info(item["url"])
-    if info.get("_type") == "playlist": raise ValueError("That's a playlist link; paste the playlist's own address")
-    guess = _youtube_guess(info, item.get("album", ""), item.get("artist", ""))
-    vdur = info.get("duration") or 0
-    log(f"  [IDENTIFY] {info.get('title')} ({info.get('channel') or info.get('uploader')}, {_fmt_dur(vdur)}): "
-        f"{'YouTube Music says' if guess['music'] else 'looks like'} '{_label_text(guess)}'")
-    if not guess["title"] or not guess["artists"]:
-        log("  [SKIP] Couldn't tell which song this video is")
-        return None
-    if vdur > 1200 or (vdur and vdur < 30):
-        log(f"  [SKIP] {_fmt_dur(vdur)} long: not a song")
-        return None
-    versions = catalog_versions(guess["title"], guess["artists"])
-    prefs = preview_fingerprints(versions, limit=8)
-    if not prefs:
-        return {"target": dict(guess, duration=vdur if guess["music"] else 0), "rec": [], "alts": [], "isrcs": [], "video": None, "info": info}
-    # The video's own audio says which version it is.
-    info2, path = youtube_download(item["url"], lambda i: (i.get("duration") or 0) <= 1200)
-    if not path:
-        log("  [SKIP] Couldn't download this video")
-        return None
-    vfp = audio_fingerprint(path)
-    scored = sorted(((fingerprint_match(rfp, vfp), ref) for ref, rfp in prefs), key=lambda x: x[0][0])
-    (ber, worst, _), ref = scored[0]
-    # Entries of the same recording (album, single, clean/explicit) score alike: take the one as long as the video.
-    twins = [(sc, r) for sc, r in scored if sc[0] <= ber + 0.03 and r["markers"] == ref["markers"] and same_recording_credits(ref, r)]
-    if vdur and len(twins) > 1:
-        (ber, worst, _), ref = min(twins, key=lambda x: abs((x[1].get("duration") or 0) - vdur))
-    rival = next((s for (s, r) in scored if r is not ref and (r["markers"] != ref["markers"] or not same_recording_credits(ref, r))), None)
-    video = {"method": "fingerprint", "ber": ber, "worst": worst, "ref": ref, "path": path, "url": item["url"], "video_id": info.get("id"),
-             "duration": vdur, "title": info.get("title") or "", "info": info, "fp": vfp}
-    if ber <= FP_STRICT_BER and worst <= FP_STRICT_WINDOW and (rival is None or rival[0] > ber + 0.02):
-        # A version the video doesn't admit to (an unlabeled instrumental), or one the filter leaves out anyway.
-        is_extra = bool(ref["markers"] - version_markers(guess["title"])) or is_extra_edition(ref["title"])
-        if is_extra and not include_extras and not item.get("single"):
-            Path(path).unlink(missing_ok=True)
-            log(f"  [SKIP] This is '{ref['artist']} - {ref['title']}'; alternate versions are turned off")
-            return None
-        log(f"  [IDENTIFY] The audio is '{ref['artist']} - {ref['title']}' ({ref['source']}, bit error {ber:.2f})")
-        target = {"title": ref["title"], "artists": [ref["artist"]], "album": ref.get("album") or "", "duration": ref.get("duration") or 0,
-                  "isrc": ref.get("isrc") or "", "explicit": ref.get("explicit"), "ref": ref}
-    else:
-        Path(path).unlink(missing_ok=True)
-        video = None
-        # The audio isn't a catalog recording (music videos often mix in skits or other takes). An official upload on the
-        # artist's channel still names the song, which is then found as the plain studio recording.
-        channel = info.get("channel") or info.get("uploader") or ""
-        official = guess["music"] or _OFFICIAL_RE.search(info.get("title") or "") or re.search(r"(?i)vevo|- topic$", channel)
-        on_channel = artist_match(artist_keys(guess["artists"]), re.sub(r"(?i)\s*(?:-\s*Topic|VEVO|\s+Official)$", "", channel))
-        studio = [r for r in versions if not r["markers"] and title_match(guess["title"], r["title"])[1]
-                  and same_credits(guess["artists"], guess["title"], r["artist"], r["title"], strict=False)]
-        if official and on_channel and studio:
-            ref = studio[0]
-            log(f"  [IDENTIFY] An official upload of '{ref['artist']} - {ref['title']}' with different audio; looking for the plain recording")
-            target = {"title": ref["title"], "artists": [ref["artist"]], "album": ref.get("album") or "", "duration": ref.get("duration") or 0,
-                      "isrc": ref.get("isrc") or "", "explicit": ref.get("explicit"), "ref": ref}
-        else:
-            log(f"  [SKIP] The audio isn't any catalog recording of '{_label_text(guess)}' (closest: '{ref['title']}', bit error {ber:.2f}), "
-                "so it can't be saved as that song. Covers, live takes and fan edits aren't downloaded.")
-            return None
-    rec, alts, isrcs = reference_sets(target, log)
-    if video and not any(r is target["ref"] or (r.get("source"), r.get("id")) == (target["ref"]["source"], target["ref"]["id"]) for r, _ in rec):
-        rec = [(target["ref"], reference_fingerprint(target["ref"]))] + rec
-    return {"target": target, "rec": rec, "alts": alts, "isrcs": isrcs, "video": video, "info": info}
 
 
-# --- Songs already in the library ---
-def judge_existing(rel, target, rec, alts):
-    """('right' | 'wrong' | 'unsure', reason, fingerprint) for a library file that claims to be `target`."""
-    p = Path(get_real_music_dir()) / rel
-    with library_cache_lock: dur = float((library_cache_data.get(rel) or {}).get("duration") or 0)
-    fps = {}
-    fp = _track_fp(p, dur, fps, full=False)
-    if not fp: return "unsure", "its audio couldn't be read", []
-    score = score_audio(fp, rec, alts)
-    if score["ber"] > FP_STRICT_BER and dur > FP_WINDOW_SEC + 10:
-        fp = _track_fp(p, dur, fps, full=True) or fp
-        score = score_audio(fp, rec, alts)
-    want = target.get("duration") or (score["ref"] or {}).get("duration") or 0
-    ok, why = judge_upload(score, dur, want)
-    if ok: return "right", f"matches the recording (bit error {score['ber']:.2f}, {_fmt_dur(dur)})", fp
-    if score["ber"] <= FP_STRICT_BER and score["worst"] <= FP_STRICT_WINDOW and want and abs(dur - want) > max(8, 0.04 * want):
-        return "wrong", f"right song but another cut: {_fmt_dur(dur)} long, the recording is {_fmt_dur(want)}", fp
-    if score["alt"] is not None and score["alt_ber"] <= FP_STRICT_BER and score["alt_ber"] + 0.05 < score["ber"]:
-        return "wrong", f"it's '{score['alt']['title']}' (bit error {score['alt_ber']:.2f}), not the recording ({score['ber']:.2f})", fp
-    if score["ber"] >= FP_CLEARLY_OTHER:
-        return "wrong", f"different audio (bit error {score['ber']:.2f}; the recording scores under {FP_STRICT_BER:.2f})", fp
-    if score["ber"] > FP_STRICT_BER and score["worst"] >= FP_CLEARLY_OTHER:
-        return "wrong", f"another version: close in places but far off in others (bit error {score['worst']:.2f} there), like an instrumental", fp
-    return "unsure", why, fp
 
 
-def _existing_check(target, rec, alts, check, log):
-    """Existing copies of the song: (skip, [rels to replace with reasons])."""
-    copies = library_copies(target)
-    if not copies: return False, []
-    if not check:
-        log(f"  [SKIP] Already in the library: {copies[0]}")
-        return True, []
-    if not rec:
-        log(f"  [KEEP] {copies[0]} is already in the library; with nothing to compare it with, it's left alone")
-        return True, []
-    replace, right = [], []
-    for rel in copies:
-        verdict, why, fp = judge_existing(rel, target, rec, alts)
-        if verdict == "right":
-            right.append(rel)
-            log(f"  [CHECK] {rel}: {why}")
-        elif verdict == "wrong":
-            replace.append({"rel": rel, "reason": why, "fp": fp, "sure": True})
-            log(f"  [CHECK] {rel}: not the right song: {why}")
-        else:
-            replace.append({"rel": rel, "reason": why, "fp": fp, "sure": False})
-            log(f"  [CHECK] {rel}: unclear ({why}); it's compared with the verified download before anything changes")
-    if right and not replace:
-        log("  [SKIP] Already in the library, and it's the right recording")
-        return True, []
-    return False, replace
 
 
-def _decide_replacements(got, replace, log):
-    """Compare each questioned copy with the verified download, whole file against whole file."""
-    new_fp = got.get("fp") or audio_fingerprint(got["path"])
-    out = []
-    for r in replace:
-        p = Path(get_real_music_dir()) / r["rel"]
-        old_fp = audio_fingerprint(p) or r["fp"]
-        with library_cache_lock: old_dur = float((library_cache_data.get(r["rel"]) or {}).get("duration") or 0)
-        diff, worst = same_recording(old_fp, new_fp) if old_fp else (1.0, 1.0)
-        same_len = abs(old_dur - (got.get("duration") or 0)) <= dur_tolerance(got.get("duration") or old_dur)
-        same_audio = diff <= FP_SAME_FULL and worst <= FP_SAME_FULL_WORST
-        if same_audio and same_len:
-            log(f"  [KEEP] {r['rel']} is the same recording as the verified download (bit error {diff:.2f}); left alone")
-        elif r["sure"] or diff >= FP_OTHER_FULL or worst >= FP_OTHER_FULL_WORST or (same_audio and not same_len):
-            out.append(dict(r, reason=f"{r['reason']}; whole file vs verified download: bit error {diff:.2f}, {worst:.2f} in places"))
-        else:
-            log(f"  [KEEP] {r['rel']}: not different enough to be sure (whole-file bit error {diff:.2f}, {worst:.2f} in places); left alone")
-    return out
 
 
-def confirm_catalog_entry(t, got):
-    """Which catalog entry is the downloaded recording? Its ISRC goes into the tags (links don't carry one)."""
-    if t.get("isrc") or got.get("method") != "fingerprint": return
-    full = None
-    for r in t.get("_same") or []:
-        rfp = reference_fingerprint(r)
-        if len(rfp) < 60: continue
-        full = full if full is not None else (got.get("fp") or audio_fingerprint(got["path"]))
-        if fingerprint_similarity(rfp, full)[0] <= FP_STRICT_BER and r.get("isrc"):
-            t["isrc"] = r["isrc"]
-            return
 
 
-# --- Saving ---
-def _meta_from_target(t, got):
-    ref = got.get("ref") or t.get("ref") or {}
-    return {"title": t["title"], "artists": t.get("artists") or [ref.get("artist")], "album": t.get("album") or ref.get("album") or "Singles",
-            "albumartist": t.get("albumartist") or (t.get("artists") or [ref.get("artist")])[0], "date": t.get("date") or "",
-            "tracknumber": t.get("tracknumber") or "", "discnumber": t.get("discnumber") or "", "genre": t.get("genre") or "",
-            "isrc": t.get("isrc") or (ref.get("isrc") if ref.get("source") in ("deezer", "itunes") else "") or "",
-            "copyright": t.get("copyright") or "", "source_page": t.get("source_page") or ""}
 
 
-def _audit_saved(rel, got, meta, extra=None):
-    st = (Path(get_real_music_dir()) / rel).stat()
-    verified = got["method"] == "fingerprint"
-    ref = got.get("ref") or {}
-    audit_put(rel, dict({"status": "ok" if verified else "unverified", "mtime": st.st_mtime, "size": st.st_size, "checked_at": time.time(),
-                         "reason": f"Fingerprint-verified at download against '{ref.get('artist')} - {ref.get('title')}' ({ref.get('source')})" if verified
-                                   else got.get("note") or "Unverified download",
-                         "ber": round(got["ber"], 3) if verified else None, "ref": ref_summary(ref) if ref else None, "source_id": got["video_id"],
-                         "duration": got["duration"], "label": {"title": meta.get("title"), "artist": ", ".join(a for a in meta.get("artists") or [] if a),
-                                                                "album": meta.get("album"), "isrc": meta.get("isrc")}}, **(extra or {})), flush=True)
 
 
-def _write_download(got, dest_ext, meta, cover):
-    new = transcode_audio(got["path"], dest_ext)
-    write_track_tags(new, dict(meta, source_url=got["url"]), cover=cover)
-    return new
 
 
-def save_download(got, rel, meta, cover, log=_dl_log):
-    new = None
-    try:
-        new = _write_download(got, Path(rel).suffix.lower(), meta, cover)
-        install_library_file(new, rel)
-    finally:
-        if new: Path(new).unlink(missing_ok=True)
-    refresh_library_entry(rel)
-    _audit_saved(rel, got, meta)
-    how = f"fingerprint-verified, bit error {got['ber']:.2f}" if got["method"] == "fingerprint" else "unverified: " + got.get("note", "")
-    log(f"  [SAVED] {rel} ({how})")
 
 
-def replace_download(got, r, meta, cover, log=_dl_log):
-    """Put the verified download in place of a wrong copy, at the same path (likes and playlists keep working).
-    The old file is kept in quarantine and can be restored from the library audit."""
-    rel = r["rel"]
-    new = None
-    try:
-        new = _write_download(got, Path(rel).suffix.lower(), meta, cover)
-        q = quarantine_original(rel, r["reason"], {"kind": "download", "new_source": got["video_id"], "new_ber": round(got["ber"], 3) if got.get("ber") is not None else None})
-        install_library_file(new, rel)
-    finally:
-        if new: Path(new).unlink(missing_ok=True)
-    refresh_library_entry(rel)
-    _audit_saved(rel, got, meta, {"status": "fixed", "fixed_at": time.time(), "fix": {"kind": "replaced", "quarantine_id": q["id"], "source": got["url"]}})
-    log(f"  [REPLACED] {rel} ← {got['url']} (the old file is in quarantine: {r['reason']})")
 
 
-# --- One song ---
-def download_target(t, rec, alts, isrcs, opts, got=None, log=_dl_log):
-    """Save one target. Returns 'saved', 'replaced', 'kept' or 'failed'."""
-    skip, replace = _existing_check(t, rec, alts, opts.get("check_existing"), log)
-    if skip:
-        if got: Path(got["path"]).unlink(missing_ok=True)
-        return "kept"
-    try:
-        if got is None:
-            if rec:
-                got = acquire_recording(t, rec, alts, isrcs, log=log)
-            elif opts.get("allow_unverified"):
-                log("  [VERIFY] Nothing to compare with; looking for a YouTube Music upload whose details all agree (unverified downloads are on)")
-                got = acquire_unverified(t, log)
-            else:
-                log("  [SKIP] There's no preview of this recording to check a download against, so it isn't downloaded. "
-                    "Turn on 'Save songs that can't be verified' to allow it.")
-                return "failed"
-        if not got:
-            log("  [SKIP] No YouTube upload is this exact recording; nothing was saved")
-            return "failed"
-        confirm_catalog_entry(t, got)
-        meta = _meta_from_target(t, got)
-        cover = fetch_bytes(t.get("cover_url")) or fetch_bytes((got.get("ref") or {}).get("cover"))
-        if replace:
-            todo = _decide_replacements(got, replace, log)
-            for r in todo: replace_download(got, r, meta, cover, log)
-            return "replaced" if todo else "kept"
-        rel = _library_rel(meta["albumartist"], meta["album"], meta["title"], meta.get("tracknumber"))
-        if (Path(get_real_music_dir()) / rel).exists():
-            rel = _library_rel(meta["albumartist"], meta["album"], f"{meta['title']} ({got['video_id']})", meta.get("tracknumber"))
-        save_download(got, rel, meta, cover, log)
-        return "saved"
-    finally:
-        if got: Path(got["path"]).unlink(missing_ok=True)
 
 
-def process_stream_target(t, opts, log=_dl_log):
-    enrich_stream_target(t)
-    if not t.get("playable", True) and not t.get("preview_url"):
-        log("  [SKIP] The streaming service doesn't offer this song in this region")
-        return "failed"
-    rec, alts, isrcs = reference_sets(t, log)
-    if rec: log(f"  [VERIFY] Comparing uploads with {len(rec)} preview(s) of this recording" + (f" and {len(alts)} other version(s)" if alts else ""))
-    return download_target(t, rec, alts, isrcs, opts, log=log)
 
 
-def process_youtube_item(item, opts, log=_dl_log):
-    found = identify_youtube(item, opts.get("include_extras"), log)
-    if not found: return "failed"
-    t, video = found["target"], found["video"]
-    if not found["rec"]:
-        if not opts.get("allow_unverified") or not t.get("music"):
-            log("  [SKIP] Neither Deezer nor iTunes has this song to compare with, so it can't be verified; not saved"
-                + ("" if t.get("music") else " (and the video isn't a YouTube Music upload)"))
-            return "failed"
-        info = found["info"]
-        got = None
-        if abs((info.get("duration") or 0) - (t.get("duration") or 0)) <= 2:
-            got = acquire_unverified(dict(t, duration=info.get("duration")), log)
-        return download_target(t, [], [], [], opts, got=got, log=log) if got else "failed"
-    # Metadata of the verified recording from its catalog entry (album, track number, date, artwork).
-    ref = t["ref"]
-    meta = reference_metadata(ref) or {}
-    t.update({k: v for k, v in (("album", meta.get("album")), ("albumartist", meta.get("albumartist")), ("date", meta.get("date")),
-                                  ("tracknumber", meta.get("tracknumber")), ("discnumber", meta.get("discnumber")), ("genre", meta.get("genre")),
-                                  ("copyright", meta.get("copyright")), ("isrc", meta.get("isrc") or t.get("isrc")),
-                                  ("cover_url", meta.get("cover_url") or ref.get("cover"))) if v})
-    if meta.get("artists") and same_credits(meta["artists"], t["title"], ref["artist"], ref["title"]): t["artists"] = meta["artists"]
-    got = None
-    if video:
-        ok, why = judge_upload({"ber": video["ber"], "worst": video["worst"], "alt": None, "alt_ber": 1}, video["duration"], t.get("duration"))
-        if ok: got = video
-        else:
-            Path(video["path"]).unlink(missing_ok=True)
-            log(f"  [VERIFY] The video is this recording, but {why}: looking for the plain song")
-    return download_target(t, found["rec"], found["alts"], found["isrcs"], opts, got=got, log=log)
 
 
-def _run_download_task(url, output_dir, include_extras=False, check_existing=False):
-    opts = {"include_extras": include_extras, "check_existing": check_existing, "allow_unverified": bool(cfg().get("downloader_allow_unverified"))}
-    counts = collections.Counter()
-    try:
-        with dl_lock:
-            admin_dl_state.update(status="downloading", url=url, completed_tracks=0, total_tracks=0)
-            admin_dl_state["logs"].clear()
-            _dl_log(f"[INIT] {url}")
-            _dl_log("[CONFIG] Alternate versions (live, remixes, instrumentals) " + ("included." if include_extras else "left out of albums and playlists."))
-            if check_existing: _dl_log("[CONFIG] Songs already in the library are checked, and replaced only when they're clearly not the right recording.")
-        if is_streaming_link(url):
-            targets, name = streaming_targets(url)
-            single = len(targets) == 1
-            if not include_extras and not single:
-                kept = [t for t in targets if not is_extra_edition(t["title"])]
-                for t in targets:
-                    if t not in kept: _dl_log(f"  [FILTER] Skipping alternate version: {', '.join(t['artists'])} - {t['title']}")
-                targets = kept
-            run = lambda t: process_stream_target(t, opts)
-            describe = lambda t: f"{', '.join(t.get('artists') or [])} - {t['title']}"
-        else:
-            targets = resolve_youtube_targets(url, include_extras=include_extras)
-            name = ""
-            run = lambda t: process_youtube_item(t, opts)
-            describe = lambda t: t.get("title") or t.get("url")
-        if not targets:
-            _dl_log("[ERR] No songs were found at this link.")
-            with dl_lock: admin_dl_state["status"] = "error"
-            return
-        admin_dl_state["total_tracks"] = len(targets)
-        _dl_log(f"[DISCOVERY] {len(targets)} song(s){' in ' + name if name else ''}. Each is checked against the recording before it's saved.")
-        for idx, t in enumerate(targets, 1):
-            if not _dl_should_continue():
-                _dl_log("[STOPPED] Stopped.")
-                break
-            _dl_log(f"[{idx}/{len(targets)}] {describe(t)}")
-            try:
-                counts[run(t)] += 1
-            except YouTubeBlocked:
-                _dl_log("[ERR] YouTube is asking for bot verification; stopping. Try again later.")
-                break
-            except PluginMissing as e:
-                _dl_log(f"[ERR] {e}")
-                break
-            except Exception as e:
-                _dl_log(f"  [SKIP] {str(e)[:200]}")
-                counts["failed"] += 1
-            admin_dl_state["completed_tracks"] = idx
-        summary = ", ".join(f"{counts[k]} {label}" for k, label in (("saved", "saved"), ("replaced", "replaced"), ("kept", "already there"),
-                                                                     ("failed", "not saved")) if counts[k]) or "nothing to do"
-        with dl_lock:
-            if admin_dl_state["status"] != "stopped":
-                admin_dl_state["status"] = "completed"
-                _dl_log(f"[FINISH] {summary}.")
-        if counts["saved"] or counts["replaced"]:
-            send_discord_notification("Download Complete", f"{summary} from `{url}`.")
-    except YouTubeBlocked:
-        with dl_lock:
-            admin_dl_state["status"] = "error"
-            _dl_log("[ERR] YouTube is asking for bot verification; try again later.")
-    except Exception as e:
-        with dl_lock:
-            admin_dl_state["status"] = "error"
-            _dl_log(f"[FATAL ERROR] {e}")
-            _dl_log(traceback.format_exc())
+
 
 # --- LYRICS SCANNER ---
 def _run_lyrics_task(music_dir):
@@ -3367,81 +2410,10 @@ def monitor_active_listeners():
                 }
     except Exception: pass
 
-# --- DOWNLOADER CONTROLLER ---
-@app.route("/api/admin/download", methods=["POST"])
-def api_admin_start_download():
-    from flask import request, jsonify
-    data = request.get_json(silent=True) or {}
-    url = data.get("url", "").strip()
-    include_extras = bool(data.get("include_extras", False))
-    check_existing = bool(data.get("check_existing", False))
-    if not url: return jsonify({"error": "No URL provided"}), 400
-    if not re.match(r"(?i)(https?://|spotify:)", url): return jsonify({"error": "Paste a link (it starts with https://)."}), 400
-    if not plugin_ready("yt-dlp"):
-        return jsonify({"error": "The downloader needs yt-dlp. Install it under Plugins first.", "plugin": "yt-dlp"}), 400
-    if _plugin_job["state"] == "running": return jsonify({"error": "A plugin is being installed or updated. Try again in a minute."}), 409
-    with dl_lock:
-        if admin_dl_state["status"] == "downloading": return jsonify({"error": "Download already active"}), 409
-        admin_dl_state["completed_tracks"] = 0
-        admin_dl_state["total_tracks"] = 0
-        admin_dl_state["logs"].clear()
-    music_dir = get_real_music_dir()
-    t = threading.Thread(target=_run_download_task, args=(url, music_dir, include_extras, check_existing), daemon=True)
-    t.start()
-    return jsonify({"message": "Download queued", "url": url, "music_dir": music_dir})
 
-@app.route("/api/admin/download/pause", methods=["POST"])
-def api_admin_pause_download():
-    from flask import jsonify
-    global active_proc
-    with dl_lock:
-        if admin_dl_state["status"] != "downloading": return jsonify({"error": "No active download"}), 400
-        admin_dl_state["status"] = "paused"
-        if active_proc and active_proc.pid:
-            try: os.killpg(os.getpgid(active_proc.pid), signal.SIGSTOP)
-            except Exception: pass
-        admin_dl_state["logs"].append("[PAUSED] Download paused by user.")
-    return jsonify({"status": "paused"})
 
-@app.route("/api/admin/download/resume", methods=["POST"])
-def api_admin_resume_download():
-    from flask import jsonify
-    global active_proc
-    with dl_lock:
-        if admin_dl_state["status"] != "paused": return jsonify({"error": "Download is not paused"}), 400
-        admin_dl_state["status"] = "downloading"
-        if active_proc and active_proc.pid:
-            try:
-                os.killpg(os.getpgid(active_proc.pid), signal.SIGCONT)
-                admin_dl_state["logs"].append("[RESUMED] Process execution continued.")
-                return jsonify({"status": "downloading"})
-            except Exception: pass
-    return jsonify({"status": "downloading"})
 
-@app.route("/api/admin/download/stop", methods=["POST"])
-def api_admin_stop_download():
-    from flask import jsonify
-    global active_proc
-    with dl_lock:
-        admin_dl_state["status"] = "stopped"
-        if active_proc and active_proc.pid:
-            try: os.killpg(os.getpgid(active_proc.pid), signal.SIGKILL)
-            except Exception: pass
-        active_proc = None
-        admin_dl_state["logs"].append("[STOPPED] Download stopped by user.")
-    return jsonify({"status": "stopped"})
 
-@app.route("/api/admin/download/status", methods=["GET"])
-def api_admin_download_status():
-    from flask import jsonify
-    return jsonify({
-        "status": admin_dl_state["status"],
-        "url": admin_dl_state["url"],
-        "returncode": admin_dl_state["returncode"],
-        "completed_tracks": admin_dl_state["completed_tracks"],
-        "total_tracks": admin_dl_state["total_tracks"],
-        "logs": list(admin_dl_state["logs"])
-    })
 
 # --- LYRICS ENDPOINTS ---
 @app.route("/api/admin/scrape_lyrics", methods=["POST"])
@@ -3578,7 +2550,7 @@ def api_admin_files_list():
     items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
     return jsonify({"current_path": norm_sub, "items": items})
 
-# The library follows what's done here at once (no rescan): deleted songs leave it, so the downloader can fetch them
+# The library follows what's done here at once (no rescan): deleted songs leave it, so a downloader can fetch them
 # again straight away, and renamed ones keep their likes, playlist places and history.
 def _library_rels_under(rel):
     """Library entries at `rel`, or inside the folder `rel`."""
@@ -3874,12 +2846,6 @@ ADMIN_SCHEMA = [
                      ["1440", "Once a day"], ["0", "Only when I press Scan now"]],
          "help": "Each scan checks every file in the music folder, so remote or network storage is happier with longer gaps. Downloads made here appear straight away."},
     ]},
-    {"id": "downloader", "title": "Downloader", "fields": [
-        {"key": "downloader_enabled", "type": "bool", "label": "Enable the downloader", "default": False,
-         "help": "Off by default. Only download music you have the right to copy."},
-        {"key": "downloader_allow_unverified", "type": "bool", "label": "Save songs that can't be verified", "default": False,
-         "help": "Normally a song is saved only after its audio matched a preview of the exact recording. With this on, songs no catalog has a preview of are saved when a YouTube Music upload's title, artist, album and length all agree. They're marked unverified in the library audit."},
-    ]},
     {"id": "backups", "title": "Automatic backups", "fields": [
         {"key": "backup_schedule", "type": "select", "label": "Back up automatically", "default": "daily",
          "options": [["off", "Off"], ["daily", "Every day"], ["weekly", "Every week"]],
@@ -4061,7 +3027,7 @@ def notify(event, title, message, color=2278750, wait=False):
     return {}
 
 def send_discord_notification(title, message, color=2278750):
-    # Existing callers (the downloader) now go through notify(), which also honours the event choices.
+    # Existing callers (plugins included) now go through notify(), which also honours the event choices.
     event = "download_complete" if str(title).lower().startswith("download") else "general"
     return notify(event, title, message, color)
 
@@ -4507,8 +3473,6 @@ def admin_v2_gates():
         return jsonify({"error": "Rewind is turned off on this server.", "disabled": True}), 403
     if not c.get("feature_connect", True) and p.startswith("/api/devices/"):
         return jsonify({"error": "Connect is turned off on this server.", "devices": []}), 403
-    if not c.get("downloader_enabled", True) and p == "/api/admin/download" and request.method == "POST":
-        return jsonify({"error": "The downloader is turned off in Settings."}), 403
 
 def _inject_head(resp):
     # Admin-provided <head> snippet goes into app pages only, never the admin panel.
@@ -4826,8 +3790,7 @@ def _int(v, lo, hi):
 def av2_me():
     c = cfg()
     return jsonify({"admin_user": admin_name(), "site_title": c.get("site_title"), "accent_color": c.get("accent_color"),
-                    "app_version": AXDIO_VERSION, "credit": AXDIO_CREDIT,
-                    "downloader_enabled": c.get("downloader_enabled", True)})
+                    "app_version": AXDIO_VERSION, "credit": AXDIO_CREDIT})
 
 @app.route("/api/admin/v2/config", methods=["GET", "POST"])
 def av2_config():
@@ -5178,7 +4141,7 @@ def av2_overview():
         "social": social_stats(),
         "activity": list(_activity)[-8:][::-1],
         "scan": dict(SCAN),
-        "settings": {k: cfg().get(k) for k in ("registration", "require_login", "maintenance_mode", "force_ssl", "downloader_enabled")},
+        "settings": {k: cfg().get(k) for k in ("registration", "require_login", "maintenance_mode", "force_ssl")},
     })
 
 @app.route("/api/admin/v2/system")
@@ -5186,7 +4149,7 @@ def av2_system():
     c = cfg()
     return jsonify({
         "app_version": AXDIO_VERSION, "python": platform.python_version(), "platform": platform.platform(),
-        "flask": _pkg_version("flask"), "spotdl": plugin_version("spotdl") or "", "yt_dlp": plugin_version("yt-dlp") or "",
+        "flask": _pkg_version("flask"), "plugins": {p["name"]: v for p in PLUGIN_CATALOG.values() if (v := plugin_versions().get(p["package"]))},
         "mutagen": _pkg_version("mutagen"), "ffmpeg": ffmpeg_version(), "music_dir": config.get("music_dir") or get_real_music_dir(),
         "config_dir": str(CONFIG_DIR), "secret_key_source": "environment" if os.environ.get("FLASK_SECRET_KEY") else "config/secret_key",
         "credit": AXDIO_CREDIT, "restart_available": "gunicorn" in sys.modules, "server": "gunicorn" if "gunicorn" in sys.modules else "development server",
@@ -8742,28 +7705,38 @@ def presence_feed():
 # ============================================================
 # PLUGINS
 # ============================================================
-# yt-dlp and spotDL aren't part of Axdio or its image. An admin installs them from PyPI on the Plugins page; they go
-# into a Python environment of their own in config/plugins/env (see the top of this file) and can be updated or
-# removed from there. The downloader and the audit's repairs say what's missing when they need a plugin that isn't
-# installed.
+# Plugins are made separately from Axdio, and nothing in Axdio or its image downloads music. An admin installs them on
+# the Plugins page. They go into a Python environment of their own in config/plugins/env (see the top of this file) and
+# can be updated or removed from there.
+#
+# The catalog says what can be installed: from the release tags of a GitHub repository, or from PyPI. An Axdio plugin is
+# a Python package with a register(api) function. Once installed it's loaded into the server, and through `api` it can
+# add admin pages, settings, admin routes under /api/admin/plugins/<id>/, hooks, and add-ons of its own to the catalog
+# (packages it uses, which are then installed and updated here like any plugin).
 import importlib, shlex
 
+PLUGIN_API_VERSION = 1
 PLUGIN_CATALOG = {
-    "yt-dlp": {"name": "yt-dlp", "package": "yt-dlp", "module": "yt_dlp", "license": "Unlicense",
-               "install": ["yt-dlp[default]", "deno"], "parts": ["deno", "yt-dlp-ejs"],
-               "home": "https://pypi.org/project/yt-dlp/",
-               "desc": "Finds and downloads audio from YouTube and YouTube Music. The downloader and the library audit's repairs need it. It comes with Deno, the JavaScript runtime YouTube requires."},
-    "spotdl": {"name": "spotDL", "package": "spotdl", "license": "MIT", "needs": ["yt-dlp"], "command": "spotdl",
-               "home": "https://pypi.org/project/spotdl/",
-               "desc": "Optional. Lists every song of an artist link from a music streaming service, and every song of playlists longer than 100. Song, album and shorter playlist links work without it."},
+    "downloader": {"name": "Downloader", "package": "axdio-downloader", "module": "axdio_downloader", "axdio": True, "license": "MIT",
+                   "github": "xo907/axdio-downloader", "home": "https://github.com/xo907/axdio-downloader",
+                   "desc": "Adds a Downloader page that saves songs, albums and playlists from links, and lets the library audit replace wrong audio. It's a separate project with its own code, license and dependencies. Check that using it is allowed where you are, and only download music you have the right to copy."},
 }
 PLUGINS_FILE = PLUGINS_DIR / "plugins.json"
 # Extra pip options for servers behind a mirror or proxy, e.g. "--index-url https://pypi.example.com/simple".
 PLUGIN_PIP_ARGS = shlex.split(os.environ.get("PLUGIN_PIP_ARGS", ""))
+# For working on a plugin: PLUGIN_SOURCES="downloader=/src/axdio-downloader" installs it from that folder instead.
+PLUGIN_SOURCES = dict(x.strip().split("=", 1) for x in os.environ.get("PLUGIN_SOURCES", "").split(",") if "=" in x)
 _plugins_lock = threading.RLock()
 _plugin_job = {"state": "idle", "plugin": "", "action": "", "message": "", "log": collections.deque(maxlen=60), "started": 0}
-_plugin_users = [0]                 # yt-dlp operations running right now
+_plugin_users = [0]                 # plugin modules in use right now (see plugin_module_session)
 _plugin_reload = set()              # modules to load again once nothing is using them (after an update or removal)
+_plugin_owner = {}                  # add-on id -> the plugin that added it
+_plugin_loaded = {}                 # plugin id -> its module, once registered
+_plugin_errors = {}                 # plugin id -> why it couldn't be loaded
+PLUGIN_ROUTES = {}                  # (plugin id, path, method) -> handler
+PLUGIN_PAGES = {}                   # plugin id -> admin pages it adds
+PLUGIN_HOOKS = {}                   # hook name -> [(plugin id, function)]
+_plugin_schema = {}                 # plugin id -> ids of the settings sections it added
 
 def plugins_state():
     st = _load_json_file(PLUGINS_FILE, {})
@@ -8787,37 +7760,48 @@ def plugin_versions(env=None):
         except Exception: continue
     return out
 
+def plugin_name(pid):
+    return (PLUGIN_CATALOG.get(pid) or {}).get("name") or pid
+
 def plugin_version(pid):
-    return plugin_versions().get(PLUGIN_CATALOG[pid]["package"])
+    p = PLUGIN_CATALOG.get(pid)
+    return plugin_versions().get(p["package"]) if p else None
 
 def plugin_ready(pid):
     """True when the plugin (and whatever it needs) is installed."""
     have = plugin_versions()
-    p = PLUGIN_CATALOG[pid]
-    return bool(have.get(p["package"])) and all(have.get(PLUGIN_CATALOG[n]["package"]) for n in p.get("needs", []))
+    p = PLUGIN_CATALOG.get(pid)
+    return bool(p and have.get(p["package"])) and all(have.get(PLUGIN_CATALOG[n]["package"]) for n in p.get("needs", []) if n in PLUGIN_CATALOG)
 
 def plugin_command(pid):
-    exe = PLUGIN_ENV / "bin" / PLUGIN_CATALOG[pid]["command"]
-    return str(exe) if exe.exists() and plugin_ready(pid) else None
+    p = PLUGIN_CATALOG.get(pid) or {}
+    exe = PLUGIN_ENV / "bin" / p.get("command", "")
+    return str(exe) if p.get("command") and exe.exists() and plugin_ready(pid) else None
+
+def plugin_hook(name):
+    return [fn for _, fn in PLUGIN_HOOKS.get(name, [])]
 
 class PluginMissing(Exception):
     def __init__(self, pid):
         self.pid = pid
-        super().__init__(f"{PLUGIN_CATALOG[pid]['name']} isn't installed. An admin can install it under Plugins.")
+        super().__init__(f"{plugin_name(pid)} isn't installed. An admin can install it under Plugins.")
 
-class ytdlp_session:
-    """`with ytdlp_session() as yd: yd.YoutubeDL(...)`. Raises PluginMissing when yt-dlp isn't installed. A newer
-    yt-dlp installed while the server runs is loaded here, once no download is using the old one."""
+class plugin_module_session:
+    """`with plugin_module_session("some_module", pid) as mod: ...`. Raises PluginMissing when that plugin isn't
+    installed. A newer version installed while the server runs is loaded here, once nothing is using the old one."""
+    def __init__(self, module, pid):
+        self.module, self.pid = module, pid
     def __enter__(self):
+        m = self.module
         with _plugins_lock:
-            if not plugin_version("yt-dlp"): raise PluginMissing("yt-dlp")
-            if "yt_dlp" in _plugin_reload and _plugin_users[0] == 0:
-                for k in [k for k in sys.modules if k == "yt_dlp" or k.startswith("yt_dlp.")]: del sys.modules[k]
-                _plugin_reload.discard("yt_dlp")
+            if not plugin_version(self.pid): raise PluginMissing(self.pid)
+            if m in _plugin_reload and _plugin_users[0] == 0:
+                for k in [k for k in sys.modules if k == m or k.startswith(m + ".")]: del sys.modules[k]
+                _plugin_reload.discard(m)
                 importlib.invalidate_caches()
             _plugin_users[0] += 1
         try:
-            return importlib.import_module("yt_dlp")
+            return importlib.import_module(m)
         except Exception:
             self.__exit__()
             raise
@@ -8825,14 +7809,137 @@ class ytdlp_session:
         with _plugins_lock: _plugin_users[0] -= 1
         return False
 
+class PluginAPI:
+    """What an Axdio plugin gets in register(api). `api.core` is the server itself, for the helpers a plugin shares with
+    it (the library, fingerprints, tags, the audit). Those change with Axdio, so a plugin says which versions it works
+    with (AXDIO_API and AXDIO_MIN in its module)."""
+    version = PLUGIN_API_VERSION
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.core = sys.modules[__name__]
+        self.axdio_version = AXDIO_VERSION
+
+    def route(self, path, methods=("GET",)):
+        """An admin-only route at /api/admin/plugins/<plugin id>/<path>."""
+        def deco(fn):
+            for m in methods: PLUGIN_ROUTES[(self.pid, path.strip("/"), m.upper())] = fn
+            return fn
+        return deco
+
+    def admin_page(self, page_id, title, icon, script, group="Library"):
+        """A page in the admin panel, drawn by a script in the plugin's static/ folder (see web/admin/admin.js)."""
+        PLUGIN_PAGES.setdefault(self.pid, []).append({"id": page_id, "title": title, "icon": icon, "group": group,
+                                                      "script": f"/admin/plugins/{self.pid}/{script}"})
+
+    def settings(self, section):
+        """A settings section shaped like those in ADMIN_SCHEMA. Its values are read with cfg() as usual."""
+        with _cfg_lock:
+            ADMIN_SCHEMA[:] = [s for s in ADMIN_SCHEMA if s["id"] != section["id"]] + [section]
+            for f in section["fields"]:
+                SCHEMA_FIELDS[f["key"]] = f
+                SCHEMA_DEFAULTS[f["key"]] = f["default"]
+            _cfg_state["data"] = {}          # take the new defaults in
+        _plugin_schema.setdefault(self.pid, []).append(section["id"])
+
+    def hook(self, name, fn):
+        """Hooks Axdio calls: "busy" (-> bool: don't change plugins now), "replace_audio" (the audit's repairs)."""
+        PLUGIN_HOOKS.setdefault(name, []).append((self.pid, fn))
+
+    def add_plugin(self, pid, entry):
+        """An add-on: a package this plugin uses, shown on the Plugins page and installed and updated there. With
+        "part": True it comes with the plugin (it's one of its dependencies) and can't be removed on its own."""
+        entry = dict(entry)
+        entry.setdefault("needs", [self.pid])
+        PLUGIN_CATALOG[pid] = entry
+        _plugin_owner[pid] = self.pid
+
+    def module_session(self, module, pid):
+        return plugin_module_session(module, pid)
+
+def _plugin_unregister(pid):
+    for k in [k for k in PLUGIN_ROUTES if k[0] == pid]: del PLUGIN_ROUTES[k]
+    PLUGIN_PAGES.pop(pid, None)
+    for name in list(PLUGIN_HOOKS): PLUGIN_HOOKS[name] = [h for h in PLUGIN_HOOKS[name] if h[0] != pid]
+    with _cfg_lock:
+        ids = set(_plugin_schema.pop(pid, []))
+        for s in [s for s in ADMIN_SCHEMA if s["id"] in ids]:
+            ADMIN_SCHEMA.remove(s)
+            for f in s["fields"]:
+                SCHEMA_FIELDS.pop(f["key"], None)
+                SCHEMA_DEFAULTS.pop(f["key"], None)
+        _cfg_state["data"] = {}
+    for q in [q for q, o in _plugin_owner.items() if o == pid]:
+        PLUGIN_CATALOG.pop(q, None)
+        _plugin_owner.pop(q, None)
+    mod = _plugin_loaded.pop(pid, None)
+    if mod is not None and hasattr(mod, "unregister"):
+        try: mod.unregister()
+        except Exception as ex: print(f"[WARN] {plugin_name(pid)} didn't unload cleanly: {ex}")
+
+def load_plugins():
+    """Load the Axdio plugins that are installed, and let go of those that were removed or updated (once they're idle)."""
+    have = plugin_versions()
+    for pid, p in list(PLUGIN_CATALOG.items()):
+        if not p.get("axdio"): continue
+        v, mod = have.get(p["package"]), _plugin_loaded.get(pid)
+        if mod is not None and (not v or p["module"] in _plugin_reload):
+            if plugins_busy(): continue                     # the update takes over once the running job is done
+            _plugin_unregister(pid)
+            for k in [k for k in sys.modules if k == p["module"] or k.startswith(p["module"] + ".")]: del sys.modules[k]
+            with _plugins_lock: _plugin_reload.discard(p["module"])
+            importlib.invalidate_caches()
+            mod = None
+        if v and mod is None:
+            try:
+                mod = importlib.import_module(p["module"])
+                need, least = getattr(mod, "AXDIO_API", PLUGIN_API_VERSION), getattr(mod, "AXDIO_MIN", "0")
+                if need != PLUGIN_API_VERSION or _vtuple(AXDIO_VERSION) < _vtuple(least):
+                    raise RuntimeError(f"version {v} needs Axdio {least} or newer with plugin API {need}")
+                mod.register(PluginAPI(pid))
+                _plugin_loaded[pid] = mod
+                _plugin_errors.pop(pid, None)
+                with _plugins_lock: _plugin_reload.discard(p["module"])      # this is the new version already
+                print(f"[INFO] Plugin loaded: {p['name']} {v}")
+            except Exception as ex:
+                _plugin_unregister(pid)
+                _plugin_errors[pid] = str(ex)
+                print(f"[ERROR] Couldn't load the {p['name']} plugin: {ex}")
+    # Add-ons that come with a plugin count as installed with it.
+    st, changed = plugins_state(), False
+    for pid, p in PLUGIN_CATALOG.items():
+        if p.get("part") and pid not in st["plugins"] and have.get(p["package"]):
+            st["plugins"][pid] = {"auto_update": False, "installed": time.time()}
+            changed = True
+    if changed:
+        with _plugins_lock: plugins_save(st)
+
 def pypi_latest(package):
     req = urllib.request.Request(f"https://pypi.org/pypi/{urllib.parse.quote(package)}/json", headers={"User-Agent": f"Axdio/{AXDIO_VERSION}"})
     with urllib.request.urlopen(req, timeout=20) as r: return str(json.load(r)["info"]["version"])
 
+def github_latest(repo):
+    """The newest version tag (v1.2.3) of a GitHub repository."""
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/tags?per_page=100",
+                                 headers={"User-Agent": f"Axdio/{AXDIO_VERSION}", "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=20) as r: tags = json.load(r)
+    versions = [t["name"].lstrip("v") for t in tags if re.fullmatch(r"v?\d+(\.\d+)*", str(t.get("name", "")))]
+    if not versions: raise RuntimeError(f"{repo} has no releases yet")
+    return max(versions, key=_vtuple)
+
+def _source_version(path):
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', (Path(path) / "pyproject.toml").read_text())
+    return m.group(1) if m else "0"
+
+def plugin_latest(pid):
+    p = PLUGIN_CATALOG[pid]
+    if pid in PLUGIN_SOURCES: return _source_version(PLUGIN_SOURCES[pid])
+    return github_latest(p["github"]) if p.get("github") else pypi_latest(p["package"])
+
 def plugins_check_latest():
     latest = {}
-    for pid, p in PLUGIN_CATALOG.items():
-        try: latest[pid] = pypi_latest(p["package"])
+    for pid, p in list(PLUGIN_CATALOG.items()):
+        try: latest[pid] = plugin_latest(pid)
         except Exception as ex: _plugin_log(f"Couldn't check {p['name']}: {ex}")
     with _plugins_lock:
         st = plugins_state()
@@ -8883,21 +7990,27 @@ def _plugins_changed(modules):
 
 def _install_specs(pid):
     p = PLUGIN_CATALOG[pid]
+    if pid in PLUGIN_SOURCES: return [PLUGIN_SOURCES[pid]]
+    if p.get("github"):
+        return [f"{p['package']} @ https://github.com/{p['github']}/archive/refs/tags/v{plugin_latest(pid)}.tar.gz"]
     return p.get("install") or [p["package"]]
 
 def _requires(pid):
     out = []
     for q in PLUGIN_CATALOG[pid].get("needs", []) + [pid]:
-        out += [x for x in _install_specs(q) if x not in out]
+        if q in PLUGIN_CATALOG and not (q != pid and PLUGIN_CATALOG[q].get("part")):
+            out += [x for x in _install_specs(q) if x not in out]
     return out
 
 def plugin_complete(pid):
-    """Installed with everything it comes with (older installs of yt-dlp lack Deno)."""
+    """Installed with everything it comes with."""
     have = plugin_versions()
-    return bool(have.get(PLUGIN_CATALOG[pid]["package"])) and all(have.get(x) for x in PLUGIN_CATALOG[pid].get("parts", []))
+    p = PLUGIN_CATALOG.get(pid) or {}
+    return bool(have.get(p.get("package"))) and all(have.get(x) for x in p.get("parts", []))
 
 def _needed_by(pid, installed):
-    return [q for q, p in PLUGIN_CATALOG.items() if pid in p.get("needs", []) and q in installed]
+    """Installed plugins that need this one (not counting what comes with it)."""
+    return [q for q, p in PLUGIN_CATALOG.items() if pid in p.get("needs", []) and q in installed and not p.get("part")]
 
 def _plugin_install(pid, update=False):
     p = PLUGIN_CATALOG[pid]
@@ -8906,17 +8019,17 @@ def _plugin_install(pid, update=False):
         _plugin_job["message"] = "Setting up a place for plugins…"
         _make_env(PLUGIN_ENV)
         for q in plugins_state()["plugins"]:   # everything installed before goes back in too
-            if q in PLUGIN_CATALOG: pkgs += [x for x in _requires(q) if x not in pkgs]
+            if q in PLUGIN_CATALOG and not PLUGIN_CATALOG[q].get("part"): pkgs += [x for x in _requires(q) if x not in pkgs]
     before = plugin_versions()
     _plugin_job["message"] = f"{'Updating' if update else 'Installing'} {p['name']}…"
     _pip(["install", "--upgrade", *pkgs])
     after = plugin_versions()
     with _plugins_lock:
         st = plugins_state()
-        for q in ([pid] if update else p.get("needs", []) + [pid]):
+        for q in ([pid] if update else [n for n in p.get("needs", []) if n in PLUGIN_CATALOG] + [pid]):
             st["plugins"].setdefault(q, {"auto_update": False, "installed": time.time()})
         plugins_save(st)
-    changed = [PLUGIN_CATALOG[q].get("module") for q in PLUGIN_CATALOG if before.get(PLUGIN_CATALOG[q]["package"]) != after.get(PLUGIN_CATALOG[q]["package"])]
+    changed = [c.get("module") for c in PLUGIN_CATALOG.values() if before.get(c["package"]) != after.get(c["package"])]
     _plugins_changed(changed)
     v = after.get(p["package"]) or "?"
     if update and before.get(p["package"]) == v:
@@ -8925,9 +8038,13 @@ def _plugin_install(pid, update=False):
 
 def _plugin_remove(pid):
     p = PLUGIN_CATALOG[pid]
+    addons = [q for q, o in _plugin_owner.items() if o == pid]
     with _plugins_lock:
         st = plugins_state()
-        keep = [q for q in st["plugins"] if q != pid and q in PLUGIN_CATALOG]
+        keep = [q for q in st["plugins"] if q != pid and q not in addons and q in PLUGIN_CATALOG and not PLUGIN_CATALOG[q].get("part")]
+    if p.get("axdio"):
+        _plugin_unregister(pid)                 # stop using it before its files go
+        for k in [k for k in sys.modules if k == p["module"] or k.startswith(p["module"] + ".")]: del sys.modules[k]
     if keep:
         # Build the environment again with what's left, so nothing the removed plugin brought along stays behind.
         # The old one is kept until the new one works.
@@ -8950,27 +8067,32 @@ def _plugin_remove(pid):
         shutil.rmtree(PLUGIN_ENV, ignore_errors=True)
     with _plugins_lock:
         st = plugins_state()
-        st["plugins"].pop(pid, None)
+        for q in [pid] + addons: st["plugins"].pop(q, None)
         plugins_save(st)
     _plugins_changed([p.get("module")])
     return f"{p['name']} is removed."
 
 def plugins_busy():
     """Something that uses the plugins is running, so they shouldn't change underneath it."""
-    return (admin_dl_state.get("status") in ("downloading", "paused") or bool(audit_state.get("fixing"))
-            or _plugin_users[0] > 0)
+    busy = False
+    for fn in plugin_hook("busy"):
+        try: busy = busy or bool(fn())
+        except Exception: pass
+    return busy or bool(audit_state.get("fixing")) or _plugin_users[0] > 0
 
 def start_plugin_job(pid, action, who=None):
     if pid not in PLUGIN_CATALOG: raise ValueError("There's no plugin by that name.")
+    p = PLUGIN_CATALOG[pid]
     with _plugins_lock:
         if _plugin_job["state"] == "running": raise ValueError("Another plugin change is still running. Wait for it to finish.")
         installed = plugins_state()["plugins"]
         if action == "remove":
-            if pid not in installed and not plugin_version(pid): raise ValueError(f"{PLUGIN_CATALOG[pid]['name']} isn't installed.")
+            if p.get("part"): raise ValueError(f"{p['name']} comes with {plugin_name(_plugin_owner.get(pid))}. Remove that instead.")
+            if pid not in installed and not plugin_version(pid): raise ValueError(f"{p['name']} isn't installed.")
             users = _needed_by(pid, installed)
-            if users: raise ValueError(f"{', '.join(PLUGIN_CATALOG[q]['name'] for q in users)} needs {PLUGIN_CATALOG[pid]['name']}. Remove that first.")
+            if users: raise ValueError(f"{', '.join(plugin_name(q) for q in users)} needs {p['name']}. Remove that first.")
         if action in ("update", "remove") and plugins_busy():
-            raise ValueError("A download or repair is running. Try again when it's finished.")
+            raise ValueError("Something that uses the plugins is running, like a download or a repair. Try again when it's finished.")
         _plugin_job.update(state="running", plugin=pid, action=action, message="Starting…", started=time.time(), versions=plugin_versions())
         _plugin_job["log"].clear()
 
@@ -8981,7 +8103,9 @@ def start_plugin_job(pid, action, who=None):
             activity("plugins", msg if who else f"{msg} (automatic update)", who)
         except Exception as ex:
             _plugin_job.update(state="error", message=f"That didn't work: {ex}")
-            activity("plugins", f"Couldn't {action} {PLUGIN_CATALOG[pid]['name']}: {ex}", who, "warn")
+            activity("plugins", f"Couldn't {action} {p['name']}: {ex}", who, "warn")
+        finally:
+            load_plugins()
     threading.Thread(target=run, daemon=True, name="plugin-" + action).start()
 
 def plugins_view():
@@ -8989,14 +8113,21 @@ def plugins_view():
     have = _plugin_job["versions"] if _plugin_job["state"] == "running" and _plugin_job.get("versions") is not None else plugin_versions()
     st = plugins_state()
     out = []
-    for pid, p in PLUGIN_CATALOG.items():
+    order = [q for q in PLUGIN_CATALOG if q not in _plugin_owner]
+    order = [x for q in order for x in [q] + [a for a, o in _plugin_owner.items() if o == q]]
+    for pid in order:
+        p = PLUGIN_CATALOG[pid]
         v = have.get(p["package"])
         out.append({"id": pid, "name": p["name"], "desc": p["desc"], "home": p["home"], "license": p["license"],
-                    "needs": [PLUGIN_CATALOG[n]["name"] for n in p.get("needs", [])],
-                    "needed_by": [PLUGIN_CATALOG[q]["name"] for q in _needed_by(pid, st["plugins"])],
+                    "source": "GitHub" if p.get("github") else "PyPI", "addon_of": plugin_name(_plugin_owner[pid]) if pid in _plugin_owner else None,
+                    "part": bool(p.get("part")), "error": _plugin_errors.get(pid),
+                    "needs": [plugin_name(n) for n in p.get("needs", []) if pid not in _plugin_owner],
+                    "needed_by": [plugin_name(q) for q in _needed_by(pid, st["plugins"])],
                     "installed": v, "latest": st["latest"].get(pid), "auto_update": bool((st["plugins"].get(pid) or {}).get("auto_update")),
                     "update": bool(v and st["latest"].get(pid) and _vtuple(st["latest"][pid]) > _vtuple(v))})
-    return {"plugins": out, "checked": st.get("checked"), "busy": plugins_busy(),
+    # Servers from before 2.8 had the downloader's tools installed as plugins of their own.
+    moved = "yt-dlp" in st["plugins"] and not have.get(PLUGIN_CATALOG["downloader"]["package"])
+    return {"plugins": out, "checked": st.get("checked"), "busy": plugins_busy(), "downloader_moved": moved,
             "job": {k: (list(v) if k == "log" else v) for k, v in _plugin_job.items() if k != "versions"},
             "check_hours": int(cfg().get("plugins_check_hours") or 24)}
 
@@ -9004,24 +8135,25 @@ def plugins_loop():
     """Look for new versions now and then, and install them for plugins that keep themselves up to date."""
     time.sleep(20)
     st = plugins_state()
-    mine = [q for q in st["plugins"] if q in PLUGIN_CATALOG]
+    mine = [q for q in st["plugins"] if q in PLUGIN_CATALOG and not PLUGIN_CATALOG[q].get("part")]
     if mine and not plugin_env_ok():
         # A new image with a different Python can't use the old environment: put the same plugins back.
         print("[+] Reinstalling plugins for this server's Python...")
         first = next((q for q in mine if not _needed_by(q, mine)), mine[0])
         try: start_plugin_job(first, "install")
         except ValueError: pass
-    else:
-        # Installed before a plugin came with more parts (yt-dlp now brings Deno): add them.
-        missing = [q for q in mine if not plugin_complete(q)]
-        if missing and plugin_env_ok():
-            print(f"[+] Completing plugins: {', '.join(missing)}")
-            try: start_plugin_job(missing[0], "install")
-            except ValueError: pass
     time.sleep(100)
     while True:
         try:
+            load_plugins()                          # updates that waited for a job to finish
             st = plugins_state()
+            # Installed before a plugin came with more parts, or an add-on that went missing: complete them.
+            for q in st["plugins"]:
+                p = PLUGIN_CATALOG.get(q)
+                if p and not p.get("part") and plugin_env_ok() and not plugin_complete(q) and _plugin_job["state"] != "running":
+                    try: start_plugin_job(q, "install")
+                    except ValueError: pass
+                    break
             hours = max(1, int(cfg().get("plugins_check_hours") or 24))
             if st["plugins"] and time.time() - st.get("checked", 0) >= hours * 3600:
                 plugins_check_latest()
@@ -9048,6 +8180,11 @@ def av2_plugins_check():
     plugins_check_latest()
     return jsonify(plugins_view())
 
+@app.route("/api/admin/v2/plugins/ui")
+def av2_plugins_ui():
+    """Admin pages that installed plugins add."""
+    return jsonify({"pages": [dict(pg, plugin=pid) for pid, pages in PLUGIN_PAGES.items() for pg in pages]})
+
 @app.route("/api/admin/v2/plugins/<pid>", methods=["POST"])
 def av2_plugin(pid):
     if pid not in PLUGIN_CATALOG: return jsonify({"error": "There's no plugin by that name."}), 404
@@ -9055,10 +8192,10 @@ def av2_plugin(pid):
     if "auto_update" in d:
         with _plugins_lock:
             st = plugins_state()
-            if pid not in st["plugins"]: return jsonify({"error": f"Install {PLUGIN_CATALOG[pid]['name']} first."}), 400
+            if pid not in st["plugins"]: return jsonify({"error": f"Install {plugin_name(pid)} first."}), 400
             st["plugins"][pid]["auto_update"] = bool(d["auto_update"])
             plugins_save(st)
-        activity("plugins", f"{'Turned on' if d['auto_update'] else 'Turned off'} automatic updates for {PLUGIN_CATALOG[pid]['name']}", admin_name())
+        activity("plugins", f"{'Turned on' if d['auto_update'] else 'Turned off'} automatic updates for {plugin_name(pid)}", admin_name())
         return jsonify(plugins_view())
     action = d.get("action")
     if action not in ("install", "update", "remove"): return jsonify({"error": "Choose install, update or remove."}), 400
@@ -9066,6 +8203,25 @@ def av2_plugin(pid):
     except ValueError as ex: return jsonify({"error": str(ex)}), 409
     time.sleep(0.2)
     return jsonify(plugins_view())
+
+@app.route("/api/admin/plugins/<pid>/<path:sub>", methods=["GET", "POST", "PUT", "DELETE"])
+def plugin_admin_route(pid, sub):
+    """Admin routes that plugins add (every /api/admin/ path needs an admin session)."""
+    fn = PLUGIN_ROUTES.get((pid, sub.strip("/"), request.method))
+    if not fn: return jsonify({"error": f"{plugin_name(pid)} isn't installed, or doesn't do that."}), 404
+    return fn()
+
+@app.route("/admin/plugins/<pid>/<path:name>")
+def plugin_admin_file(pid, name):
+    """Scripts for the admin pages that plugins add, from their static/ folder."""
+    mod = _plugin_loaded.get(pid)
+    if not session.get("is_admin") or mod is None: abort(404)
+    base = (Path(mod.__file__).parent / "static").resolve()
+    f = (base / name).resolve()
+    if base not in f.parents or not f.is_file(): abort(404)
+    r = send_file(str(f), max_age=0)
+    r.headers["Cache-Control"] = "no-cache"
+    return r
 
 # ============================================================
 # UPDATES
@@ -10496,6 +9652,7 @@ def api_timecapsule():
 
 # --- Startup ---
 load_users()
+load_plugins()
 threading.Thread(target=library_scanner, daemon=True, name="library-scanner").start()
 threading.Thread(target=backfill_durations, daemon=True, name="duration-backfill").start()
 threading.Thread(target=backup_scheduler, daemon=True, name="backup-scheduler").start()
@@ -10509,7 +9666,7 @@ threading.Thread(target=fed_sync_loop, daemon=True, name="library-sharing").star
 threading.Thread(target=plugins_loop, daemon=True, name="plugins").start()
 threading.Thread(target=updates_loop, daemon=True, name="updates").start()
 if (CONFIG_DIR / "python-packages").is_dir():
-    print("[INFO] config/python-packages isn't used any more: yt-dlp is now installed under Plugins. You can delete that folder.")
+    print("[INFO] config/python-packages isn't used any more (plugins live in config/plugins). You can delete that folder.")
 rebuild_in_memory_tree()   # again, now that music shared by other servers can be added
 cfg()
 activity("server", f"Server started (v{AXDIO_VERSION})", None)

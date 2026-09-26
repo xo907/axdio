@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.8.0
+
+- **The downloader is now a plugin of its own.** Axdio no longer contains any code that downloads music. The downloader lives in its own repository, [xo907/axdio-downloader](https://github.com/xo907/axdio-downloader), and you install it under **Plugins** like any other plugin.
+  - Installing it brings back the Downloader page and the library audit's audio repairs, working as before. yt-dlp comes with it, and spotDL is an optional add-on. Both are still updated from the Plugins page.
+  - Servers that had yt-dlp installed see a note on the Plugins page. The tools installed before are reused, with their automatic-update settings.
+  - Without the plugin, the library audit still finds wrong audio and rewrites wrong tags.
+- **Plugins can add to Axdio.** A plugin comes from GitHub releases or from PyPI. An Axdio plugin can add admin pages, settings, admin routes and add-ons of its own. Plugins are loaded, updated and removed without a restart.
+- The About page lists whatever plugins are installed.
+- Fixed: a test of levels and badges failed between midnight and 5 am UTC.
+
 ## 2.7.1
 
 - Fixed: photos, videos and voice messages in chats never loaded and kept spinning, for both the sender and the recipient. This had been broken since 2.6.0.

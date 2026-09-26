@@ -300,3 +300,6 @@ td.act { text-align: right; white-space: nowrap; width: 1%; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+/* Plugins: add-ons sit under the plugin they belong to */
+.plug-addon { margin-left: 28px; }
+@media (max-width: 700px) { .plug-addon { margin-left: 12px; } }

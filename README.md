@@ -44,9 +44,9 @@ Created by [xo.st](https://xo.st).
   - Discord and webhook notifications;
   - scheduled backups and restore;
   - library sharing with other Axdio servers, one-way or both ways;
-  - plugins you install yourself (yt-dlp, and optionally spotDL, for the downloader), with optional automatic updates.
+  - plugins you install yourself, like the separate Downloader plugin, with optional automatic updates.
 - A library scanner for FLAC, MP3, M4A/AAC, OGG/Opus and WAV, with cover art extraction
-- Optional tools: a verified downloader (needs the yt-dlp plugin), a library audit that fingerprints songs against their tags, and fixers for metadata and lyrics
+- Tools: a library audit that fingerprints songs against their tags and rewrites wrong ones, and fixers for metadata and lyrics
 - One small container: gunicorn, SQLite for accounts, a health check, and a non-root user
 - Optional Prometheus metrics at `/metrics` (set a token under **Security**)
 
@@ -87,7 +87,7 @@ docker compose up -d
 
 Next:
 - **Outside your home network:** put Axdio behind a reverse proxy with HTTPS (see [Behind a reverse proxy](#behind-a-reverse-proxy)), set **General → Public URL** to its address, and turn on **Security → Redirect HTTP to HTTPS**. Private messages and phone installs need HTTPS.
-- **Optional features:** [Plugins](#plugins) for the downloader, [Discord](#discord) sign-in and status, and [Library sharing](#library-sharing) with friends' servers.
+- **Optional features:** [Plugins](#plugins) such as the Downloader, [Discord](#discord) sign-in and status, and [Library sharing](#library-sharing) with friends' servers.
 - **Keep a backup:** copy the `config` folder somewhere safe, or turn on scheduled backups under **Maintenance & backups**.
 
 To build the image yourself instead, clone the repository and replace the `image:` line with `build: .`:
@@ -238,45 +238,19 @@ Opening a newly downloaded helper replaces the old one. `axdio-discord.py --run`
 - Artwork appears when sharing is on and Discord can reach your server's address.
 - Discord's phone apps can't show it.
 
-## Downloader
-
-The downloader (**Downloader** in the admin panel, off by default) takes links to songs, albums and playlists on YouTube, YouTube Music and music streaming services. It needs the yt-dlp plugin. A song is saved only when a YouTube upload's audio has been matched against a preview of the exact recording.
-
-**Which recording.**
-- A streaming link names the recording exactly: title, artists, length and a 30-second preview of it, read from the service's public pages.
-- A YouTube link is identified by its audio. The video is compared with every version of the song that Deezer and iTunes know, and the closest version is the one saved.
-
-**The checks.** A candidate upload is fingerprinted and must pass all of these:
-- it matches the recording's preview closely on average (bit error under 0.12);
-- it matches throughout, with no stretch far off (under 0.20). This is what rules out instrumentals, where the vocals are missing;
-- it's closer to the recording than to any other version the catalogs know, such as live, remix or instrumental;
-- its length is within about 4 seconds of the recording's.
-
-These thresholds were set on real uploads:
-
-| Upload compared with the recording's preview | Bit error |
-|---|---|
-| The right recording | 0.01 – 0.08 (worst stretches under 0.10) |
-| Instrumentals, live performances, remixes | 0.14 – 0.45 (worst stretches 0.26 and up) |
-
-Music videos with intros match the audio but not the length, so the plain recording is found instead. Covers, live takes and fan edits linked from YouTube aren't saved as the original song. When no upload passes, nothing is saved. With **Save songs that can't be verified** on, songs that no catalog has a preview of are saved when a YouTube Music upload's title, artist, album and length all agree. They're marked unverified in the library audit.
-
-**Songs you already have.** Tick **Check songs I already have** to compare existing copies of each song with the recording:
-- A copy that matches is kept, and nothing is downloaded.
-- A copy that's clearly another song, version or cut is replaced by the verified download at the same path, so likes and playlists keep working. The old file goes to quarantine (**Library audit**) and can be restored.
-- A close call is compared as a whole file with the verified download, and is left alone unless it's clearly different.
-
 ## Plugins
 
-Axdio doesn't come with any downloading tools:
-- the downloader and the library audit's repairs need [yt-dlp](https://pypi.org/project/yt-dlp/). It comes with [Deno](https://pypi.org/project/deno/), the JavaScript runtime YouTube requires;
-- [spotDL](https://pypi.org/project/spotdl/) is optional. It lists every song of an artist link from a music streaming service (without it, the 10 most popular), and every song of playlists longer than 100.
+Plugins add things Axdio doesn't come with. They're separate projects with their own code, releases and licenses, and playing music doesn't need any of them. An admin installs them under **Plugins** in the admin panel. They come from the plugin's GitHub releases or from PyPI, and go into `config/plugins`, so they survive restarts and image updates.
 
-Install them under **Plugins** in the admin panel. They're downloaded from PyPI into `config/plugins`, so they survive restarts and image updates.
+- **Downloader** ([xo907/axdio-downloader](https://github.com/xo907/axdio-downloader)) adds a Downloader page that saves songs, albums and playlists from links, keeping only uploads that are the exact recording. It also lets the library audit replace wrong audio. It installs yt-dlp, and optionally spotDL, which then appear under **Plugins** too. Its README explains how it works. Check that using it is allowed where you are, and only download music you have the right to copy.
 
-- **Keep it up to date automatically** installs new versions when they come out. The server checks every 24 hours (adjustable) and waits until nothing is downloading. A new yt-dlp is used without a restart.
+On the Plugins page:
+- **Keep it up to date automatically** installs new versions when they come out. The server checks every 24 hours (adjustable) and waits until nothing that uses the plugin is running. A new version is used without a restart.
 - **Remove** takes a plugin off the server again, along with anything it brought with it.
-- They're made by other people and have their own licenses (yt-dlp: Unlicense, Deno: MIT, spotDL: MIT). Check that using them is allowed where you are.
+
+**Coming from 2.7 or earlier:** the downloader used to be part of Axdio. It's now the Downloader plugin, so install it under **Plugins** to keep downloading. The yt-dlp and spotDL you installed are reused, with their automatic-update settings.
+
+**Writing a plugin:** an Axdio plugin is a Python package with a `register(api)` function that can add admin pages, settings, admin routes and add-ons. The Plugins section of `server.py` describes the API, and the Downloader is a full example. To try one from a local folder, set `PLUGIN_SOURCES=<id>=/path/to/it` on the container.
 
 ## Backups and restore
 
@@ -309,9 +283,7 @@ docker compose up -d
 
 If you build from source, run `git pull` and then `docker compose up -d --build` instead. Settings and accounts carry over; older `users.json` files are moved into `axdio.db` automatically on first start.
 
-When YouTube changes and downloads start failing, update yt-dlp under **Plugins**, or tick **Keep it up to date automatically** there.
-
-Coming from 2.2 or earlier: the image no longer includes yt-dlp or spotDL, so the downloader waits until you install them under **Plugins**. `config/python-packages` and `AUTO_UPDATE_EXTRACTORS` aren't used any more; you can delete that folder.
+Coming from 2.2 or earlier: `config/python-packages` and `AUTO_UPDATE_EXTRACTORS` aren't used any more; you can delete that folder.
 
 ## Privacy: outside connections
 
@@ -320,14 +292,14 @@ Axdio sends no telemetry, and the apps load nothing from other sites (fonts are 
 | Service | When |
 |---|---|
 | LRCLIB (lrclib.net) | A listener opens lyrics for a song that isn't cached yet (turn off under **Features → Lyrics**) |
-| Deezer and iTunes | An admin runs the library audit or metadata fixer, or the downloader checks a match |
-| YouTube / YouTube Music, and the public pages of the service a pasted link comes from | An admin uses the downloader (off by default) |
-| GitHub (ghcr.io, raw.githubusercontent.com) | Checking for new versions of Axdio and reading what's new (turn off under **Updates**) |
+| Deezer and iTunes | An admin runs the library audit or metadata fixer |
+| GitHub (ghcr.io, raw.githubusercontent.com, api.github.com) | Checking for new versions of Axdio and reading what's new (turn off under **Updates**), and installing or updating plugins that come from GitHub |
 | PyPI | An admin installs or updates a plugin, or looks for new versions; plugins with automatic updates check every 24 hours |
 | Other Axdio servers | You share libraries with them (songs, artwork and the song list travel between the two servers) |
 | Discord | Someone signs in with Discord. The Discord status helper runs on the listener's computer and talks to your server and their Discord app |
 | ListenBrainz, Last.fm | A listener connected their account |
 | Your Discord or webhook URL | You configured notifications |
+| Whatever a plugin needs | You installed that plugin (see its README) |
 
 ## Security
 
@@ -344,7 +316,7 @@ Built-in protections include:
 
 ## Legal
 
-Axdio plays music you already have. It doesn't include any downloading tools: the optional downloader is off by default and only works after an admin installs yt-dlp under **Plugins**. Only download music you own or have permission to copy; you're responsible for how your server is used.
+Axdio plays music you already have, and doesn't include any way to download music. Plugins are separate projects with their own licenses. If you install one that downloads, only download music you own or have permission to copy. You're responsible for how your server is used.
 
 ## Development
 
@@ -363,4 +335,4 @@ Settings pages in the admin panel are generated from `ADMIN_SCHEMA` in `server.p
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Created by [xo.st](https://xo.st). Plugins you install (yt-dlp, spotDL) have their own licenses.
+MIT, see [LICENSE](LICENSE). Created by [xo.st](https://xo.st). Plugins you install have their own licenses.

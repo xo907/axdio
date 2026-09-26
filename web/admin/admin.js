@@ -2,8 +2,9 @@
    Axdio admin panel
 
    Settings pages are generated from the server's schema (/api/admin/v2/config),
-   so a new setting only needs a schema entry in server.py. Tool pages (downloader,
-   library audit, metadata & lyrics, files) talk to the older /api/admin/* endpoints.
+   so a new setting only needs a schema entry in server.py. Tool pages (library audit,
+   metadata & lyrics, files) talk to the older /api/admin/* endpoints. Plugins can add
+   pages of their own through window.AxdioAdmin (see "Pages from plugins").
    ========================================================================== */
 (() => {
 'use strict';
@@ -245,7 +246,6 @@ const PAGES = [
   { id: 'security', title: 'Security', icon: 'security', render: pageSecurity },
   { id: 'notifications', title: 'Notifications', icon: 'notifications', render: pageNotifications },
   { group: 'Library' },
-  { id: 'downloader', title: 'Downloader', icon: 'downloader', render: pageDownloader },
   { id: 'audit', title: 'Library audit', icon: 'audit', render: pageAudit },
   { id: 'metadata', title: 'Metadata & lyrics', icon: 'metadata', render: pageMetadata },
   { id: 'files', title: 'Files', icon: 'files', render: pageFiles },
@@ -314,7 +314,6 @@ async function pageOverview(el) {
       `<a class="chip" href="#/access"><span class="dot ${s.require_login ? 'info' : ''}"></span>${s.require_login ? 'Private server' : 'Public listening'}</a>`,
       `<a class="chip" href="#/maintenance"><span class="dot ${s.maintenance_mode ? 'warn' : 'ok'}"></span>${s.maintenance_mode ? 'Maintenance mode on' : 'Online'}</a>`,
       `<a class="chip" href="#/security"><span class="dot ${s.force_ssl ? 'ok' : ''}"></span>${s.force_ssl ? 'HTTPS enforced' : 'HTTPS not enforced'}</a>`,
-      `<a class="chip" href="#/downloader"><span class="dot ${s.downloader_enabled ? 'ok' : ''}"></span>Downloader ${s.downloader_enabled ? 'on' : 'off'}</a>`,
     ].join('');
     const stat = (k, v, sub, href) => `<${href ? `a href="${href}" style="text-decoration:none"` : 'div'} class="stat"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</${href ? 'a' : 'div'}>`;
     const listening = d.listening.length
@@ -595,7 +594,7 @@ document.addEventListener('change', e => {
 let PLUG = null, plugTimer = 0;
 async function pagePlugins(el) {
   el.innerHTML = `<section class="card"><div class="card-h"><h2>Plugins</h2><button class="btn ghost sm" data-act="plug-check">${ic('refresh', 'sm')}Check for updates</button></div>
-    <p class="desc">Axdio doesn't come with these tools, and playing music doesn't need them. Installing one downloads it from PyPI, the Python package index, onto this server. They're made by other people and have their own licenses. Check that using them is allowed where you are, and only download music you have the right to copy.</p>
+    <p class="desc">Plugins aren't part of Axdio, and playing music doesn't need any of them. They're separate projects with their own code and licenses. Installing one downloads it onto this server, from GitHub or from PyPI, the Python package index. Check that using a plugin is allowed where you are.</p>
     <p class="desc" id="plug-checked" style="padding-bottom:18px"></p></section><div id="plug-list" class="stack"></div>`
     + settingsCard('plugins', { title: 'Updates' });
   await loadPlugins();
@@ -608,25 +607,27 @@ async function loadPlugins(d) {
   drawPlugins();
   clearTimeout(plugTimer);
   if (PLUG.job.state === 'running') plugTimer = setTimeout(() => loadPlugins().catch(() => {}), 1500);
-  else if (was === 'running' && PLUG.job.message) toast(PLUG.job.message, PLUG.job.state === 'error');
+  else if (was === 'running') { if (PLUG.job.message) toast(PLUG.job.message, PLUG.job.state === 'error'); loadPluginPages().then(renderNav); }
 }
 function drawPlugins() {
   const d = PLUG, list = $('#plug-list'); if (!d || !list) return;
   const j = d.job, running = j.state === 'running';
   $('#plug-checked').textContent = d.checked ? `Last looked for new versions ${ago(d.checked)}.` : '';
-  list.innerHTML = d.plugins.map(p => {
+  list.innerHTML = (d.downloader_moved ? `<section class="card"><div class="card-b"><span class="badge info">Moved</span> The downloader isn't part of Axdio any more. It's now the Downloader plugin below: install it to keep downloading. The tools you installed for it before are reused.</div></section>` : '') + d.plugins.map(p => {
     const mine = j.plugin === p.id && j.state !== 'idle' && (running || Date.now() / 1000 - j.started < 900);
     const dis = running ? ' disabled' : '';
     const state = p.installed ? `<span class="badge ok">Installed · ${esc(p.installed)}</span>` : '<span class="badge">Not installed</span>';
     const btns = running && j.plugin === p.id ? `<span class="muted" style="font-size:13px">${esc(j.message)}</span>`
-      : p.installed ? `${p.update ? `<button class="btn primary sm" data-act="plug-do" data-id="${p.id}" data-a="update"${dis}>Update to ${esc(p.latest)}</button>` : ''}<button class="btn ghost sm" data-act="plug-do" data-id="${p.id}" data-a="remove"${dis || (p.needed_by.length ? ' disabled' : '')}${p.needed_by.length ? ` title="${esc(p.needed_by.join(' and '))} needs it"` : ''}>Remove</button>`
+      : p.installed ? `${p.update ? `<button class="btn primary sm" data-act="plug-do" data-id="${p.id}" data-a="update"${dis}>Update to ${esc(p.latest)}</button>` : ''}${p.part ? '' : `<button class="btn ghost sm" data-act="plug-do" data-id="${p.id}" data-a="remove"${dis || (p.needed_by.length ? ' disabled' : '')}${p.needed_by.length ? ` title="${esc(p.needed_by.join(' and '))} needs it"` : ''}>Remove</button>`}`
       : `<button class="btn primary sm" data-act="plug-do" data-id="${p.id}" data-a="install"${dis}>${ic('downloader', 'sm')}Install</button>`;
     const notes = [p.needs.length ? `Installing it also installs ${p.needs.join(' and ')}.` : '', p.needed_by.length && p.installed ? `${p.needed_by.join(' and ')} needs it.` : ''].filter(Boolean).join(' ');
-    return `<section class="card"><div class="card-h"><h2>${esc(p.name)}</h2>${state}${p.update ? `<span class="badge info">${esc(p.latest)} available</span>` : ''}<div class="row" style="margin-left:auto">${btns}</div></div>
+    const sub = p.addon_of ? `<span class="sub">${p.part ? 'Comes with' : 'Add-on for'} ${esc(p.addon_of)}</span>` : '';
+    return `<section class="card${p.addon_of ? ' plug-addon' : ''}"><div class="card-h"><h2>${esc(p.name)}</h2>${sub}${state}${p.update ? `<span class="badge info">${esc(p.latest)} available</span>` : ''}<div class="row" style="margin-left:auto">${btns}</div></div>
       <p class="desc">${esc(p.desc)}${notes ? ' ' + esc(notes) : ''}</p>
       <div class="card-b" style="padding-top:0">
         ${p.installed ? `<label class="check" style="margin-bottom:10px"><input type="checkbox" data-plug-auto="${p.id}"${p.auto_update ? ' checked' : ''}${dis}> Keep it up to date automatically</label>` : ''}
-        <div class="muted" style="font-size:12.5px">${esc(p.license)} license · <a class="link" href="${esc(p.home)}" target="_blank" rel="noopener">${esc(p.home.replace(/^https:\/\//, '').replace(/\/$/, ''))}</a>${!p.installed && p.latest ? ` · newest version ${esc(p.latest)}` : ''}</div>
+        ${p.error ? `<p style="color:#f87171;margin-bottom:10px;font-size:13px">It's installed but couldn't be loaded: ${esc(p.error)}</p>` : ''}
+        <div class="muted" style="font-size:12.5px">${esc(p.license)} license · from ${esc(p.source)} · <a class="link" href="${esc(p.home)}" target="_blank" rel="noopener">${esc(p.home.replace(/^https:\/\//, '').replace(/\/$/, ''))}</a>${!p.installed && p.latest ? ` · newest version ${esc(p.latest)}` : ''}</div>
         ${mine && j.log.length ? `<div class="term" style="height:auto;max-height:220px;margin-top:14px">${j.log.map(termLine).join('')}</div>` : ''}
         ${mine && j.state === 'error' ? `<p style="color:#f87171;margin-top:10px;font-size:13px">${esc(j.message)}</p>` : ''}
       </div></section>`;
@@ -758,7 +759,7 @@ function pageNotifications(el) {
     + settingsCard('notifications', { title: 'Where and when', extra: `<button class="btn ghost sm" data-act="notify-test">Send a test</button>` });
 }
 
-/* Downloader (existing /api/admin/download endpoints) */
+/* Log lines in the job terminals (the audit, plugins, and pages from plugins) */
 const TAG_CLASS = [
   [/\[(ACCEPT|SAVED|REPLACED|FINISH|FIXED|RESTORED|OK)\]/g, 'c-ok'], [/\[(SKIP|FILTER|PAUSED|STOPPED|VERIFY|UNVERIFIED|TAGS_WRONG|WRONG_VERSION|UNCERTAIN|WARN|KEEP)\]/g, 'c-warn'],
   [/\[((?:FATAL )?ERR(?:OR)?|MISMATCH|FAILED)\]/g, 'c-bad'], [/\[(INIT|FIX|PROGRESS|RESUMED|INFO|CHECK|IDENTIFY)\]/g, 'c-info'], [/\[(DISCOVERY)\]/g, 'c-vio'],
@@ -774,60 +775,6 @@ function fillTerm(term, lines) {
   term.innerHTML = lines.map(termLine).join('');
   if (atBottom) term.scrollTop = term.scrollHeight;
 }
-function pageDownloader(el) {
-  const on = ST.values.downloader_enabled !== false;
-  el.innerHTML = settingsCard('downloader', { title: false })
-    + `<section class="card"><div class="card-h"><h2>Download music</h2><span class="badge" id="dl-badge">Idle</span></div>
-      <p class="desc">Paste a link to a song, album or playlist on YouTube, YouTube Music or a music streaming service. Each song is saved as FLAC only after the audio of a YouTube upload has matched a preview of the exact recording: the link's own preview, or Deezer's and iTunes'. Uploads that are another version (an instrumental, a live take, a music video with an intro) are turned down, and when no upload matches, nothing is saved.</p>
-      <p class="desc" style="color:var(--warn)">Only download music you own or have permission to copy. You're responsible for how this server is used.</p>
-      <p class="desc" id="dl-plugins" hidden></p>
-      <div class="card-b">${on ? '' : '<p class="muted" style="margin-bottom:12px">The downloader is turned off. Turn it on above to start new downloads.</p>'}
-        <form class="row" id="dl-form"><input class="input grow" id="dl-url" placeholder="Paste a track, album or playlist link" aria-label="Link to download"${on ? '' : ' disabled'}><button class="btn primary" id="dl-start"${on ? '' : ' disabled'}>${ic('downloader')}Download</button></form>
-        <div class="row wrap" style="justify-content:space-between;margin-top:12px"><div style="display:grid;gap:8px"><label class="check"><input type="checkbox" id="dl-extras"> Include instrumentals, a cappellas and alternate versions in albums and playlists</label>
-          <label class="check" title="Each song you already have is compared with the recording. Copies that are clearly another song, version or cut are replaced by the verified download at the same place in the library; the old file goes to quarantine (Library audit) and can be restored."><input type="checkbox" id="dl-check"> Check songs I already have, and replace them if they're not the right recording</label></div>
-          <div class="row"><button class="btn ghost sm" id="dl-pause" disabled>Pause</button><button class="btn ghost sm" id="dl-resume" disabled>Resume</button><button class="btn danger sm" id="dl-stop" disabled>Stop</button></div></div>
-        <div class="progress"><i id="dl-bar"></i></div>
-        <div class="term-head"><span class="muted" id="dl-count">Nothing queued</span></div>
-        <div class="term" id="dl-term"><span class="ln c-dim">Paste a link above to start.</span></div>
-      </div></section>`;
-  const poll = async () => {
-    try {
-      const d = await api('/api/admin/download/status');
-      const st = d.status || 'idle';
-      const badge = $('#dl-badge'); if (!badge) return;
-      badge.textContent = st[0].toUpperCase() + st.slice(1);
-      badge.className = 'badge ' + ({ downloading: 'ok', paused: 'warn', error: 'bad', completed: 'info' }[st] || '');
-      $('#dl-start').disabled = !on || st === 'downloading';
-      $('#dl-pause').disabled = st !== 'downloading';
-      $('#dl-resume').disabled = st !== 'paused';
-      $('#dl-stop').disabled = !['downloading', 'paused'].includes(st);
-      $('#dl-count').textContent = d.total_tracks ? `${nf(d.completed_tracks)} of ${nf(d.total_tracks)} tracks` : (st === 'downloading' ? 'Looking up tracks…' : 'Nothing queued');
-      $('#dl-bar').style.width = d.total_tracks ? `${Math.round(100 * d.completed_tracks / d.total_tracks)}%` : '0';
-      if (d.logs && d.logs.length) fillTerm($('#dl-term'), d.logs);
-    } catch (e) { /* retried on the next tick */ }
-  };
-  $('#dl-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const url = $('#dl-url').value.trim(); if (!url) return;
-    try { await api('/api/admin/download', { url, include_extras: $('#dl-extras').checked, check_existing: $('#dl-check').checked }); $('#dl-url').value = ''; poll(); }
-    catch (err) { fail(err); }
-  });
-  try { $('#dl-check').checked = localStorage.getItem('axdio-dl-check') === '1'; } catch (e) { /* storage unavailable */ }
-  $('#dl-check').addEventListener('change', e => { try { localStorage.setItem('axdio-dl-check', e.target.checked ? '1' : '0'); } catch (x) { /* ignore */ } });
-  $('#dl-pause').onclick = () => api('/api/admin/download/pause', {}).then(poll, fail);
-  $('#dl-resume').onclick = () => api('/api/admin/download/resume', {}).then(poll, fail);
-  $('#dl-stop').onclick = () => api('/api/admin/download/stop', {}).then(poll, fail);
-  poll(); every(poll, 1500);
-  api('/api/admin/v2/plugins').then(p => {
-    const n = $('#dl-plugins'); if (!n) return;
-    const yt = p.plugins.find(x => x.id === 'yt-dlp'), sd = p.plugins.find(x => x.id === 'spotdl');
-    n.hidden = yt.installed && sd.installed;
-    n.innerHTML = !yt.installed
-      ? `<span class="badge warn">yt-dlp isn't installed</span> The downloader needs it to find and download audio. Install it under <a class="link" href="#/plugins">Plugins</a>.`
-      : 'Artist links from music streaming services list only the 10 most popular songs without spotDL (optional, under <a class="link" href="#/plugins">Plugins</a>).';
-  }).catch(() => {});
-}
-
 /* Library audit (existing /api/admin/audit endpoints) */
 const AUDIT_LABELS = { ok: 'Verified', mismatch: 'Wrong audio', tags_wrong: 'Wrong tags', wrong_version: 'Wrong cut', uncertain: 'Uncertain', unverified: 'Unverifiable', fixed: 'Repaired', ignored: 'Ignored', error: 'Errors' };
 const AUDIT_ORDER = ['ok', 'mismatch', 'tags_wrong', 'wrong_version', 'uncertain', 'unverified', 'fixed', 'error'];
@@ -835,7 +782,7 @@ const encArg = v => encodeURIComponent(v);
 function fmtSecs(s) { s = Math.max(0, Math.round(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; }
 function pageAudit(el) {
   el.innerHTML = `<section class="card"><div class="card-h"><h2>Check the library</h2><span class="badge" id="au-badge">Idle</span></div>
-    <p class="desc">Fingerprints each song and compares it with the Deezer/iTunes preview of the song its tags name. Wrong audio can be replaced by a verified download at the same path, so likes and playlists keep working. Replaced originals go to quarantine and can be restored.</p>
+    <p class="desc">Fingerprints each song and compares it with the Deezer/iTunes preview of the song its tags name. Wrong tags can be rewritten from the song the audio really is. With the Downloader plugin, wrong audio can also be replaced by a verified download at the same path, so likes and playlists keep working. Replaced originals go to quarantine and can be restored.</p>
     <div class="card-b">
       <div class="row wrap"><input class="input grow" id="au-scope" placeholder="Only paths containing… (optional, e.g. an artist)" style="min-width:200px">
         <select class="select" id="au-workers" style="width:auto" aria-label="Parallel reads"><option value="1">1 worker</option><option value="2">2 workers</option><option value="3" selected>3 workers</option><option value="4">4 workers</option></select>
@@ -914,7 +861,7 @@ function pageAudit(el) {
   $('#au-filter').onchange = results;
   let qt; $('#au-q').oninput = () => { clearTimeout(qt); qt = setTimeout(results, 300); };
   $('#au-fixall').onclick = async () => {
-    if (!(await confirmDlg('Repair every confirmed problem?', 'Wrong audio is re-downloaded and wrong tags are rewritten. Originals go to quarantine.', 'Repair all'))) return;
+    if (!(await confirmDlg('Repair every confirmed problem?', 'Wrong tags are rewritten, and wrong audio is replaced if the Downloader plugin is installed. Originals go to quarantine.', 'Repair all'))) return;
     api('/api/admin/audit/fix', { all: true }).then(status, fail);
   };
   $('#qu-purge').onclick = async () => {
@@ -988,7 +935,7 @@ async function pageFiles(el) {
       const v = await dialog({ title: 'Rename', fields: [{ name: 'name', label: 'New name', value: old }], ok: 'Rename' });
       if (v && v.name.trim() && v.name.trim() !== old) api('/api/admin/files/rename', { path: p, new_name: v.name.trim() }).then(r => { toast(r.moved_songs ? `Renamed; ${plural(r.moved_songs, 'song')} kept their likes and playlists` : 'Renamed'); loadDir(filesPath); }, fail);
     } else if (b.dataset.act === 'file-delete') {
-      if (!(await confirmDlg(`Delete ${p.split('/').pop()}?`, (b.dataset.dir ? 'The folder and everything in it is deleted from disk' : 'The file is deleted from disk') + ' and leaves the library right away, so the downloader can fetch it again.', 'Delete', true))) return;
+      if (!(await confirmDlg(`Delete ${p.split('/').pop()}?`, (b.dataset.dir ? 'The folder and everything in it is deleted from disk' : 'The file is deleted from disk') + ' and leaves the library right away.', 'Delete', true))) return;
       api('/api/admin/files/delete', { path: p }).then(r => { toast(r.removed_songs ? `Deleted; ${plural(r.removed_songs, 'song')} left the library` : 'Deleted'); loadDir(filesPath); }, fail);
     }
   });
@@ -1125,7 +1072,7 @@ async function pageAbout(el) {
       ${row('Python', esc(d.python))}${row('Flask', esc(d.flask))}${row('Web server', esc(d.server))}${row('Mutagen', esc(d.mutagen))}${row('FFmpeg', esc(d.ffmpeg) || '<span class="st-error">not found</span>')}${row('Platform', `<span class="mono">${esc(d.platform)}</span>`)}
     </dl></div></section>
     <section class="card"><div class="card-h"><h2>Plugins</h2><a class="btn ghost sm" href="#/plugins">Manage</a></div><div class="card-b"><dl class="kv">
-      ${row('yt-dlp', esc(d.yt_dlp) || '<span class="muted">Not installed</span>')}${row('spotDL', esc(d.spotdl) || '<span class="muted">Not installed</span>')}
+      ${Object.keys(d.plugins || {}).length ? Object.entries(d.plugins).map(([n, v]) => row(esc(n), esc(v))).join('') : '<dt>None installed</dt><dd></dd>'}
     </dl></div></section>
     <section class="card"><div class="card-b row" style="justify-content:space-between"><span class="muted">Axdio</span><a class="link" href="${esc(d.credit.url)}" target="_blank" rel="noopener">${esc(d.credit.text)}</a></div></section>`;
 }
@@ -1191,8 +1138,8 @@ document.addEventListener('click', async e => {
     case 'plug-do': {
       const p = PLUG && PLUG.plugins.find(x => x.id === b.dataset.id); if (!p) break;
       const a = b.dataset.a;
-      if (a === 'remove' && !(await confirmDlg(`Remove ${p.name}?`, p.id === 'yt-dlp' ? "The downloader and the library audit's repairs stop working until you install it again." : "Links from music streaming services can't be downloaded until you install it again.", 'Remove', true))) break;
-      if (a === 'install' && !(await confirmDlg(`Install ${p.name}?`, `${p.name}${p.needs.length ? ` and ${p.needs.join(' and ')}` : ''} will be downloaded from PyPI onto this server. It's made by other people and has its own license (${p.license}).`, 'Install'))) break;
+      if (a === 'remove' && !(await confirmDlg(`Remove ${p.name}?`, 'What it adds to Axdio goes away until you install it again.', 'Remove', true))) break;
+      if (a === 'install' && !(await confirmDlg(`Install ${p.name}?`, `${p.name}${p.needs.length ? ` and ${p.needs.join(' and ')}` : ''} will be downloaded from ${p.source} onto this server. It's a separate project with its own license (${p.license}).`, 'Install'))) break;
       api(`/api/admin/v2/plugins/${p.id}`, { action: a }).then(loadPlugins, fail);
       break;
     }
@@ -1266,13 +1213,35 @@ async function loadConfig() {
   ST.schema = c.schema; ST.values = c.values;
   ST.fields = Object.fromEntries(c.schema.flatMap(s => s.fields.map(f => [f.key, f])));
 }
+/* ---------- Pages from plugins ----------
+   A plugin's script (served from /admin/plugins/<id>/) calls AxdioAdmin.page(id, render) to draw its page,
+   using the same helpers as the pages here. */
+window.AxdioAdmin = { api, $, $$, esc, ic, nf, ago, toast, fail, every, confirmDlg, settingsCard, termLine, fillTerm, ST,
+  page(id, draw) { const p = pageById(id); if (!p) return; p.render = draw; if (ST.page === id) render(); } };
+const pluginScripts = new Set();
+async function loadPluginPages() {
+  let d; try { d = await api('/api/admin/v2/plugins/ui'); } catch (e) { return; }
+  const want = new Set((d.pages || []).map(pg => pg.id));
+  for (let i = PAGES.length - 1; i >= 0; i--) if (PAGES[i].plugin && !want.has(PAGES[i].id)) PAGES.splice(i, 1);
+  for (const pg of d.pages || []) {
+    if (pageById(pg.id)) continue;
+    const g = PAGES.findIndex(p => p.group === pg.group);
+    PAGES.splice(g < 0 ? PAGES.length : g + 1, 0, { id: pg.id, title: pg.title, icon: pg.icon, plugin: pg.plugin,
+      render: el => { el.innerHTML = '<div class="card"><div class="empty">Loading…</div></div>'; } });
+    if (!pluginScripts.has(pg.script)) {
+      pluginScripts.add(pg.script);
+      document.head.appendChild(Object.assign(document.createElement('script'), { src: pg.script, async: true }));
+    }
+  }
+}
+
 async function loadNavMark() {
   const b = await api('/api/admin/v2/branding').catch(() => ({}));
   $('#nav-mark').innerHTML = b.logo ? `<img src="${esc(b.logo)}" alt="">` : ic('note');
 }
 (async () => {
   try {
-    const [me] = await Promise.all([api('/api/admin/v2/me'), loadConfig()]);
+    const [me] = await Promise.all([api('/api/admin/v2/me'), loadConfig(), loadPluginPages()]);
     ST.me = me;
     $('#nav-user').textContent = me.admin_user || '';
     if (me.credit) { const c = $('#credit'); c.href = me.credit.url; c.textContent = me.credit.text; }

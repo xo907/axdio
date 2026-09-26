@@ -8,7 +8,7 @@ PGID="${PGID:-1000}"
 mkdir -p "$CONFIG_DIR" "$CHAT_DIR"
 
 if [ "${AUTO_UPDATE_EXTRACTORS:-false}" = "true" ]; then
-  echo "[!] AUTO_UPDATE_EXTRACTORS isn't used any more. Install yt-dlp under Plugins in the admin panel and tick automatic updates there."
+  echo "[!] AUTO_UPDATE_EXTRACTORS isn't used any more. Plugins are installed and kept up to date under Plugins in the admin panel."
 fi
 
 if [ "$(id -u)" = "0" ] && [ "$PUID" != "0" ]; then
