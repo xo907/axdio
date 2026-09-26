@@ -46,7 +46,7 @@ Created by [xo.st](https://xo.st).
   - library sharing with other Axdio servers, one-way or both ways;
   - plugins you install yourself, like the separate Downloader plugin, with optional automatic updates.
 - A library scanner for FLAC, MP3, M4A/AAC, OGG/Opus and WAV, with cover art extraction
-- Tools: a library audit that fingerprints songs against their tags and rewrites wrong ones, and fixers for metadata and lyrics
+- Tools: a library audit that fingerprints songs against their tags and rewrites wrong ones, a fixer for titles and tags ("NERO - 2808" by NERO becomes "2808") that works on a folder, a song or chosen artists, and fixers for metadata and lyrics, each with undo or quarantine
 - One small container: gunicorn, SQLite for accounts, a health check, and a non-root user
 - Optional Prometheus metrics at `/metrics` (set a token under **Security**)
 

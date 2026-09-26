@@ -1750,6 +1750,149 @@ class TestMoments(Base):
         self.assertNotIn("t=", self.c.get(f"/track/{sid}/open?t=999999").headers["Location"])   # nonsense ignored
 
 
+class TestTitleFixer(Social):
+    """Fixing titles and tags of a folder, a song or chosen artists."""
+    def song(self, rel, title, artist, **tags):
+        p = MUSIC / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        meta = sum([["-metadata", f"{k}={v}"] for k, v in dict(title=title, artist=artist, **tags).items() if v], [])
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=500:duration=2", *meta, str(p)], check=True)
+        server.refresh_library_entry(rel)
+        self.made.append(rel)
+        return p
+
+    def setUp(self):
+        super().setUp()
+        self.made = []
+
+    def tearDown(self):
+        for rel in self.made:
+            (MUSIC / rel).unlink(missing_ok=True)
+            with server.library_cache_lock: server.library_cache_data.pop(rel, None)
+        super().tearDown()
+
+    def test_cleaning_titles(self):
+        clean = lambda title, artists, rel="NERO/Singles/x.flac", **t: server.clean_label(dict(title=title, artists=artists, **t), rel)[0]["title"]
+        self.assertEqual(clean("NERO - 2808", ["NERO"]), "2808")
+        self.assertEqual(clean("Nero – Promises", ["NERO"]), "Promises")                     # any case, en dash
+        self.assertEqual(clean("NERO - Into The Night", ["Someone"], "NERO/x.flac"), "Into The Night")   # the folder is the artist
+        self.assertEqual(clean("Donell Jones - Where I Wanna Be (Official Video)", ["Donell Jones"]), "Where I Wanna Be")
+        self.assertEqual(clean("01 - Night Away (Dance)", ["A1 x J1"], tracknumber="1"), "Night Away (Dance)")
+        self.assertEqual(clean("Relaxing Cello [oDqJFXaFLzc]", ["Jesse Ahmann"]), "Relaxing Cello")
+        # Not the song's own artist, or not a prefix at all: left alone.
+        self.assertEqual(clean("3 GIRLS 1 DECK!! huge congrats to @anjunadeep - WE LOVE YOU!!", ["NA"], "NA/x.flac"), "3 GIRLS 1 DECK!! huge congrats to @anjunadeep - WE LOVE YOU!!")
+        self.assertEqual(clean("Architect (feat. Currents) - Re-Recorded", ["Currents"], "Currents/x.flac"), "Architect (feat. Currents) - Re-Recorded")
+        self.assertEqual(clean("I Remember California - Remastered 2013", ["R.E.M"], "R.E.M/x.flac"), "I Remember California - Remastered 2013")
+        self.assertEqual(clean("Nightcore - Someone You Loved", ["NightcoreChase"], "NightcoreChase/x.flac"), "Nightcore - Someone You Loved")
+        self.assertEqual(clean("22 - Acoustic", ["Band"], tracknumber="3"), "22 - Acoustic")         # a number that isn't its track
+        self.assertEqual(clean("It Only Gets Darker (Live)", ["Currents"]), "It Only Gets Darker (Live)")
+        # No tags: the file name and folder say what it is.
+        label, notes = server.clean_label({"title": "", "artists": []}, "The Weeknd/Starboy/01 - Starboy.flac")
+        self.assertEqual((label["title"], label["artists"], label["album"]), ("Starboy", ["The Weeknd"], "Starboy"))
+
+    def test_quick_fix_and_undo(self):
+        p = self.song("NEROFIX/Singles/NERO - 2808.flac", "NERO - 2808", "NERO")
+        r = server.fix_track("NEROFIX/Singles/NERO - 2808.flac", quick=True)
+        self.assertEqual((r["result"], r["after"]["title"]), ("cleaned", "2808"))
+        self.assertEqual(server.read_track_tags(p)["title"], "2808")
+        self.assertEqual(server.library_cache_data["NEROFIX/Singles/NERO - 2808.flac"]["title"], "2808")
+        self.assertEqual(server.fix_track("NEROFIX/Singles/NERO - 2808.flac", quick=True)["result"], "ok")     # nothing left to do
+        server.undo_fix(r["id"])
+        self.assertEqual(server.read_track_tags(p)["title"], "NERO - 2808")
+        with self.assertRaises(ValueError): server.undo_fix(r["id"])
+
+    def test_confirmed_by_fingerprint(self):
+        p = self.song("NEROFIX/Loose/NERO - Promises.flac", "NERO - Promises", "NERO")
+        orig = {n: getattr(server, n) for n in ("verify_file", "reference_metadata", "fetch_bytes")}
+        seen = {}
+        def verify(path, label, duration, refs=None, second_opinion=True, fps=None):
+            seen["label"] = dict(label)
+            return {"status": "ok", "ber": 0.04, "reason": "Matches", "ref": {"source": "deezer", "id": 42, "title": "Promises", "artist": "Nero", "strong": True, "via": "search"}}
+        server.verify_file = verify
+        server.reference_metadata = lambda ref: {"title": "Promises", "artists": ["Nero"], "album": "Welcome Reality", "albumartist": "Nero",
+                                                 "date": "2011-08-12", "tracknumber": 4, "isrc": "GBUM71104571", "cover_url": ""}
+        server.fetch_bytes = lambda url, **k: None
+        try:
+            r = server.fix_track("NEROFIX/Loose/NERO - Promises.flac")
+        finally:
+            for n, f in orig.items(): setattr(server, n, f)
+        self.assertEqual(seen["label"]["title"], "Promises")                 # looked up by the cleaned title
+        self.assertEqual(r["result"], "fixed")
+        t = server.read_track_tags(p)
+        # The catalog's details, in this library's spelling of the artist ("Nero" is "NERO" here).
+        self.assertEqual((t["title"], t["artists"], t["album"], t["tracknumber"], t["isrc"]), ("Promises", ["NERO"], "Welcome Reality", "4", "GBUM71104571"))
+        self.assertEqual(server.audit_db["NEROFIX/Loose/NERO - Promises.flac"]["status"], "ok")
+        server.undo_fix(r["id"])
+        t = server.read_track_tags(p)
+        self.assertEqual((t["title"], t["artists"], t["album"], t["isrc"]), ("NERO - Promises", ["NERO"], "", ""))
+
+    def test_spelling_is_kept(self):
+        self.assertEqual(server._prefer_title("Bad Trip", "Bad Trip (Original Mix)"), "Bad Trip")
+        self.assertEqual(server._prefer_title("STARBOY", "Starboy"), "STARBOY")
+        self.assertEqual(server._prefer_title("Bad Trip Remix - Bar9 Remix", "Bad Trip Remix (Bar9 Remix)"), "Bad Trip Remix (Bar9 Remix)")
+        self.assertEqual(server._prefer_artists(["NERO"], ["Nero"]), ["NERO"])
+        self.assertEqual(server._prefer_artists(["The Weeknd"], ["The Weeknd", "Daft Punk"]), ["The Weeknd", "Daft Punk"])
+
+    def test_stale_library_entries_are_read_again(self):
+        rel = "NEROFIX/Stale/NERO - 2808.flac"
+        self.song(rel, "2808", "NERO")
+        stale = lambda **x: dict({"title": "NERO - 2808", "artist": "NERO", "album": "Singles", "has_cover": None,
+                                  "mtime": (MUSIC / rel).stat().st_mtime, "track_number": None}, **x)
+        # The fixer reads the file again when the library shows something else.
+        with server.library_cache_lock: server.library_cache_data[rel] = stale()
+        r = server.fix_track(rel, quick=True)
+        self.assertEqual((r["result"], r["before"]["title"], r["after"]["title"]), ("refreshed", "NERO - 2808", "2808"))
+        # So does the scanner: a read that failed, and (once, after updating) entries that look like one.
+        with server.library_cache_lock: server.library_cache_data[rel] = stale(unread=True, has_cover=False)
+        server.scan_library()
+        self.assertEqual(server.library_cache_data[rel]["title"], "2808")
+        self.assertNotIn("unread", server.library_cache_data[rel])
+        server.REREAD_MARK.unlink(missing_ok=True)
+        with server.library_cache_lock: server.library_cache_data[rel] = stale()
+        server.scan_library()
+        self.assertEqual(server.library_cache_data[rel]["title"], "2808")
+        self.assertTrue(server.REREAD_MARK.exists())
+        with server.library_cache_lock: server.library_cache_data[rel] = stale()
+        server.scan_library()
+        self.assertEqual(server.library_cache_data[rel]["title"], "NERO - 2808")       # only once
+
+    def test_scopes_and_the_job(self):
+        self.song("NEROFIX/A/NERO - One.flac", "NERO - One", "NERO")
+        self.song("NEROFIX/B/NERO - Two.flac", "NERO - Two", "NERO")
+        self.assertEqual(sorted(server.scope_rels({"paths": ["NEROFIX/A"]})), ["NEROFIX/A/NERO - One.flac"])
+        self.assertEqual(len(server.scope_rels({"artists": ["nero"]})), 2)
+        self.assertIn(self.rel("Something Else"), server.scope_rels({"paths": ["NEROFIX/A"], "artists": ["Other Artist"]}))
+        self.assertEqual(len(server.scope_rels({})), len([r for r in server.library_cache_data if not r.startswith("@")]))
+        a = self.admin()
+        d = a.get("/api/admin/library/scope?q=nerofix").get_json()
+        self.assertEqual([f["path"] for f in d["folders"]], ["NEROFIX", "NEROFIX/A", "NEROFIX/B"])
+        self.assertEqual(self.c.get("/api/admin/library/scope").status_code, 401)
+        r = a.post("/api/admin/tagfix/start", json={"paths": ["NEROFIX"], "quick": True})
+        self.assertEqual(r.get_json()["total"], 2)
+        for _ in range(200):
+            st = a.get("/api/admin/tagfix/status").get_json()
+            if st["status"] != "running": break
+            time.sleep(0.1)
+        self.assertEqual((st["status"], st["changed"]), ("completed", 2))
+        self.assertEqual(sorted(x["after"]["title"] for x in st["results"]), ["One", "Two"])
+        self.assertEqual(a.post("/api/admin/tagfix/undo", json={"all": True}).get_json()["undone"], 2)
+        self.assertEqual(server.read_track_tags(MUSIC / "NEROFIX/A/NERO - One.flac")["title"], "NERO - One")
+        self.assertEqual(a.post("/api/admin/tagfix/start", json={"paths": ["Nowhere"]}).status_code, 400)
+        # The audit runs on a chosen scope too (the catalogs are out of reach here).
+        orig, server.http_json = server.http_json, (lambda *a, **k: None)
+        try:
+            r = a.post("/api/admin/audit/start", json={"paths": ["NEROFIX/B"], "workers": 1})
+            self.assertEqual(r.status_code, 200)
+            for _ in range(200):
+                st = a.get("/api/admin/audit/status").get_json()
+                if st["status"] != "running": break
+                time.sleep(0.1)
+        finally:
+            server.http_json = orig
+        self.assertEqual(st["total"], 1)
+
+
+
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.9.0
+
+- **Fix titles and tags of a folder, a song or chosen artists.** A new **Fix** button on the Files page (and a **Titles & tags** tool under **Metadata & lyrics**) cleans up titles that carry something that isn't the title:
+  - the artist's own name ("NERO - 2808" by NERO), track numbers and video IDs from file names, and labels like "(Official Video)";
+  - songs without tags get their title and artist from the file name and folder.
+  - Each song is then looked up, and when its audio fingerprint confirms the match, its title and artists are written as the catalog has them, with a missing album, track number, date and cover filled in. Your spelling is kept where the catalog only differs in capitals ("NERO" stays "NERO") or adds "(Original Mix)".
+  - **Only clean up titles** skips the lookups, for a quick pass.
+  - Every change is listed with what it was before, and can be undone one by one or all at once.
+- **Run the library audit and the metadata fixer on chosen folders or artists** instead of the whole library.
+- Fixed: when a song's tags couldn't be read during a scan (for example, a network mount that didn't answer in time), the file name was kept as its title until the file changed. Such songs are now read again on the next scan, and the first scan after updating reads songs that look affected once more.
+
 ## 2.8.0
 
 - **The downloader is now a plugin of its own.** Axdio no longer contains any code that downloads music. The downloader lives in its own repository, [xo907/axdio-downloader](https://github.com/xo907/axdio-downloader), and you install it under **Plugins** like any other plugin.

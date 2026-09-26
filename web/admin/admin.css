@@ -303,3 +303,21 @@ td.act { text-align: right; white-space: nowrap; width: 1%; }
 /* Plugins: add-ons sit under the plugin they belong to */
 .plug-addon { margin-left: 28px; }
 @media (max-width: 700px) { .plug-addon { margin-left: 12px; } }
+/* Choosing folders or artists for a job */
+.scope { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.scope-all { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.scope-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 4px 4px 10px; border-radius: 99px; background: var(--line); font-size: 13px; font-weight: 600; }
+.scope-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
+.scope-chip button { display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: var(--text-2); cursor: pointer; }
+.scope-chip button:hover { background: var(--line-2); color: var(--text); }
+.scope-modal { max-width: 560px; }
+.sc-list { max-height: min(52vh, 460px); overflow: auto; border: 1px solid var(--line); border-radius: 12px; padding: 4px; }
+.sc-h { padding: 10px 10px 4px; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3, #8a8a8a); }
+.modal .m-b .sc-row { display: flex; flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+.sc-row:hover { background: var(--line); }
+.sc-row .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-row .muted { font-size: 12px; font-weight: 500; flex-shrink: 0; }
+
+#tf-body .t { font-weight: 600; }
+#tf-body .s { font-size: 12.5px; }
+#files-body td.act { white-space: nowrap; }

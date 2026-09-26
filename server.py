@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.8.0"
+AXDIO_VERSION = "2.9.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -298,6 +298,7 @@ def _first(tags, *keys):
 
 def extract_tags_for_file(file_path, rel_path):
     title, artist, album, album_artist, track_num, has_cover, duration = file_path.stem, "Unknown Artist", "Singles", "", None, False, None
+    unread = False
     if HAS_MUTAGEN:
         try:
             ext = file_path.suffix.lower()
@@ -336,7 +337,8 @@ def extract_tags_for_file(file_path, rel_path):
                     from mutagen.flac import Picture
                     has_cover = _save_cover(rel_path, Picture(base64.b64decode(tags["metadata_block_picture"][0])).data)
             duration = round(float(audio.info.length), 3) if audio is not None and getattr(audio, "info", None) else None
-        except Exception: pass
+        except Exception:
+            unread = True           # e.g. a network mount that didn't answer in time: tried again on the next scan
 
     clean_t, inf_num = sanitize_title_and_extract_num(title, rel_path)
     entry = {
@@ -349,7 +351,15 @@ def extract_tags_for_file(file_path, rel_path):
     }
     if album_artist: entry["album_artist"] = album_artist
     if duration: entry["duration"] = duration
+    if unread: entry["unread"] = True
     return entry
+
+# Before 2.9 a read that failed was cached as the file's tags (its name as the title, "Singles" as the album) until the
+# file changed. The first scan after updating reads those songs again, once.
+REREAD_MARK = CONFIG_DIR / "library_reread_v1"
+
+def _looks_unread(entry, rel):
+    return entry.get("has_cover") is None and entry.get("album") == "Singles" and entry.get("title") == Path(rel).stem
 
 SCAN = {"running": False, "last": 0, "took": 0, "files": 0, "added": 0, "updated": 0, "removed": 0, "error": ""}
 _scan_now = threading.Event()
@@ -362,6 +372,7 @@ def scan_library():
     t0 = time.time()
     SCAN.update(running=True, error="")
     current, added, updated = set(), 0, 0
+    reread = not REREAD_MARK.exists()
     try:
         for root, dirs, files in os.walk(music_dir):
             dirs[:] = [d for d in dirs if not d.startswith((".", "@"))]
@@ -373,7 +384,7 @@ def scan_library():
                 try: mtime = p.stat().st_mtime
                 except OSError: continue
                 with library_cache_lock: existing = library_cache_data.get(rel)
-                if existing and existing.get("mtime") == mtime: continue
+                if existing and existing.get("mtime") == mtime and not existing.get("unread") and not (reread and _looks_unread(existing, rel)): continue
                 entry = extract_tags_for_file(p, rel)   # slow file IO stays outside the lock
                 with library_cache_lock: library_cache_data[rel] = entry
                 if existing: updated += 1
@@ -386,6 +397,7 @@ def scan_library():
                 gone = []
             for r in gone: del library_cache_data[r]
         if added or updated or gone: save_and_rebuild_cache()
+        if reread: REREAD_MARK.touch()
         SCAN.update(files=len(current), added=added, updated=updated, removed=len(gone))
     except Exception as ex:
         SCAN["error"] = str(ex)
@@ -1766,12 +1778,13 @@ def _run_audit_job(opts):
 def _audit_job_body(opts):
     audit_stop.clear()
     scope = (opts.get("scope") or "").strip().lower()
-    with library_cache_lock: rels = list(library_cache_data.keys())
+    rels = scope_rels(opts)
     if scope: rels = [r for r in rels if scope in r.lower()]
     rels = _audit_order(rels)
     counts = collections.Counter()
     audit_state.update(total=len(rels), scanned=0, cached=0, counts={}, current="", started_at=time.time())
-    audit_log(f"[INIT] Auditing {len(rels)} tracks{' matching ' + repr(scope) if scope else ''} with {opts['workers']} worker(s)"
+    chosen = f" in {scope_text(opts)}" if opts.get("paths") or opts.get("artists") else ""
+    audit_log(f"[INIT] Auditing {len(rels)} tracks{chosen}{' matching ' + repr(scope) if scope else ''} with {opts['workers']} worker(s)"
               f"{' — re-checking everything' if opts['recheck'] else ' — already-verified tracks are skipped'}"
               f"{'; confirmed mismatches are replaced automatically' if opts['auto_fix'] else ''}.")
     it, it_lock = iter(rels), threading.Lock()
@@ -1990,13 +2003,13 @@ def _fix_metadata_for(rel, force_all):
     return "fixed"
 
 
-def _run_scrape_task(music_dir, force_all=False):
+def _run_scrape_task(music_dir, force_all=False, scope=None):
     with scrape_lock:
         admin_scrape_state.update(status="scraping", scraped=0, scanned=0)
         admin_scrape_state["logs"].clear()
-    with library_cache_lock: rels = sorted(library_cache_data.keys(), key=str.lower)
+    rels = sorted(scope_rels(scope or {}), key=str.lower)
     admin_scrape_state["total"] = len(rels)
-    _fixer_log(f"[INIT] Checking {len(rels)} tracks for missing album, track number or artwork"
+    _fixer_log(f"[INIT] Checking {len(rels)} tracks in {scope_text(scope or {})} for missing album, track number or artwork"
                f"{' and low-resolution covers' if force_all else ''}. Titles and artists are never changed.")
     counts = collections.Counter()
     it, it_lock = iter(rels), threading.Lock()
@@ -2031,6 +2044,286 @@ def _run_scrape_task(music_dir, force_all=False):
 
 
 
+
+
+# --- CHOOSING WHAT A JOB COVERS ---
+# The audit, the metadata fixer and the tag fixer can each run on the whole library, or on chosen folders, files and
+# artists (as the library's tags name them). Songs shared by other servers are never included: their files aren't here.
+def scope_rels(d):
+    paths = [str(x).replace("\\", "/").strip("/") for x in (d.get("paths") or []) if str(x).strip("/")][:500]
+    artists = {_norm(a) for a in (d.get("artists") or []) if _norm(a)}
+    with library_cache_lock:
+        items = [(r, v) for r, v in library_cache_data.items() if isinstance(v, dict) and not r.startswith("@")]
+    if not paths and not artists: return [r for r, _ in items]
+    return [r for r, v in items
+            if any(r == p or r.startswith(p + "/") for p in paths)
+            or (artists and (_norm(v.get("artist")) in artists or _norm(v.get("album_artist")) in artists))]
+
+def scope_text(d):
+    """How a job's scope reads in its log."""
+    parts = [f"'{p}'" for p in (d.get("paths") or [])[:3]] + [f"artist {a}" for a in (d.get("artists") or [])[:3]]
+    more = len(d.get("paths") or []) + len(d.get("artists") or []) - len(parts)
+    return (", ".join(parts) + (f" and {more} more" if more > 0 else "")) if parts else "the whole library"
+
+@app.route("/api/admin/library/scope")
+def api_admin_library_scope():
+    """Folders and artists to choose from for a job, matching what the admin types."""
+    q = _norm(request.args.get("q", ""))
+    folders, artists = collections.Counter(), collections.Counter()
+    names = {}
+    with library_cache_lock:
+        for rel, v in library_cache_data.items():
+            if not isinstance(v, dict) or rel.startswith("@"): continue
+            parts = rel.split("/")[:-1]
+            for i in range(1, min(len(parts), 3) + 1): folders["/".join(parts[:i])] += 1
+            a = v.get("artist") or ""
+            if a:
+                artists[_norm(a)] += 1
+                names.setdefault(_norm(a), a)
+    fl = [f for f in folders if not q or q in _norm(f)]
+    fl.sort(key=lambda f: (f.count("/"), f.lower()))
+    al = [k for k in artists if k and (not q or q in k)]
+    al.sort(key=lambda k: (-artists[k], names[k].lower()))
+    return jsonify({"folders": [{"path": f, "songs": folders[f]} for f in fl[:60]],
+                    "artists": [{"name": names[k], "songs": artists[k]} for k in al[:40]]})
+
+
+# --- TITLES & TAGS: fix a folder, a file or chosen artists ---
+# Titles often carry things that aren't the title: the artist ("NERO - 2808" by NERO), a track number taken from the
+# file name, yt-dlp's [video id], or "(Official Video)". Songs without tags get their title and artist from the path.
+# Then the catalog is asked which song the audio is, by fingerprint, and that song's title and artists are written,
+# with the album, track number, date and cover filled in where they're missing. Without a confirmed match only the
+# cleanup is applied. Every change is recorded (config/tag_fixes.json) so it can be undone.
+TAGFIX_HISTORY = CONFIG_DIR / "tag_fixes.json"
+tagfix_state = {"status": "idle", "logs": collections.deque(maxlen=800), "total": 0, "scanned": 0, "changed": 0, "results": [],
+                "scope": "", "quick": False, "started_at": 0}
+tagfix_lock = threading.RLock()
+tagfix_stop = threading.Event()
+_history_lock = threading.Lock()
+
+_TITLE_SPLIT_RE = re.compile(r"^(.+?)\s+[-–—]\s+(.+)$")
+_TITLE_TRACKNO_RE = re.compile(r"^(\d{1,3})\s*[-._]\s+(?=\S)")
+_TITLE_VIDEO_ID_RE = re.compile(r"\s*\[[A-Za-z0-9_-]{11}\]$")
+# "(Official Video)", "(Official Music Video)", "(Lyric Video)", "(Lyrics)", "(Official Audio)", "(Visualizer)", "[HD]"
+_TITLE_VIDEO_RE = re.compile(r"(?i)\s*[\(\[]\s*(?:official\s+)?(?:(?:(?:music|lyrics?)\s+)?(?:video|audio|visuali[sz]er)|lyrics?|hd|hq|4k)\s*[\)\]]\s*$")
+TAGFIX_KEYS = ("title", "artists", "album", "albumartist", "date", "tracknumber", "discnumber", "isrc", "genre")
+
+def clean_label(tags, rel):
+    """What the title and artists should be, judging only by the tags and the path. Returns (label, what was cleaned)."""
+    pl = path_label(rel) or {}
+    title = (tags.get("title") or "").strip()
+    artists = [a for a in tags.get("artists") or [] if a]
+    notes = []
+    if not title and pl.get("title"):
+        title = pl["title"]
+        notes.append("title from the file name")
+    if not artists and pl.get("artists"):
+        artists = list(pl["artists"])
+        notes.append("artist from the folder")
+    t = _TITLE_VIDEO_ID_RE.sub("", title)
+    if t != title: notes.append("video id")
+    m = _TITLE_TRACKNO_RE.match(t)
+    if m:
+        n, tn = int(m.group(1)), str(tags.get("tracknumber") or "").split("/")[0].strip()
+        if not tn or (tn.isdigit() and int(tn) == n):
+            t = t[m.end():]
+            notes.append("track number")
+    # "Artist - Title", when that artist is this song's: its artist tag, album artist or the folder it's filed under.
+    m = _TITLE_SPLIT_RE.match(t)
+    own = artists + [tags.get("albumartist") or "", rel.split("/")[0] if "/" in rel else ""]
+    if m and any(_norm(m.group(1)) == _norm(a) for a in own if _norm(a)):
+        t = m.group(2).strip()
+        notes.append("artist in the title")
+    for _ in range(2):
+        t2 = _TITLE_VIDEO_RE.sub("", t).strip()
+        if t2 and t2 != t:
+            t = t2
+            if "video label" not in notes: notes.append("video label")
+    return {"title": t.strip(), "artists": artists, "album": tags.get("album") or pl.get("album") or "", "isrc": tags.get("isrc") or ""}, notes
+
+_ORIGINAL_RE = re.compile(r"(?i)\s*(?:[\(\[]\s*original(?:\s+(?:mix|version))?\s*[\)\]]|\s-\s*original(?:\s+(?:mix|version))?)\s*$")
+
+def _spelling(s):
+    """A title as written, apart from capitals, spacing and the kind of quotes and dashes."""
+    s = str(s or "").translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-"}))
+    return re.sub(r"\s+", " ", s).strip().casefold()
+
+def _prefer_title(mine, catalog):
+    if not mine: return catalog
+    if _spelling(mine) in (_spelling(catalog), _spelling(_ORIGINAL_RE.sub("", catalog))): return mine
+    return catalog
+
+def _prefer_artists(mine, catalog):
+    """The catalog's artists, spelled the way this library spells those it already has ("NERO", not "Nero")."""
+    return [next((m for m in mine if _norm(m) == _norm(a)), a) for a in catalog if a] or mine
+
+def _tag_value(v):
+    if isinstance(v, (list, tuple)): return [str(x).strip() for x in v if str(x).strip()]
+    return str(v or "").strip()
+
+def _record_fix(rel, before, after, how, cover_added):
+    item = {"id": time.strftime("%Y%m%d%H%M%S-") + uuid.uuid4().hex[:6], "rel": rel, "at": time.time(),
+            "before": before, "after": after, "how": how, "cover_added": cover_added}
+    with _history_lock:
+        hist = _load_json_file(TAGFIX_HISTORY, [])
+        hist.insert(0, item)
+        _save_json_file(TAGFIX_HISTORY, hist[:20000])
+    return item["id"]
+
+def fix_track(rel, quick=False):
+    """Clean up one song's title and tags, and (unless `quick`) confirm them with the catalog. Returns what happened."""
+    p = Path(get_real_music_dir()) / rel
+    tags = read_track_tags(p)
+    out = {"rel": rel, "before": {"title": (tags or {}).get("title") or "", "artist": ", ".join((tags or {}).get("artists") or [])}}
+    if not tags: return dict(out, result="error", why="The file can't be read")
+    label, notes = clean_label(tags, rel)
+    if not label["title"]: return dict(out, result="skipped", why="No title in the tags or the file name")
+    new, how, cover, flagged = {}, "", None, ""
+    if not quick and label["artists"]:
+        fps = {}
+        res = verify_file(p, label, tags["duration"], fps=fps)
+        if res["status"] not in ("ok", "tags_wrong"):
+            res = _identify_audio(p, rel, label, tags["duration"], fps, res) or res
+        ref = res.get("ref") or {}
+        if res["status"] in ("ok", "tags_wrong") and ref.get("id"):
+            meta = reference_metadata(ref)
+            if meta.get("title"):
+                new = {"title": _prefer_title(label["title"], meta["title"]), "artists": _prefer_artists(label["artists"], meta.get("artists") or [])}
+                for k in ("album", "albumartist", "date", "tracknumber", "discnumber", "isrc", "genre"):
+                    if not tags.get(k) and meta.get(k): new[k] = meta[k]
+                if str(new.get("discnumber") or "") in ("0", "1"): new.pop("discnumber", None)     # "disc 1 of 1" says nothing
+                how = f"matched {ref.get('artist')} - {ref.get('title')} on {str(ref.get('source') or 'the catalog').title()} by fingerprint"
+                if not tags["has_cover"] and meta.get("cover_url"): cover = fetch_bytes(meta["cover_url"])
+                st = p.stat()
+                audit_put(rel, dict(res, status="ok", mtime=st.st_mtime, size=st.st_size, checked_at=time.time(), duration=round(tags["duration"], 1),
+                                    label={"title": new["title"], "artist": ", ".join(new["artists"]), "album": new.get("album") or tags.get("album"), "isrc": new.get("isrc") or tags.get("isrc")}))
+        elif res["status"] == "mismatch":
+            flagged = res.get("reason") or "The audio isn't the song its tags name"
+    if not new and notes:
+        new = {"title": label["title"]}
+        if not tags.get("artists") and label["artists"]: new["artists"] = label["artists"]
+        if not tags.get("album") and label.get("album"): new["album"] = label["album"]
+        how = "cleaned up (" + ", ".join(notes) + ")" + ("" if quick else ", not confirmed by the catalog")
+    changes = {k: v for k, v in new.items() if _tag_value(v) != _tag_value(tags.get(k)) and _tag_value(v)}
+    if not changes and not cover:
+        with library_cache_lock: shown = dict(library_cache_data.get(rel) or {})
+        refresh_library_entry(rel)
+        with library_cache_lock: now = dict(library_cache_data.get(rel) or {})
+        if any(shown.get(k) != now.get(k) for k in ("title", "artist", "album")):
+            return dict(out, before={"title": shown.get("title") or "", "artist": shown.get("artist") or ""},
+                        after={"title": now.get("title") or "", "artist": now.get("artist") or ""}, result="refreshed",
+                        how="the library was showing out-of-date details; the file's own tags were right" + (f". {flagged}" if flagged else ""))
+        return dict(out, result="flagged" if flagged else "ok", why=flagged or "Already right")
+    before = {k: tags.get(k) for k in changes}
+    write_track_tags(p, changes, cover=cover, replace_cover=False)
+    refresh_library_entry(rel)
+    fid = _record_fix(rel, before, changes, how, bool(cover))
+    after = {"title": changes.get("title", tags.get("title") or ""), "artist": ", ".join(changes.get("artists") or tags.get("artists") or [])}
+    return dict(out, result="fixed" if "fingerprint" in how else "cleaned", id=fid, after=after, how=how, changed=sorted(changes) + (["cover"] if cover else []),
+                why=flagged)
+
+def undo_fix(fid):
+    """Put back the tags a fix changed. (A cover it added stays.)"""
+    with _history_lock:
+        hist = _load_json_file(TAGFIX_HISTORY, [])
+        item = next((h for h in hist if h.get("id") == fid), None)
+    if not item: raise ValueError("That change isn't in the history any more.")
+    p = Path(get_real_music_dir()) / item["rel"]
+    if not p.is_file(): raise ValueError("The file isn't there any more.")
+    before = item.get("before") or {}
+    write_track_tags(p, {k: v for k, v in before.items() if _tag_value(v)}, clear=[k for k, v in before.items() if not _tag_value(v)])
+    refresh_library_entry(item["rel"])
+    with _history_lock:
+        hist = [h for h in _load_json_file(TAGFIX_HISTORY, []) if h.get("id") != fid]
+        _save_json_file(TAGFIX_HISTORY, hist)
+    with tagfix_lock:
+        for r in tagfix_state["results"]:
+            if r.get("id") == fid: r.update(result="undone")
+    return item["rel"]
+
+def _tagfix_log(msg):
+    tagfix_state["logs"].append(msg)
+
+def _run_tagfix(rels, quick):
+    counts = collections.Counter()
+    it, it_lock = iter(sorted(rels, key=str.lower)), threading.Lock()
+
+    def worker():
+        while not tagfix_stop.is_set():
+            with it_lock: rel = next(it, None)
+            if rel is None: return
+            try: r = fix_track(rel, quick=quick)
+            except Exception as ex:
+                r = {"rel": rel, "result": "error", "why": str(ex)[:200]}
+            with tagfix_lock:
+                counts[r["result"]] += 1
+                tagfix_state["scanned"] += 1
+                tagfix_state["changed"] = counts["fixed"] + counts["cleaned"] + counts["refreshed"]
+                if r["result"] != "ok": tagfix_state["results"].insert(0, r)
+                del tagfix_state["results"][2000:]
+            if r["result"] in ("fixed", "cleaned", "refreshed"):
+                b, a = r["before"], r["after"]
+                what = []
+                if a["title"] != b["title"]: what.append(f"'{b['title']}' → '{a['title']}'")
+                if a["artist"] != b["artist"]: what.append(f"by {a['artist']}")
+                filled = [k for k in r.get("changed") or [] if k not in ("title", "artists")]
+                if filled: what.append("filled " + ", ".join(filled))
+                _tagfix_log(f"[{ {'fixed': 'FIXED', 'cleaned': 'CLEANED', 'refreshed': 'RE-READ'}[r['result']] }] {rel}: {' · '.join(what) or 'updated'} ({r['how']})")
+            elif r["result"] in ("flagged", "error", "skipped"):
+                _tagfix_log(f"[{r['result'].upper()}] {rel}: {r.get('why')}")
+
+    try:
+        threads = [threading.Thread(target=worker, daemon=True) for _ in range(1 if quick else 2)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        audit_flush()
+        if counts["fixed"] or counts["cleaned"] or counts["refreshed"]: rebuild_in_memory_tree()
+    except Exception as ex:
+        _tagfix_log(f"[ERR] {ex}")
+    with tagfix_lock: tagfix_state["status"] = "stopped" if tagfix_stop.is_set() else "completed"
+    _tagfix_log(f"[FINISH] {tagfix_state['scanned']}/{len(rels)} checked · confirmed and fixed {counts['fixed']} · cleaned up {counts['cleaned']} · re-read {counts['refreshed']} · "
+                f"already right {counts['ok']} · flagged {counts['flagged']} · skipped {counts['skipped']} · errors {counts['error']}")
+
+@app.route("/api/admin/tagfix/start", methods=["POST"])
+def api_admin_tagfix_start():
+    d = _json()
+    rels = scope_rels(d)
+    if not rels: return jsonify({"error": "There are no songs there."}), 400
+    with tagfix_lock:
+        if tagfix_state["status"] == "running": return jsonify({"error": "The tag fixer is already running."}), 409
+        tagfix_stop.clear()
+        tagfix_state.update(status="running", total=len(rels), scanned=0, changed=0, results=[], scope=scope_text(d), quick=bool(d.get("quick")), started_at=time.time())
+        tagfix_state["logs"].clear()
+    _tagfix_log(f"[INIT] Fixing titles and tags of {len(rels)} song{'s' if len(rels) != 1 else ''} in {scope_text(d)}"
+                + (" (cleanup only)." if d.get("quick") else ". Each song is looked up and confirmed by its fingerprint."))
+    activity("library", f"Started fixing titles and tags in {scope_text(d)}", admin_name())
+    threading.Thread(target=_run_tagfix, args=(rels, bool(d.get("quick"))), daemon=True, name="tagfix").start()
+    return jsonify({"ok": True, "total": len(rels)})
+
+@app.route("/api/admin/tagfix/stop", methods=["POST"])
+def api_admin_tagfix_stop():
+    tagfix_stop.set()
+    return jsonify({"ok": True})
+
+@app.route("/api/admin/tagfix/status")
+def api_admin_tagfix_status():
+    with tagfix_lock:
+        return jsonify({k: (list(v) if k == "logs" else v[:300] if k == "results" else v) for k, v in tagfix_state.items()})
+
+@app.route("/api/admin/tagfix/undo", methods=["POST"])
+def api_admin_tagfix_undo():
+    d = _json()
+    with tagfix_lock:
+        ids = [r["id"] for r in tagfix_state["results"] if r.get("id") and r["result"] in ("fixed", "cleaned")] if d.get("all") else [str(d.get("id") or "")]
+    done, errors = 0, []
+    for fid in ids:
+        try:
+            undo_fix(fid)
+            done += 1
+        except ValueError as ex: errors.append(str(ex))
+    if done: rebuild_in_memory_tree()
+    if not done and errors: return jsonify({"error": errors[0]}), 400
+    return jsonify({"ok": True, "undone": done})
 
 
 def library_copies(target):
@@ -2444,7 +2737,8 @@ def api_admin_scrape_art():
     with scrape_lock:
         if admin_scrape_state["status"] == "scraping": return jsonify({"error": "Metadata fixer already running"}), 409
         admin_scrape_state["status"] = "scraping"
-    threading.Thread(target=_run_scrape_task, args=(get_real_music_dir(), bool(data.get("force"))), daemon=True).start()
+    scope = {"paths": [str(x) for x in data.get("paths") or []][:500], "artists": [str(x) for x in data.get("artists") or []][:500]}
+    threading.Thread(target=_run_scrape_task, args=(get_real_music_dir(), bool(data.get("force")), scope), daemon=True).start()
     return jsonify({"message": "Metadata fixer started"})
 
 @app.route("/api/admin/scrape_status", methods=["GET"])
@@ -2457,7 +2751,8 @@ def api_admin_audit_start():
     d = request.get_json(silent=True) or {}
     try: workers = max(1, min(4, int(d.get("workers") or 2)))
     except (TypeError, ValueError): workers = 2
-    opts = {"scope": str(d.get("scope") or "")[:200], "recheck": bool(d.get("recheck")), "auto_fix": bool(d.get("auto_fix")), "workers": workers}
+    opts = {"scope": str(d.get("scope") or "")[:200], "recheck": bool(d.get("recheck")), "auto_fix": bool(d.get("auto_fix")), "workers": workers,
+            "paths": [str(x) for x in d.get("paths") or []][:500], "artists": [str(x) for x in d.get("artists") or []][:500]}
     with audit_lock:
         if audit_state["status"] == "running": return jsonify({"error": "An audit is already running"}), 409
         audit_state.update(status="running", options=opts)

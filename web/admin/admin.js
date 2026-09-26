@@ -95,6 +95,58 @@ function dialog({ title, text = '', html = '', fields = [], ok = 'OK', cancel = 
 }
 const confirmDlg = (title, text, ok = 'Continue', danger = false) => dialog({ title, text, ok, danger }).then(Boolean);
 
+/* Choosing folders or artists for a job (audit, metadata fixer, titles & tags). Empty means the whole library. */
+const SCOPES = {};
+const scopeOf = id => (SCOPES[id] = SCOPES[id] || { paths: [], artists: [] });
+const scopeBody = id => ({ paths: scopeOf(id).paths.slice(), artists: scopeOf(id).artists.slice() });
+const scopeHtml = id => `<div class="scope" id="scope-${id}" data-scope="${id}"></div>`;
+function drawScope(id) {
+  const el = $('#scope-' + id); if (!el) return;
+  const s = scopeOf(id), n = s.paths.length + s.artists.length;
+  const chip = (kind, v) => `<span class="scope-chip">${ic(kind === 'paths' ? 'folder' : 'access', 'sm')}<span>${esc(v)}</span><button type="button" data-act="scope-drop" data-scope="${id}" data-kind="${kind}" data-v="${encodeURIComponent(v)}" aria-label="Remove ${esc(v)}">${ic('close', 'sm')}</button></span>`;
+  el.innerHTML = (n ? s.paths.map(v => chip('paths', v)).join('') + s.artists.map(v => chip('artists', v)).join('') : '<span class="scope-all">Whole library</span>')
+    + `<button type="button" class="btn ghost sm" data-act="scope-pick" data-scope="${id}">${n ? 'Change' : 'Choose folders or artists'}</button>`;
+}
+function pickScope(id) {
+  const cur = scopeOf(id), sel = { paths: new Set(cur.paths), artists: new Set(cur.artists) };
+  const back = document.createElement('div');
+  back.className = 'modal-back';
+  back.innerHTML = `<div class="modal scope-modal" role="dialog" aria-modal="true" aria-label="Choose folders or artists"><h3>Choose folders or artists</h3>
+    <div class="m-b"><input class="input" id="sc-q" placeholder="Search folders and artists" autocomplete="off" aria-label="Search folders and artists"><div class="sc-list" id="sc-list"><div class="empty">Loading…</div></div><div class="muted" id="sc-count"></div></div>
+    <div class="m-f"><button type="button" class="btn ghost" data-sc="all" style="margin-right:auto">Whole library</button><button type="button" class="btn ghost" data-sc="cancel">Cancel</button><button type="button" class="btn primary" data-sc="ok">Done</button></div></div>`;
+  const list = $('#sc-list', back), q = $('#sc-q', back);
+  const count = () => { const n = sel.paths.size + sel.artists.size; $('#sc-count', back).textContent = n ? `${plural(n, 'choice')}: songs in any of them are included.` : 'Nothing chosen: the whole library.'; };
+  const row = (kind, v, songs) => `<label class="sc-row"><input type="checkbox" data-kind="${kind}" data-v="${encodeURIComponent(v)}"${sel[kind].has(v) ? ' checked' : ''}>${ic(kind === 'paths' ? 'folder' : 'access', 'sm')}<span class="grow">${esc(v)}</span>${songs != null ? `<span class="muted">${plural(songs, 'song')}</span>` : ''}</label>`;
+  let seq = 0, timer = 0;
+  const load = async () => {
+    const my = ++seq;
+    const d = await api('/api/admin/library/scope?q=' + encodeURIComponent(q.value.trim())).catch(() => ({ folders: [], artists: [] }));
+    if (my !== seq) return;
+    const shown = { paths: new Set(d.folders.map(f => f.path)), artists: new Set(d.artists.map(a => a.name)) };
+    const chosen = [...sel.paths].filter(v => !shown.paths.has(v)).map(v => row('paths', v)).concat([...sel.artists].filter(v => !shown.artists.has(v)).map(v => row('artists', v)));
+    list.innerHTML = (chosen.length ? `<div class="sc-h">Chosen</div>${chosen.join('')}` : '')
+      + (d.folders.length ? `<div class="sc-h">Folders</div>${d.folders.map(f => row('paths', f.path, f.songs)).join('')}` : '')
+      + (d.artists.length ? `<div class="sc-h">Artists</div>${d.artists.map(a => row('artists', a.name, a.songs)).join('')}` : '')
+      || '<div class="empty">Nothing matches.</div>';
+  };
+  const close = save => {
+    if (save) { cur.paths = [...sel.paths]; cur.artists = [...sel.artists]; drawScope(id); }
+    back.remove(); document.removeEventListener('keydown', onKey, true);
+  };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(false); } };
+  list.addEventListener('change', e => { const c = e.target.closest('[data-kind]'); if (!c) return; const v = decodeURIComponent(c.dataset.v); c.checked ? sel[c.dataset.kind].add(v) : sel[c.dataset.kind].delete(v); count(); });
+  q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 200); });
+  back.addEventListener('click', e => {
+    const b = e.target.closest('[data-sc]'); if (!b) return;
+    if (b.dataset.sc === 'all') { sel.paths.clear(); sel.artists.clear(); close(true); }
+    else close(b.dataset.sc === 'ok');
+  });
+  back.addEventListener('mousedown', e => { if (e.target === back) close(false); });
+  document.addEventListener('keydown', onKey, true);
+  $('#layer').appendChild(back);
+  count(); load(); q.focus();
+}
+
 function openMenu(anchor, items) {
   closeMenu();
   const m = document.createElement('div');
@@ -761,8 +813,8 @@ function pageNotifications(el) {
 
 /* Log lines in the job terminals (the audit, plugins, and pages from plugins) */
 const TAG_CLASS = [
-  [/\[(ACCEPT|SAVED|REPLACED|FINISH|FIXED|RESTORED|OK)\]/g, 'c-ok'], [/\[(SKIP|FILTER|PAUSED|STOPPED|VERIFY|UNVERIFIED|TAGS_WRONG|WRONG_VERSION|UNCERTAIN|WARN|KEEP)\]/g, 'c-warn'],
-  [/\[((?:FATAL )?ERR(?:OR)?|MISMATCH|FAILED)\]/g, 'c-bad'], [/\[(INIT|FIX|PROGRESS|RESUMED|INFO|CHECK|IDENTIFY)\]/g, 'c-info'], [/\[(DISCOVERY)\]/g, 'c-vio'],
+  [/\[(ACCEPT|SAVED|REPLACED|FINISH|FIXED|RESTORED|OK)\]/g, 'c-ok'], [/\[(SKIP|SKIPPED|FLAGGED|FILTER|PAUSED|STOPPED|VERIFY|UNVERIFIED|TAGS_WRONG|WRONG_VERSION|UNCERTAIN|WARN|KEEP)\]/g, 'c-warn'],
+  [/\[((?:FATAL )?ERR(?:OR)?|MISMATCH|FAILED)\]/g, 'c-bad'], [/\[(INIT|FIX|PROGRESS|RESUMED|INFO|CHECK|IDENTIFY|CLEANED|RE-READ)\]/g, 'c-info'], [/\[(DISCOVERY)\]/g, 'c-vio'],
   [/\[(CONFIG|REJECT|download|ExtractAudio)\]/g, 'c-dim'],
 ];
 function termLine(line) {
@@ -784,7 +836,8 @@ function pageAudit(el) {
   el.innerHTML = `<section class="card"><div class="card-h"><h2>Check the library</h2><span class="badge" id="au-badge">Idle</span></div>
     <p class="desc">Fingerprints each song and compares it with the Deezer/iTunes preview of the song its tags name. Wrong tags can be rewritten from the song the audio really is. With the Downloader plugin, wrong audio can also be replaced by a verified download at the same path, so likes and playlists keep working. Replaced originals go to quarantine and can be restored.</p>
     <div class="card-b">
-      <div class="row wrap"><input class="input grow" id="au-scope" placeholder="Only paths containing… (optional, e.g. an artist)" style="min-width:200px">
+      ${scopeHtml('audit')}
+      <div class="row wrap" style="margin-top:12px">
         <select class="select" id="au-workers" style="width:auto" aria-label="Parallel reads"><option value="1">1 worker</option><option value="2">2 workers</option><option value="3" selected>3 workers</option><option value="4">4 workers</option></select>
         <button class="btn primary" id="au-start">Start audit</button><button class="btn danger" id="au-stop" disabled>Stop</button></div>
       <div class="row wrap" style="margin-top:12px;gap:18px"><label class="check"><input type="checkbox" id="au-fix"> Repair confirmed problems automatically</label><label class="check"><input type="checkbox" id="au-recheck"> Re-check songs that were already audited</label></div>
@@ -854,10 +907,11 @@ function pageAudit(el) {
     } catch (e) { body.innerHTML = `<tr><td colspan="4" class="empty">Couldn't load quarantine.</td></tr>`; }
   };
   $('#au-start').onclick = async () => {
-    try { await api('/api/admin/audit/start', { scope: $('#au-scope').value.trim(), workers: +$('#au-workers').value, auto_fix: $('#au-fix').checked, recheck: $('#au-recheck').checked }); status(); }
+    try { await api('/api/admin/audit/start', Object.assign(scopeBody('audit'), { workers: +$('#au-workers').value, auto_fix: $('#au-fix').checked, recheck: $('#au-recheck').checked })); status(); }
     catch (e) { fail(e); }
   };
   $('#au-stop').onclick = () => api('/api/admin/audit/stop', {}).then(status, fail);
+  drawScope('audit');
   $('#au-filter').onchange = results;
   let qt; $('#au-q').oninput = () => { clearTimeout(qt); qt = setTimeout(results, 300); };
   $('#au-fixall').onclick = async () => {
@@ -887,10 +941,19 @@ function pageAudit(el) {
 }
 
 /* Metadata & lyrics (existing scrape endpoints) */
+const FIX_LABELS = { fixed: ['Fixed', 'ok'], cleaned: ['Cleaned up', 'info'], refreshed: ['Re-read', 'info'], flagged: ['Check the audio', 'warn'], skipped: ['Skipped', ''], error: ['Error', 'bad'], undone: ['Undone', ''] };
 function pageMetadata(el) {
-  el.innerHTML = `<section class="card"><div class="card-h"><h2>Metadata & artwork</h2><span class="badge" id="art-badge">Idle</span></div>
+  el.innerHTML = `<section class="card"><div class="card-h"><h2>Titles & tags</h2><span class="badge" id="tf-badge">Idle</span></div>
+      <p class="desc">Cleans up titles: an artist's name in front of the title ("NERO - 2808" by NERO), track numbers and video IDs from file names, and labels like "(Official Video)". Songs without tags get their title and artist from the file name and folder. Then each song is looked up, and when its fingerprint confirms the match, its title and artists are written as the catalog has them, with a missing album, track number, date and cover filled in. Every change can be undone below.</p>
+      <div class="card-b">${scopeHtml('tagfix')}
+        <div class="row wrap" style="margin-top:12px"><button class="btn primary" id="tf-start">Fix titles & tags</button><button class="btn danger" id="tf-stop" disabled>Stop</button><label class="check"><input type="checkbox" id="tf-quick"> Only clean up titles (faster, no lookups)</label></div>
+        <div class="progress"><i id="tf-bar"></i></div><div class="muted" id="tf-progress" style="font-size:13px">Choose folders or artists, or fix the whole library. The Files page can also fix a single folder or song.</div>
+        <div class="term" id="tf-term" style="margin-top:14px;height:200px"><span class="ln c-dim">Ready.</span></div></div></section>
+    <section class="card" id="tf-res" hidden><div class="card-h"><h2>Changes</h2><button class="btn ghost sm" id="tf-undo-all">Undo all</button></div>
+      <div class="card-b flush"><div class="table-wrap"><table><thead><tr><th>Song</th><th>Before</th><th>After</th><th></th></tr></thead><tbody id="tf-body"></tbody></table></div></div></section>
+    <section class="card"><div class="card-h"><h2>Metadata & artwork</h2><span class="badge" id="art-badge">Idle</span></div>
       <p class="desc">Fills in missing albums, track numbers and cover art from the catalog entry of the same song, matched by ISRC or by exact title and artist plus an audio fingerprint check. It never renames a song. Songs whose audio doesn't match their tags are left alone and listed under Library audit.</p>
-      <div class="card-b"><div class="row wrap"><button class="btn primary" id="art-start">Fix missing metadata & artwork</button><label class="check"><input type="checkbox" id="art-force"> Also replace low-resolution covers (under 40 KB)</label></div>
+      <div class="card-b">${scopeHtml('meta')}<div class="row wrap" style="margin-top:12px"><button class="btn primary" id="art-start">Fix missing metadata & artwork</button><label class="check"><input type="checkbox" id="art-force"> Also replace low-resolution covers (under 40 KB)</label></div>
       <div class="term" id="art-term" style="margin-top:14px;height:240px"><span class="ln c-dim">Ready.</span></div></div></section>
     <section class="card"><div class="card-h"><h2>Synced lyrics</h2><span class="badge" id="lrc-badge">Idle</span></div>
       <p class="desc">Finds songs without synced lyrics, looks them up on LRCLIB and saves .lrc files next to the audio.</p>
@@ -912,14 +975,52 @@ function pageMetadata(el) {
     $('#lrc-badge').className = 'badge ' + (busy ? 'ok' : '');
     if (d.logs && d.logs.length) fillTerm($('#lrc-term'), d.logs);
   };
-  $('#art-start').onclick = () => api('/api/admin/scrape_art', { force: $('#art-force').checked }).then(pollArt, e => { if (!/already/i.test(e.message)) fail(e); pollArt(); });
+  $('#art-start').onclick = () => api('/api/admin/scrape_art', Object.assign(scopeBody('meta'), { force: $('#art-force').checked })).then(pollArt, e => { if (!/already/i.test(e.message)) fail(e); pollArt(); });
+  let tfSeen = '';
+  const pollFix = async () => {
+    const d = await api('/api/admin/tagfix/status').catch(() => null); if (!d || !$('#tf-term')) return;
+    const busy = d.status === 'running';
+    $('#tf-start').disabled = busy; $('#tf-stop').disabled = !busy;
+    $('#tf-badge').textContent = busy ? 'Running' : d.status[0].toUpperCase() + d.status.slice(1);
+    $('#tf-badge').className = 'badge ' + (busy ? 'ok' : '');
+    const pct = d.total ? Math.round(100 * d.scanned / d.total) : 0;
+    $('#tf-bar').style.width = pct + '%';
+    if (d.total) $('#tf-progress').textContent = `${nf(d.scanned)} of ${plural(d.total, 'song')} checked in ${d.scope} · ${nf(d.changed)} changed`;
+    if (d.logs && d.logs.length) fillTerm($('#tf-term'), d.logs);
+    const key = JSON.stringify(d.results.map(r => [r.rel, r.result]));
+    if (key === tfSeen) return;
+    tfSeen = key;
+    $('#tf-res').hidden = !d.results.length;
+    $('#tf-undo-all').hidden = !d.results.some(r => r.id && (r.result === 'fixed' || r.result === 'cleaned'));
+    const who = x => x ? `<div class="t">${esc(x.title || '—')}</div><div class="s muted">${esc(x.artist || '')}</div>` : '';
+    $('#tf-body').innerHTML = d.results.map(r => { const [label, cls] = FIX_LABELS[r.result] || [r.result, '']; return `<tr>
+      <td><div class="mono" style="font-size:12px;word-break:break-all">${esc(r.rel)}</div><span class="badge ${cls}" style="margin-top:6px">${esc(label)}</span></td>
+      <td>${who(r.before)}</td><td>${r.after ? who(r.after) + `<div class="s muted" style="font-size:12px;margin-top:4px">${esc(r.how || '')}${(r.changed || []).filter(k => k !== 'title' && k !== 'artists').length ? ` · filled ${esc(r.changed.filter(k => k !== 'title' && k !== 'artists').join(', '))}` : ''}</div>` : `<div class="s muted">${esc(r.why || '')}</div>`}</td>
+      <td class="act">${r.id && (r.result === 'fixed' || r.result === 'cleaned') ? `<button class="btn ghost sm" data-tf-undo="${esc(r.id)}">Undo</button>` : ''}</td></tr>`; }).join('');
+  };
+  $('#tf-start').onclick = async () => {
+    const quick = $('#tf-quick').checked, s = scopeBody('tagfix');
+    if (!s.paths.length && !s.artists.length && !(await confirmDlg('Fix the whole library?', quick ? 'Every title is cleaned up. Changes can be undone.' : 'Every song is looked up and fingerprinted, which takes hours on a big library. Changes can be undone.', 'Fix everything'))) return;
+    api('/api/admin/tagfix/start', Object.assign(s, { quick })).then(pollFix, fail);
+  };
+  $('#tf-stop').onclick = () => api('/api/admin/tagfix/stop', {}).then(pollFix, fail);
+  $('#tf-undo-all').onclick = async () => {
+    if (!(await confirmDlg('Undo every change?', 'The songs get back the titles and tags they had before. Covers that were added stay.', 'Undo all'))) return;
+    api('/api/admin/tagfix/undo', { all: true }).then(r => { toast(`Undid ${plural(r.undone, 'change')}`); pollFix(); }, fail);
+  };
+  el.addEventListener('click', e => {
+    const b = e.target.closest('[data-tf-undo]'); if (!b) return;
+    b.disabled = true;
+    api('/api/admin/tagfix/undo', { id: b.dataset.tfUndo }).then(() => { toast('Undone'); pollFix(); }, err => { b.disabled = false; fail(err); });
+  });
+  drawScope('tagfix'); drawScope('meta'); pollFix();
   $('#lrc-start').onclick = () => api('/api/admin/scrape_lyrics', {}).then(pollLrc, e => { if (!/already/i.test(e.message)) fail(e); pollLrc(); });
   $('#lrc-clear').onclick = async () => {
     if (!(await confirmDlg('Clear the lyrics cache?', 'Lyrics are looked up again the next time each song plays. Saved .lrc files are kept.', 'Clear'))) return;
     api('/api/admin/v2/cache/lyrics/clear', {}).then(r => toast(`Cleared ${plural(r.removed, 'entry', 'entries')}`), fail);
   };
   pollArt(); pollLrc();
-  every(() => { pollArt(); pollLrc(); }, 2000);
+  every(() => { pollArt(); pollLrc(); pollFix(); }, 2000);
 }
 
 /* Files (existing /api/admin/files endpoints) */
@@ -930,7 +1031,12 @@ async function pageFiles(el) {
     const b = e.target.closest('[data-act]'); if (!b) return;
     const p = b.dataset.path != null ? decodeURIComponent(b.dataset.path) : '';
     if (b.dataset.act === 'dir') loadDir(p);
-    else if (b.dataset.act === 'file-rename') {
+    else if (b.dataset.act === 'file-fix') {
+      const name = p.split('/').pop();
+      const v = await dialog({ title: `Fix ${name}?`, text: b.dataset.dir ? 'Every song in this folder gets its title cleaned up, and is looked up and confirmed by its fingerprint before its title, artists and missing details are written. Every change can be undone.' : 'The title is cleaned up, and the song is looked up and confirmed by its fingerprint before its title, artists and missing details are written. The change can be undone.', fields: [{ type: 'check', name: 'quick', label: 'Only clean up titles (faster, no lookups)' }], ok: 'Fix' });
+      if (!v) return;
+      api('/api/admin/tagfix/start', { paths: [p], quick: v.quick }).then(r => { toast(`Fixing ${plural(r.total, 'song')}. Follow along under Metadata & lyrics.`); go('metadata'); }, fail);
+    } else if (b.dataset.act === 'file-rename') {
       const old = p.split('/').pop();
       const v = await dialog({ title: 'Rename', fields: [{ name: 'name', label: 'New name', value: old }], ok: 'Rename' });
       if (v && v.name.trim() && v.name.trim() !== old) api('/api/admin/files/rename', { path: p, new_name: v.name.trim() }).then(r => { toast(r.moved_songs ? `Renamed; ${plural(r.moved_songs, 'song')} kept their likes and playlists` : 'Renamed'); loadDir(filesPath); }, fail);
@@ -953,7 +1059,7 @@ async function loadDir(p) {
     body.innerHTML = (d.items || []).length ? d.items.map(it => `<tr>
       <td>${it.is_dir ? `<div class="fname dir" data-act="dir" data-path="${encArg(it.rel_path)}">${ic('folder')}${esc(it.name)}</div>` : `<div class="fname">${ic('note')}${esc(it.name)}</div>`}</td>
       <td class="num muted">${it.is_dir ? '' : fmtBytes(it.size_bytes)}</td>
-      <td class="act"><button class="btn ghost sm" data-act="file-rename" data-path="${encArg(it.rel_path)}">Rename</button> <button class="icon-btn" data-act="file-delete" data-path="${encArg(it.rel_path)}"${it.is_dir ? ' data-dir="1"' : ''} aria-label="Delete">${ic('close')}</button></td></tr>`).join('')
+      <td class="act">${it.is_dir || /\.(flac|mp3|m4a|aac|ogg|opus|wav)$/i.test(it.name) ? `<button class="btn ghost sm" data-act="file-fix" data-path="${encArg(it.rel_path)}"${it.is_dir ? ' data-dir="1"' : ''}>Fix</button> ` : ''}<button class="btn ghost sm" data-act="file-rename" data-path="${encArg(it.rel_path)}">Rename</button> <button class="icon-btn" data-act="file-delete" data-path="${encArg(it.rel_path)}"${it.is_dir ? ' data-dir="1"' : ''} aria-label="Delete">${ic('close')}</button></td></tr>`).join('')
       : '<tr><td colspan="3" class="empty">Empty folder.</td></tr>';
   } catch (e) { body.innerHTML = `<tr><td colspan="3" class="empty">${esc(e.message)}</td></tr>`; }
 }
@@ -1086,6 +1192,8 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   switch (b.dataset.act) {
     case 'save': saveDraft(); break;
+    case 'scope-pick': pickScope(b.dataset.scope); break;
+    case 'scope-drop': { const s = scopeOf(b.dataset.scope); s[b.dataset.kind] = s[b.dataset.kind].filter(v => v !== decodeURIComponent(b.dataset.v)); drawScope(b.dataset.scope); break; }
     case 'discard': discardDraft(); break;
     case 'nav-open': document.body.classList.add('nav-open'); break;
     case 'nav-close': document.body.classList.remove('nav-open'); break;
