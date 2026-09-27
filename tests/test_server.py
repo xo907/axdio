@@ -2711,6 +2711,166 @@ class TestStorage(Social):
             server.refresh_library_entry(rel)
 
 
+class TestFilingByTags(Social):
+    """A song a fixer gives another artist or album goes into that artist's and album's folder; albums move whole."""
+    def song(self, rel, title, artist, album, **tags):
+        p = MUSIC / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=520:duration=2", str(p)], check=True)
+        server.write_track_tags(p, dict({"title": title, "artists": [artist], "album": album}, **tags))
+        server.refresh_library_entry(rel)
+        return rel
+
+    def catalog(self, artist, album="GNX"):
+        """The audit's catalog lookups, answered: every song is `artist`'s, on `album`."""
+        orig = {n: getattr(server, n) for n in ("reference_metadata", "fetch_bytes")}
+        server.reference_metadata = lambda ref: {"title": ref["title"], "artists": [artist], "album": album, "albumartist": artist}
+        server.fetch_bytes = lambda url, **k: None
+        self.addCleanup(lambda: [setattr(server, n, f) for n, f in orig.items()])
+
+    def retag(self, rel):
+        self.assertTrue(server._retag_from_reference(rel, MUSIC / rel, {"status": "tags_wrong", "ref": {"source": "deezer", "id": 1, "title": Path(rel).stem}}))
+
+    def tearDown(self):
+        for d in ("Filer SZA", "Filer Kendrick", "Filer B", "Filer C", "Filer D", "Filer C & Filer D", "Road Trip", "Mixes", "filer kendrick", "Filer F", "Filer G", "Filer H"):
+            shutil.rmtree(MUSIC / d, ignore_errors=True)
+        server.REFILED_LOG.unlink(missing_ok=True)
+        server.refile_pending.clear()
+        server.scan_library()
+
+    def test_a_retagged_album_moves_whole(self):
+        h = self.user("filer")
+        titles = ["luther", "gloria", "squabble up", "tv off", "wacced out murals"]
+        rels = [self.song(f"Filer SZA/GNX/{t}.flac", t, "Filer SZA", "GNX") for t in titles]
+        (MUSIC / "Filer SZA/GNX/cover.jpg").write_bytes(b"jpeg")
+        (MUSIC / "Filer SZA/GNX/luther.lrc").write_text("[00:01.00] words")
+        self.c.post("/api/user/sync", json={"liked_songs": [rels[0]], "playlists": {"Mix": [rels[1], rels[4]]}}, headers=h)
+        self.catalog("Filer Kendrick")
+        for rel in rels[:4]: self.retag(rel)                              # "wacced out murals" couldn't be verified
+        self.assertTrue((MUSIC / rels[0]).is_file())                      # nothing moves while repairs are still going
+        server._refile_audit_fixes()
+        new = {t: f"Filer Kendrick/GNX/{t}.flac" for t in titles}
+        for t in titles: self.assertTrue((MUSIC / new[t]).is_file(), t)
+        self.assertFalse((MUSIC / "Filer SZA").exists())                  # the old folders go, the cover and lyrics came along
+        self.assertTrue((MUSIC / "Filer Kendrick/GNX/cover.jpg").is_file())
+        self.assertTrue((MUSIC / "Filer Kendrick/GNX/luther.lrc").is_file())
+        mate = server.read_track_tags(MUSIC / new["wacced out murals"])   # it went with its album, as the album's artist's
+        self.assertEqual((mate["albumartist"], mate["artists"]), ("Filer Kendrick", ["Filer SZA"]))
+        sync = self.c.get("/api/user/sync", headers=h).get_json()
+        self.assertEqual(sync["liked_songs"], [new["luther"]])
+        self.assertEqual(sync["playlists"]["Mix"], [new["gloria"], new["wacced out murals"]])
+        self.assertEqual(server.audit_db[new["luther"]]["status"], "fixed")
+        self.assertIn(new["luther"], server.library_cache_data)
+        self.assertNotIn(rels[0], server.library_cache_data)
+        log = json.loads(server.REFILED_LOG.read_text())
+        self.assertEqual(sorted((i["why"], i["to"]) for i in log), sorted([("tags", new[t]) for t in titles[:4]] + [("album", new["wacced out murals"])]))
+
+    def test_one_at_a_time_then_the_rest_follow(self):
+        rels = [self.song(f"Filer B/Album/{t}.flac", t, "Filer B", "Album") for t in ("one", "two", "three", "four")]
+        self.catalog("Filer Kendrick", "Album")
+        for n, rel in enumerate(rels[:3]):
+            self.retag(rel)
+            server._refile_audit_fixes()
+            left = sorted(p.name for p in (MUSIC / "Filer B/Album").glob("*.flac")) if (MUSIC / "Filer B/Album").exists() else []
+            # 1 of 4 and 2 of 4 aren't most of the album, so it stays together; with the third, all of it goes.
+            self.assertEqual(len(left), [4, 4, 0][n])
+        self.assertTrue((MUSIC / "Filer Kendrick/Album/four.flac").is_file())
+
+    def test_an_album_stays_together_until_most_of_it_moves(self):
+        rels = [self.song(f"Filer C/Nine/{n}.flac", str(n), "Filer C", "Nine") for n in range(9)]
+        self.catalog("Filer D", "Nine")
+        for rel in rels[:3]: self.retag(rel)
+        server._refile_audit_fixes()
+        self.assertEqual(len(list((MUSIC / "Filer C/Nine").glob("*.flac"))), 9)
+        self.assertTrue(any("[KEPT] 3 songs of Nine stay in Filer C/Nine" in l for l in server.audit_state["logs"]))
+
+    def test_a_stray_joins_its_album_where_it_is(self):
+        self.song("Filer D/Streets/a.flac", "a", "Filer D", "Streets")
+        self.song("Filer D/Streets/b.flac", "b", "Filer D", "Streets")
+        rel = self.song("Filer C & Filer D/Streets/c.flac", "c", "Filer C & Filer D", "Streets")
+        self.catalog("Filer D", "Streets?")
+        self.retag(rel)
+        server._refile_audit_fixes()
+        self.assertTrue((MUSIC / "Filer D/Streets/c.flac").is_file())       # the album's own folder, however it's spelled
+        self.assertFalse((MUSIC / "Filer C & Filer D").exists())
+
+    def test_a_new_folder_is_spelled_like_the_old_one(self):
+        rel = self.song("Filer C/S\u29f8S17/miku.flac", "miku", "Filer C", "S/S17")
+        self.catalog("Filer D", "S/S17")
+        self.retag(rel)
+        server._refile_audit_fixes()
+        self.assertTrue((MUSIC / "Filer D/S\u29f8S17/miku.flac").is_file())
+
+    def test_a_song_from_another_album_moves_alone(self):
+        rels = [self.song(f"Filer C/Ctrl/{t}.flac", t, "Filer C", "Ctrl") for t in ("a", "b", "c")]
+        self.catalog("Filer D", "DAMN.")
+        self.retag(rels[0])
+        server._refile_audit_fixes()
+        self.assertTrue((MUSIC / "Filer D/DAMN/a.flac").is_file())
+        self.assertEqual(sorted(p.name for p in (MUSIC / "Filer C/Ctrl").iterdir()), ["b.flac", "c.flac"])
+
+    def test_folders_arranged_by_hand_stay(self):
+        a = self.song("Road Trip/x.flac", "x", "Filer SZA", "GNX")
+        b = self.song("Mixes/Summer/y.flac", "y", "Filer SZA", "GNX")
+        self.catalog("Filer Kendrick")
+        self.retag(a); self.retag(b)
+        server._refile_audit_fixes()
+        self.assertTrue((MUSIC / a).is_file() and (MUSIC / b).is_file())
+        self.assertFalse((MUSIC / "Filer Kendrick").exists())
+
+    def test_folders_already_there_and_names_taken(self):
+        (MUSIC / "filer kendrick/gnx").mkdir(parents=True)                  # spelled another way
+        self.song("filer kendrick/gnx/luther.flac", "luther", "Filer Kendrick", "GNX")
+        rels = [self.song(f"Filer SZA/GNX/{t}.flac", t, "Filer SZA", "GNX") for t in ("luther", "gloria")]
+        self.catalog("Filer Kendrick")
+        for rel in rels: self.retag(rel)
+        server._refile_audit_fixes()
+        self.assertTrue((MUSIC / "filer kendrick/gnx/gloria.flac").is_file())
+        self.assertFalse((MUSIC / "Filer Kendrick").exists())                 # no second folder for the same artist
+        self.assertTrue((MUSIC / rels[0]).is_file())                      # a luther.flac is there already: this one stays
+        self.assertTrue(any("already there" in l for l in server.audit_state["logs"]))
+
+    def test_titles_and_tags_moves_songs_and_undo_puts_them_back(self):
+        a = self.admin()
+        rels = [self.song(f"Filer F/GNX/{t}.flac", t, "Filer F", "GNX", date="2019") for t in ("hey now", "reincarnated", "tv off")]
+        orig = {n: getattr(server, n) for n in ("verify_file", "reference_metadata", "fetch_bytes", "_identify_audio")}
+        def verify(path, label, duration, refs=None, second_opinion=True, fps=None):
+            if label["title"] == "tv off": return {"status": "unverified", "reason": "No preview"}   # it moves with its album anyway
+            return {"status": "tags_wrong", "ber": 0.04, "reason": "Audio is another song", "ref": {"source": "deezer", "id": 7, "title": label["title"], "artist": "Filer G", "strong": True, "via": "search"}}
+        server.verify_file = verify
+        server._identify_audio = lambda *a, **k: None
+        server.reference_metadata = lambda ref: {"title": ref["title"], "artists": ["Filer G"], "album": "GNX", "albumartist": "Filer G", "date": "2024-11-22"}
+        server.fetch_bytes = lambda url, **k: None
+        self.addCleanup(lambda: [setattr(server, n, f) for n, f in orig.items()])
+        self.assertEqual(a.post("/api/admin/tagfix/start", json={"paths": ["Filer F"]}).status_code, 200)
+        for _ in range(300):
+            if a.get("/api/admin/tagfix/status").get_json()["status"] != "running": break
+            time.sleep(0.1)
+        for t in ("hey now", "reincarnated", "tv off"): self.assertTrue((MUSIC / f"Filer G/GNX/{t}.flac").is_file(), t)
+        t = server.read_track_tags(MUSIC / "Filer G/GNX/hey now.flac")
+        self.assertEqual((t["artists"], t["albumartist"], t["date"]), (["Filer G"], "Filer G", "2024-11-22"))   # the audio is another song: its album details too
+        st = a.get("/api/admin/tagfix/status").get_json()
+        self.assertEqual({r["rel"]: r["result"] for r in st["results"]}, {"Filer G/GNX/hey now.flac": "fixed", "Filer G/GNX/reincarnated.flac": "fixed", "Filer G/GNX/tv off.flac": "moved"})
+        self.assertIn("moved to Filer G/GNX", next(r for r in st["results"] if r["result"] == "fixed")["how"])
+        self.assertEqual(a.post("/api/admin/tagfix/undo", json={"all": True}).get_json()["undone"], 3)
+        for rel in rels: self.assertTrue((MUSIC / rel).is_file(), rel)
+        self.assertFalse((MUSIC / "Filer G").exists())
+        self.assertEqual(server.read_track_tags(MUSIC / rels[0])["artists"], ["Filer F"])
+        self.assertEqual(server.read_track_tags(MUSIC / rels[2])["albumartist"], "")
+
+    def test_songs_fixed_before_are_filed_once(self):
+        for t in ("luther", "squabble up"):                                # re-tagged by an earlier audit, left in the old folder
+            rel = self.song(f"Filer H/GNX/{t}.flac", t, "Filer Kendrick", "GNX", albumartist="Filer Kendrick")
+            with server.audit_lock: server.audit_db[rel] = {"status": "fixed", "fix": {"kind": "retagged", "before": {"artists": ["Filer H"], "album": "GNX"}}}
+        self.song("Filer H/GNX/gloria.flac", "gloria", "Filer H", "GNX")
+        server.REFILE_REPAIR_MARK.unlink(missing_ok=True)
+        moved = server.repair_refiling()
+        self.assertEqual(sorted(m["to"] for m in moved), [f"Filer Kendrick/GNX/{t}.flac" for t in ("gloria", "luther", "squabble up")])
+        self.assertFalse((MUSIC / "Filer H").exists())
+        self.assertTrue(server.REFILE_REPAIR_MARK.exists())
+        self.assertEqual(server.repair_refiling(), [])                    # nothing left to do
+
+
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
 

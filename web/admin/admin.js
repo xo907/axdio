@@ -1087,7 +1087,7 @@ const encArg = v => encodeURIComponent(v);
 function fmtSecs(s) { s = Math.max(0, Math.round(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; }
 function pageAudit(el) {
   el.innerHTML = `<section class="card"><div class="card-h"><h2>Check the library</h2><span class="badge" id="au-badge">Idle</span></div>
-    <p class="desc">Fingerprints each song and compares it with the Deezer/iTunes preview of the song its tags name. Wrong tags can be rewritten from the song the audio really is. With a plugin that can fetch recordings, wrong audio can also be replaced by the right one at the same path, so likes and playlists keep working.</p>
+    <p class="desc">Fingerprints each song and compares it with the Deezer/iTunes preview of the song its tags name. Wrong tags can be rewritten from the song the audio really is, and the song then moves into the folder of the artist and album it really is (the whole album, when most of it moves). With a plugin that can fetch recordings, wrong audio can also be replaced by the right one at the same path, so likes and playlists keep working.</p>
     <p class="desc" style="color:var(--warn)">Replaced audio is deleted for good; Axdio doesn't keep a copy. Rewritten tags are noted, so you can see what they were.</p>
     <div class="card-b">
       ${scopeHtml('audit')}
@@ -1197,10 +1197,10 @@ function pageAudit(el) {
 }
 
 /* Metadata & lyrics (existing scrape endpoints) */
-const FIX_LABELS = { fixed: ['Fixed', 'ok'], cleaned: ['Cleaned up', 'info'], refreshed: ['Re-read', 'info'], flagged: ['Check the audio', 'warn'], skipped: ['Skipped', ''], error: ['Error', 'bad'], undone: ['Undone', ''] };
+const FIX_LABELS = { fixed: ['Fixed', 'ok'], cleaned: ['Cleaned up', 'info'], moved: ['Moved with its album', 'info'], refreshed: ['Re-read', 'info'], flagged: ['Check the audio', 'warn'], skipped: ['Skipped', ''], error: ['Error', 'bad'], undone: ['Undone', ''] };
 function pageMetadata(el) {
   el.innerHTML = `<section class="card"><div class="card-h"><h2>Titles & tags</h2><span class="badge" id="tf-badge">Idle</span></div>
-      <p class="desc">Cleans up titles: an artist's name in front of the title ("NERO - 2808" by NERO), track numbers and video IDs from file names, and labels like "(Official Video)". Songs without tags get their title and artist from the file name and folder. Then each song is looked up, and when its fingerprint confirms the match, its title and artists are written as the catalog has them, with a missing album, track number, date and cover filled in. Every change can be undone below.</p>
+      <p class="desc">Cleans up titles: an artist's name in front of the title ("NERO - 2808" by NERO), track numbers and video IDs from file names, and labels like "(Official Video)". Songs without tags get their title and artist from the file name and folder. Then each song is looked up, and when its fingerprint confirms the match, its title and artists are written as the catalog has them, with a missing album, track number, date and cover filled in. A song that turns out to be another artist's moves into that artist's folder and its album's (the whole album, when most of it moves). Every change can be undone below.</p>
       <div class="card-b">${scopeHtml('tagfix')}
         <div class="row wrap" style="margin-top:12px"><button class="btn primary" id="tf-start">Fix titles & tags</button><button class="btn danger" id="tf-stop" disabled>Stop</button><label class="check"><input type="checkbox" id="tf-quick"> Only clean up titles (faster, no lookups)</label></div>
         <div class="progress"><i id="tf-bar"></i></div><div class="muted" id="tf-progress" style="font-size:13px">Choose folders or artists, or fix the whole library. The Files page can also fix a single folder or song.</div>
@@ -1247,12 +1247,13 @@ function pageMetadata(el) {
     if (key === tfSeen) return;
     tfSeen = key;
     $('#tf-res').hidden = !d.results.length;
-    $('#tf-undo-all').hidden = !d.results.some(r => r.id && (r.result === 'fixed' || r.result === 'cleaned'));
+    const undoable = r => r.id && ['fixed', 'cleaned', 'moved'].includes(r.result);
+    $('#tf-undo-all').hidden = !d.results.some(undoable);
     const who = x => x ? `<div class="t">${esc(x.title || '—')}</div><div class="s muted">${esc(x.artist || '')}</div>` : '';
     $('#tf-body').innerHTML = d.results.map(r => { const [label, cls] = FIX_LABELS[r.result] || [r.result, '']; return `<tr>
       <td><div class="mono" style="font-size:12px;word-break:break-all">${esc(r.rel)}</div><span class="badge ${cls}" style="margin-top:6px">${esc(label)}</span></td>
       <td>${who(r.before)}</td><td>${r.after ? who(r.after) + `<div class="s muted" style="font-size:12px;margin-top:4px">${esc(r.how || '')}${(r.changed || []).filter(k => k !== 'title' && k !== 'artists').length ? ` · filled ${esc(r.changed.filter(k => k !== 'title' && k !== 'artists').join(', '))}` : ''}</div>` : `<div class="s muted">${esc(r.why || '')}</div>`}</td>
-      <td class="act">${r.id && (r.result === 'fixed' || r.result === 'cleaned') ? `<button class="btn ghost sm" data-tf-undo="${esc(r.id)}">Undo</button>` : ''}</td></tr>`; }).join('');
+      <td class="act">${undoable(r) ? `<button class="btn ghost sm" data-tf-undo="${esc(r.id)}">Undo</button>` : ''}</td></tr>`; }).join('');
   };
   $('#tf-start').onclick = async () => {
     const quick = $('#tf-quick').checked, s = scopeBody('tagfix');

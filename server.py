@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.12.0"
+AXDIO_VERSION = "2.13.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -435,6 +435,9 @@ def library_scanner():
         if not DUP_REPAIR_MARK.exists() and not SCAN["error"]:
             try: repair_duplicate_homes()
             except Exception as ex: print(f"[WARN] Checking where duplicates were kept failed: {ex}")
+        if not REFILE_REPAIR_MARK.exists() and not SCAN["error"]:
+            try: repair_refiling()
+            except Exception as ex: print(f"[WARN] Filing fixed songs by their tags failed: {ex}")
         minutes = int(cfg().get("scan_interval") or 0)
         _scan_now.wait(timeout=minutes * 60 if minutes > 0 else None)
         _scan_now.clear()
@@ -1858,6 +1861,7 @@ def _audit_job_body(opts):
     while opts["auto_fix"] and not audit_stop.is_set() and (fix_queue or audit_state["fixing"]): time.sleep(2)
     audit_state["status"] = "stopped" if audit_stop.is_set() else "completed"
     audit_log(f"[FINISH] {audit_state['scanned']}/{len(rels)} checked · " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    _refile_audit_fixes()                                                  # re-tagged songs go where their tags say
 
 
 def enqueue_fix(rels):
@@ -1874,12 +1878,18 @@ def enqueue_fix(rels):
 def _fix_worker():
     while True:
         with audit_lock:
-            if not fix_queue or audit_stop.is_set():
+            idle = not fix_queue or audit_stop.is_set()
+            if idle:
                 fix_queue.clear()
                 audit_state.update(fixing="", fix_queue=0)
-                return
-            rel = fix_queue.popleft()
-            audit_state.update(fixing=rel, fix_queue=len(fix_queue))
+            else:
+                rel = fix_queue.popleft()
+                audit_state.update(fixing=rel, fix_queue=len(fix_queue))
+        if idle:
+            if refile_pending and audit_state.get("status") != "running":    # a running audit files them when it ends
+                _refile_audit_fixes()
+                continue                                                   # repairs asked for meanwhile
+            return
         try:
             repair_track(rel)
         except SourceBlocked as e:
@@ -1950,6 +1960,7 @@ def _retag_from_reference(rel, p, entry):
     cover = fetch_bytes(meta.pop("cover_url", None))
     write_track_tags(p, meta, cover=cover, replace_cover=bool(cover), clear=("source_page",))
     refresh_library_entry(rel)
+    with audit_lock: refile_pending[rel] = {k: old.get(k) for k in ("artists", "albumartist", "album")}   # moved once the repairs are done
     _mark_fixed(rel, entry, {"kind": "retagged", "before": before},
                 label={"title": meta["title"], "artist": ", ".join(a for a in meta["artists"] if a), "album": meta.get("album"), "isrc": meta.get("isrc")})
     audit_log(f"[FIXED] {rel}: re-tagged as '{', '.join(a for a in meta['artists'] if a)} - {meta['title']}' (audio verified)")
@@ -2268,9 +2279,9 @@ def _tag_value(v):
     if isinstance(v, (list, tuple)): return [str(x).strip() for x in v if str(x).strip()]
     return str(v or "").strip()
 
-def _record_fix(rel, before, after, how, cover_added):
+def _record_fix(rel, before, after, how, cover_added, **extra):
     item = {"id": time.strftime("%Y%m%d%H%M%S-") + uuid.uuid4().hex[:6], "rel": rel, "at": time.time(),
-            "before": before, "after": after, "how": how, "cover_added": cover_added}
+            "before": before, "after": after, "how": how, "cover_added": cover_added, **extra}
     with _history_lock:
         hist = _load_json_file(TAGFIX_HISTORY, [])
         hist.insert(0, item)
@@ -2296,8 +2307,9 @@ def fix_track(rel, quick=False):
             meta = reference_metadata(ref)
             if meta.get("title"):
                 new = {"title": _prefer_title(label["title"], meta["title"]), "artists": _prefer_artists(label["artists"], meta.get("artists") or [])}
+                wrong = res["status"] == "tags_wrong"                      # the audio is another song: its album details go too
                 for k in ("album", "albumartist", "date", "tracknumber", "discnumber", "isrc", "genre"):
-                    if not tags.get(k) and meta.get(k): new[k] = meta[k]
+                    if meta.get(k) and (wrong or not tags.get(k)): new[k] = meta[k]
                 if str(new.get("discnumber") or "") in ("0", "1"): new.pop("discnumber", None)     # "disc 1 of 1" says nothing
                 how = f"matched {ref.get('artist')} - {ref.get('title')} on {str(ref.get('source') or 'the catalog').title()} by fingerprint"
                 if not tags["has_cover"] and meta.get("cover_url"): cover = fetch_bytes(meta["cover_url"])
@@ -2327,7 +2339,7 @@ def fix_track(rel, quick=False):
     fid = _record_fix(rel, before, changes, how, bool(cover))
     after = {"title": changes.get("title", tags.get("title") or ""), "artist": ", ".join(changes.get("artists") or tags.get("artists") or [])}
     return dict(out, result="fixed" if "fingerprint" in how else "cleaned", id=fid, after=after, how=how, changed=sorted(changes) + (["cover"] if cover else []),
-                why=flagged)
+                why=flagged, old_tags={k: tags.get(k) for k in ("artists", "albumartist", "album")})
 
 def undo_fix(fid):
     """Put back the tags a fix changed. (A cover it added stays.)"""
@@ -2340,6 +2352,15 @@ def undo_fix(fid):
     before = item.get("before") or {}
     write_track_tags(p, {k: v for k, v in before.items() if _tag_value(v)}, clear=[k for k, v in before.items() if not _tag_value(v)])
     refresh_library_entry(item["rel"])
+    music, back = Path(get_real_music_dir()), item.get("moved_from")
+    if back and not (music / back).exists():                               # it moved with the fix: back to its old folder
+        dest = music / back
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(p), str(dest))
+        if p.with_suffix(".lrc").is_file() and not dest.with_suffix(".lrc").exists(): shutil.move(str(p.with_suffix(".lrc")), str(dest.with_suffix(".lrc")))
+        move_library_paths(item["rel"], back)
+        _remove_empty_dirs([item["rel"]])
+        item["rel"] = back
     with _history_lock:
         hist = [h for h in _load_json_file(TAGFIX_HISTORY, []) if h.get("id") != fid]
         _save_json_file(TAGFIX_HISTORY, hist)
@@ -2354,6 +2375,7 @@ def _tagfix_log(msg):
 def _run_tagfix(rels, quick):
     counts = collections.Counter()
     it, it_lock = iter(sorted(rels, key=str.lower)), threading.Lock()
+    changed = {}                                                           # {rel: tags before} of the songs changed, to file them after
 
     def worker():
         while not tagfix_stop.is_set():
@@ -2362,7 +2384,9 @@ def _run_tagfix(rels, quick):
             try: r = fix_track(rel, quick=quick)
             except Exception as ex:
                 r = {"rel": rel, "result": "error", "why": str(ex)[:200]}
+            old = r.pop("old_tags", None)
             with tagfix_lock:
+                if old and r["result"] in ("fixed", "cleaned"): changed[rel] = old
                 counts[r["result"]] += 1
                 tagfix_state["scanned"] += 1
                 tagfix_state["changed"] = counts["fixed"] + counts["cleaned"] + counts["refreshed"]
@@ -2384,12 +2408,45 @@ def _run_tagfix(rels, quick):
         for t in threads: t.start()
         for t in threads: t.join()
         audit_flush()
+        if changed:
+            try: _file_tagfixes(changed)
+            except Exception as ex: _tagfix_log(f"[ERR] Moving changed songs into their folders failed: {ex}")
         if counts["fixed"] or counts["cleaned"] or counts["refreshed"]: rebuild_in_memory_tree()
     except Exception as ex:
         _tagfix_log(f"[ERR] {ex}")
     with tagfix_lock: tagfix_state["status"] = "stopped" if tagfix_stop.is_set() else "completed"
     _tagfix_log(f"[FINISH] {tagfix_state['scanned']}/{len(rels)} checked · confirmed and fixed {counts['fixed']} · cleaned up {counts['cleaned']} · re-read {counts['refreshed']} · "
                 f"already right {counts['ok']} · flagged {counts['flagged']} · skipped {counts['skipped']} · errors {counts['error']}")
+
+def _file_tagfixes(changed):
+    """After a run: songs given another artist or album go where their tags say (see refile_songs). Undo puts them back;
+    an album-mate that went along gets a change of its own on the list, so it can be put back too."""
+    moves = refile_songs(changed, note=_tagfix_log)
+    if not moves: return
+    with _history_lock:
+        hist = _load_json_file(TAGFIX_HISTORY, [])
+        for m in moves:
+            if m["why"] != "tags": continue
+            h = next((h for h in hist if h.get("rel") == m["to"]), None)          # its newest fix (the history is newest first)
+            if h: h["moved_from"] = m["from"]
+        _save_json_file(TAGFIX_HISTORY, hist)
+    rows = []
+    for m in moves:
+        where = str(Path(m["to"]).parent)
+        if m["why"] == "tags":
+            with tagfix_lock:
+                for r in tagfix_state["results"]:
+                    if r.get("rel") == m["to"]: r["how"] = f"{r.get('how') or ''} · moved to {where}".strip(" ·")
+            continue
+        was, now = (m.get("set") or {}).get("albumartist") or ["", ""]
+        with library_cache_lock: e = dict(library_cache_data.get(m["to"]) or {})
+        fid = _record_fix(m["to"], {"albumartist": was or None} if was != now else {}, {"albumartist": now} if was != now else {},
+                          f"moved with its album to {where}", False, moved_from=m["from"])
+        rows.append({"rel": m["to"], "result": "moved", "id": fid, "before": {"title": e.get("title") or "", "artist": e.get("artist") or ""},
+                     "after": {"title": e.get("title") or "", "artist": e.get("artist") or ""}, "how": f"moved with its album to {where}",
+                     "changed": ["albumartist"] if was != now else []})
+    with tagfix_lock:
+        tagfix_state["results"][:0] = rows
 
 @app.route("/api/admin/tagfix/start", methods=["POST"])
 def api_admin_tagfix_start():
@@ -2422,7 +2479,7 @@ def api_admin_tagfix_status():
 def api_admin_tagfix_undo():
     d = _json()
     with tagfix_lock:
-        ids = [r["id"] for r in tagfix_state["results"] if r.get("id") and r["result"] in ("fixed", "cleaned")] if d.get("all") else [str(d.get("id") or "")]
+        ids = [r["id"] for r in tagfix_state["results"] if r.get("id") and r["result"] in ("fixed", "cleaned", "moved")] if d.get("all") else [str(d.get("id") or "")]
     done, errors = 0, []
     for fid in ids:
         try:
@@ -3477,6 +3534,199 @@ def move_library_paths(old, new):
     remap_song_paths(moved)
     if old in moved: refresh_library_entry(new)          # a renamed file: an untagged song's title comes from its name
     else: save_and_rebuild_cache()
+    _remap_fix_history(moved)
+    return moved
+
+def _remap_fix_history(moved):
+    """The tag fixer's history (and what its page shows) follows songs that move, so Undo still finds them."""
+    if not moved: return
+    with _history_lock:
+        hist = _load_json_file(TAGFIX_HISTORY, [])
+        if any(h.get("rel") in moved for h in hist):
+            for h in hist:
+                if h.get("rel") in moved: h["rel"] = moved[h["rel"]]
+            _save_json_file(TAGFIX_HISTORY, hist)
+    with tagfix_lock:
+        for r in tagfix_state["results"]:
+            if r.get("rel") in moved: r["rel"] = moved[r["rel"]]
+
+
+# --- FILING SONGS WHERE THEIR TAGS SAY ---
+# Downloads file songs as Artist/Album/Song. When a fixer (the library audit's Fix tags, or Titles & tags) changes whose
+# song it is, a song that was filed under its old tags moves to where its new tags say: the folder of its album artist
+# (or its first artist, without one) and its album. Folders are made when there are none yet, and one that's already there
+# is used however it's spelled. A song in a folder that wasn't named after its old tags (one an admin arranged) stays.
+# Albums stay together. A song still on its folder's album goes when it joins that album where it already lives
+# elsewhere, or when none of the album is left behind, or when most of it goes (counting songs fixed earlier): then the
+# rest of it (same album name, filed under the same artist) follows and takes the album artist the others were given.
+# Otherwise the songs stay with their album, and the log says so. A song now on another album goes alone. Lyrics files go
+# along, and so do a cover image and the like once no songs are left; emptied folders go. Likes, playlists, history, the
+# audit and the tag fixer's Undo follow every move, and config/refiled.json notes each one.
+REFILED_LOG = CONFIG_DIR / "refiled.json"
+REFILE_REPAIR_MARK = CONFIG_DIR / "refile_repair_v1"
+refile_lock = threading.Lock()
+refile_pending = {}                                       # the audit's re-tagged songs, filed once its repairs are done
+
+def _fold(s):
+    """A name the way folders and tags are compared: case, spaces and punctuation don't count."""
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", str(s or "")).casefold())
+
+def _tag_home(tags):
+    """(artist, album) a song's tags file it under: its album artist (or its first artist) and its album."""
+    artist = str(tags.get("albumartist") or "").strip() or next((str(a).strip() for a in tags.get("artists") or [] if str(a).strip()), "")
+    return artist, str(tags.get("album") or "").strip()
+
+def _filed_by(rel, tags):
+    """Is the song in the folder these tags name: Artist/Album/song, or Artist/song?"""
+    parts = rel.split("/")
+    names = {_fold(tags.get("albumartist"))} | {_fold(a) for a in tags.get("artists") or []}
+    names.discard("")
+    if len(parts) == 3: return _fold(parts[0]) in names and bool(_fold(parts[1])) and _fold(parts[1]) == _fold(tags.get("album"))
+    return len(parts) == 2 and _fold(parts[0]) in names
+
+def _refile_plan(rel, old, now):
+    """Where a song should go once its tags changed from `old` to `now`: (artist, album or None), or None to stay."""
+    if not old or not now or not _filed_by(rel, old): return None
+    artist, album = _tag_home(now)
+    parts = rel.split("/")
+    if not artist: return None
+    if len(parts) == 3:
+        album = album or parts[1]
+        return None if _fold(artist) == _fold(parts[0]) and _fold(album) == _fold(parts[1]) else (artist, album)
+    return None if _fold(artist) == _fold(parts[0]) else (artist, None)
+
+def refile_songs(changed, note=print, who=None):
+    """Songs whose tags a fixer changed, {rel: tags before}: each goes where its tags say now (see above). Returns the
+    moves, [{"from", "to", "why", "set"}]; an album-mate's "set" is the tags it took from the others."""
+    music = Path(get_real_music_dir())
+    with refile_lock:
+        plans = {}
+        for rel, old in changed.items():
+            p = music / rel
+            if p.is_file() and (plan := _refile_plan(rel, old, read_track_tags(p) or {})): plans[rel] = plan
+        if not plans: return []
+        log = _load_json_file(REFILED_LOG, [])
+        found = {}
+        def folder_for(parent, name, spelled=None):
+            """The folder in `parent` for `name`: one already there however it's spelled, or a new one (spelled like the
+            folder the song was in, when that's the same name)."""
+            key = (str(parent), _fold(name))
+            if key not in found:
+                found[key] = parent / (spelled if spelled and _fold(spelled) == key[1] else clean_filename(str(name).replace("/", "\u29f8")))
+                try: found[key] = next((d for d in parent.iterdir() if d.is_dir() and _fold(d.name) == key[1]), found[key])
+                except OSError: pass
+            return found[key]
+        def place(rel, artist, album):
+            a = folder_for(music, artist)
+            return folder_for(a, album, rel.split("/")[1] if rel.count("/") == 2 else None) if album else a
+        # An album stays together: songs of the folder's album go when they join the album where it already is, when
+        # most of it goes, or when none of it stays behind. Otherwise they stay with it (and say so).
+        folders = collections.defaultdict(list)
+        for rel in plans: folders[str(Path(rel).parent)].append(rel)
+        mates = {}
+        for folder, movers in folders.items():
+            parts = folder.split("/")
+            if len(parts) != 2: continue
+            try: files = sorted(f for f in (music / folder).iterdir() if f.is_file() and f.suffix.lower() in AUDIO_TYPES)
+            except OSError: files = []
+            others = {f"{folder}/{f.name}": None for f in files if f"{folder}/{f.name}" not in plans}
+            for home in dict.fromkeys((_fold(plans[r][0]), _fold(plans[r][1])) for r in movers):
+                group = [r for r in movers if (_fold(plans[r][0]), _fold(plans[r][1])) == home]
+                artist, album = plans[group[0]]
+                if home[1] != _fold(parts[1]): continue                       # now on another album than the folder's: it goes alone
+                for r in others:
+                    if others[r] is None: others[r] = read_track_tags(music / r) or {}
+                same = {r: t for r, t in others.items() if _fold(t.get("album")) == home[1]}
+                before = [r for r, t in same.items() if tuple(_fold(x) for x in _tag_home(t)) == home]      # fixed earlier, still here
+                rest = {r: t for r, t in same.items() if r not in before and _filed_by(r, t)}
+                earlier = sum(1 for i in log if str(Path(i.get("from") or "").parent) == folder and (music / (i.get("to") or "")).is_file()
+                              and [_fold(x) for x in Path(i["to"]).parent.parts] == list(home))
+                dest = place(group[0], artist, album)
+                try: there = dest.is_dir() and any(f.suffix.lower() in AUDIO_TYPES for f in dest.iterdir())
+                except OSError: there = False
+                if not rest or len(group) + len(before) + earlier > len(rest):
+                    for r in before: plans[r] = (artist, album)
+                    for r, t in rest.items(): mates[r] = ((artist, album), t)
+                elif not there:
+                    for r in group: plans.pop(r)
+                    note(f"[KEPT] {len(group)} song{'s' if len(group) != 1 else ''} of {album} stay in {folder}: most of the album is still "
+                         f"filed there, and it isn't under {artist} yet")
+        done = []
+        for rel, home, t in [(r, h, None) for r, h in sorted(plans.items())] + [(r, h, t) for r, (h, t) in sorted(mates.items())]:
+            dest = place(rel, *home)
+            if (dest / Path(rel).name).exists():
+                note(f"[SKIP] {rel} stays: {dest.relative_to(music) / Path(rel).name} is already there (the duplicate finder can merge the two)")
+                continue
+            took = {}
+            if t is not None and _fold(t.get("albumartist")) != _fold(home[0]):
+                took = {"albumartist": [t.get("albumartist") or "", home[0]]}
+                write_track_tags(music / rel, {"albumartist": home[0]})
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+                src, to = music / rel, dest / Path(rel).name
+                shutil.move(str(src), str(to))
+                if src.with_suffix(".lrc").is_file() and not to.with_suffix(".lrc").exists(): shutil.move(str(src.with_suffix(".lrc")), str(to.with_suffix(".lrc")))
+            except OSError as ex:
+                note(f"[ERR] Couldn't move {rel}: {ex}")
+                continue
+            new = str(to.relative_to(music))
+            move_library_paths(rel, new)
+            done.append({"from": rel, "to": new, "at": time.time(), "why": "album" if t is not None else "tags", "set": took})
+            note(f"[MOVED] {rel} → {new}" + (f" (with its album; album artist {home[0]})" if t is not None else ""))
+        # Folders the songs left: with no songs left, the rest (a cover image) goes along; empty ones go.
+        for folder in folders:
+            d, went = music / folder, {str(Path(m["to"]).parent) for m in done if str(Path(m["from"]).parent) == folder}
+            try: left = [f for f in d.iterdir()] if d.is_dir() else []
+            except OSError: left = []
+            if left and len(went) == 1 and not any(f.is_dir() or f.suffix.lower() in AUDIO_TYPES for f in left):
+                for f in left:
+                    to = music / next(iter(went)) / f.name
+                    try:
+                        if to.exists(): f.unlink()
+                        else: shutil.move(str(f), str(to))
+                    except OSError: pass
+            _remove_empty_dirs([f"{folder}/-"])
+        if done:
+            _save_json_file(REFILED_LOG, (done + log)[:5000])
+            save_and_rebuild_cache()
+            activity("library", f"Moved {len(done)} song{'s' if len(done) != 1 else ''} into the folders their fixed tags name", who)
+        return done
+
+def _refile_audit_fixes():
+    """File the songs the audit re-tagged, once its repairs are done."""
+    with audit_lock:
+        changed = dict(refile_pending)
+        refile_pending.clear()
+    if changed:
+        try: refile_songs(changed, note=audit_log)
+        except Exception as ex: audit_log(f"[ERR] Moving re-tagged songs into their folders failed: {ex}")
+
+def repair_refiling():
+    """Songs fixed before Axdio filed them by their new tags stayed in their old folders. Once, after a scan: those the
+    audit re-tagged, or the tag fixer gave another artist or album, go where their tags say now."""
+    music = Path(get_real_music_dir())
+    changed = {}
+    with audit_lock:
+        for rel, e in audit_db.items():
+            fix = e.get("fix") or {}
+            if e.get("status") == "fixed" and fix.get("kind") == "retagged" and fix.get("before"): changed[rel] = dict(fix["before"])
+    with library_cache_lock: cache = {r: dict(e) for r, e in library_cache_data.items()}
+    for h in sorted(_load_json_file(TAGFIX_HISTORY, []), key=lambda h: h.get("at") or 0):
+        rel, before = h.get("rel") or "", h.get("before") or {}
+        if rel in changed or rel not in cache or not {"artists", "albumartist", "album"} & set(before): continue
+        e = cache[rel]
+        now = {"artists": [e.get("artist") or ""], "albumartist": e.get("album_artist") or "", "album": e.get("album") or ""}
+        changed[rel] = dict(now, **{k: v for k, v in before.items() if k in ("artists", "albumartist", "album")})
+    # Skip, without reading them, the songs the library already shows in the folder their tags name.
+    todo = {}
+    for rel, old in changed.items():
+        e = cache.get(rel)
+        if not e: continue
+        now = {"artists": [e.get("artist") or ""], "albumartist": e.get("album_artist") or "", "album": e.get("album") or ""}
+        if _refile_plan(rel, old, now): todo[rel] = old
+    moved = refile_songs(todo, note=lambda m: print(f"[INFO] Filing fixed songs: {m}")) if todo else []
+    if moved: print(f"[INFO] Moved {len(moved)} fixed song(s) into the folders their tags name")
+    REFILE_REPAIR_MARK.touch()
     return moved
 
 

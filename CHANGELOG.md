@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.13.0
+
+- **Fixed songs go where their tags say.** When the library audit's Fix tags, or Titles & tags, finds that a song is another artist's or on another album, the song now moves into that artist's and album's folder (Artist/Album/song), which is made if there isn't one yet. Before, its tags were fixed but it stayed in the old folder, so an album tagged under the wrong artist stayed there too.
+  - Only a song that was filed under its old tags moves; folders an admin arranged by hand stay as they are. A folder that's already there is used however it's spelled.
+  - Albums stay together. When most of an album moves, the rest of it follows (even a song that couldn't be verified) and takes the album artist the others were given. A song whose album already lives in the new artist's folder joins it there. When only a few songs of an album were fixed and the album isn't in the new place yet, they stay with it, and the log says so.
+  - Lyrics files go along, and so does a cover image once no songs are left. Emptied folders are removed. Likes, playlists, history, the listening log and the audit follow every move, and `config/refiled.json` notes each one.
+  - Titles & tags' Undo moves a song back. Songs that moved only because their album did are listed as "Moved with its album", and can be put back too.
+- **Songs fixed before this version are filed once**, after the first library scan: those the audit re-tagged, or Titles & tags gave another artist or album.
+- **Titles & tags replaces the album details of a song that turns out to be another song** (when its fingerprint says so): the album, album artist, date, track number and the rest, as Fix tags already did. Before, it only filled in the ones that were missing, so the wrong song's album could stay.
+
 ## 2.12.0
 
 - **Plugins come from wherever you choose.** Axdio doesn't come with, link to or suggest any plugin. Admins add them on the Plugins page (**Add a plugin**) from:
