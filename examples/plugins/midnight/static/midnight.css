@@ -1,0 +1,11 @@
+/* The player's colours are CSS variables (web/desktop/desktop.css and web/mobile/mobile.css): a theme sets them again. */
+:root {
+  --bg: #070b1a;
+  --panel: #0c1226;
+  --elev: #141b36;
+  --elev-2: #1b2446;
+  --elev-3: #2a3563;
+  --line: rgba(160, 180, 255, .12);
+  --text-2: #b4bddc;
+  --text-3: #7d87aa;
+}

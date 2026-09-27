@@ -1,0 +1,13 @@
+# Runtime data: settings (webhook URLs, password hashes), accounts, caches and the session key live here.
+config/
+
+# Local backups and editor/agent state
+backups/
+.claude/
+
+# Your own deployment (paths on this machine); docker-compose.example.yml is the shared one
+docker-compose.yml
+.env
+
+__pycache__/
+*.pyc

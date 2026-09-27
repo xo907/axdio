@@ -1,0 +1,7 @@
+# Only the files the Dockerfile copies are needed; keep multi-GB runtime data out of the build context.
+config/
+backups/
+.claude/
+.git/
+__pycache__/
+*.pyc

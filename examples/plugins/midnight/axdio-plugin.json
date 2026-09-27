@@ -1,0 +1,12 @@
+{
+  "id": "midnight",
+  "name": "Midnight",
+  "version": "1.0.0",
+  "description": "An example theme: deep blue backgrounds in the player and on shared pages. A plugin can be just a stylesheet.",
+  "author": "Axdio",
+  "license": "MIT",
+  "homepage": "https://github.com/xo907/axdio/tree/main/examples/plugins/midnight",
+  "axdio": "2.12.0",
+  "app": { "styles": ["midnight.css"] },
+  "share": { "styles": ["midnight.css"] }
+}

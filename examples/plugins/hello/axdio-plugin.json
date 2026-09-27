@@ -1,0 +1,21 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "description": "An example plugin to start yours from: a page in the player, a menu item, a song action, a home card, a player setting, an admin setting and a server route that counts plays.",
+  "author": "Axdio",
+  "license": "MIT",
+  "homepage": "https://github.com/xo907/axdio/tree/main/examples/plugins/hello",
+  "axdio": "2.12.0",
+  "api": 2,
+  "server": "server.py",
+  "app": { "scripts": ["hello.js"], "styles": ["hello.css"] },
+  "settings": {
+    "id": "hello",
+    "title": "Hello",
+    "fields": [
+      { "key": "hello_greeting", "type": "text", "label": "Greeting", "default": "Hello", "public": true,
+        "help": "How the plugin's page in the player greets listeners." }
+    ]
+  }
+}

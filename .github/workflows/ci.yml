@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main, beta]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check JavaScript syntax
+        run: |
+          for f in web/app/core.js web/app/social.js web/desktop/desktop.js web/mobile/mobile.js web/admin/admin.js; do
+            node --check "$f"
+          done
+
+      - name: Build the image
+        run: docker build -t axdio:test .
+
+      - name: Run the tests inside the image
+        run: docker run --rm -v "$PWD":/src:ro -w /src --entrypoint python axdio:test -m unittest discover -s tests -v

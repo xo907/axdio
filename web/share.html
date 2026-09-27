@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+{% if missing %}
+<title>Link not available · {{ site.title }}</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0a0a0a">
+{% else %}
+<title>{{ page_title }}</title>
+<meta name="description" content="{{ desc }}">
+<meta name="robots" content="{{ 'index, follow' if indexable else 'noindex, nofollow' }}">
+<meta name="theme-color" content="{{ color }}">
+<link rel="canonical" href="{{ url }}">
+<meta property="og:site_name" content="{{ site.title }}">
+<meta property="og:type" content="{{ og_type }}">
+<meta property="og:url" content="{{ url }}">
+<meta property="og:title" content="{{ item.title }}">
+<meta property="og:description" content="{{ desc }}">
+{% if card %}
+<meta property="og:image" content="{{ card }}">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="{{ image_alt }}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{{ card }}">
+<meta name="twitter:image:alt" content="{{ image_alt }}">
+{% else %}
+<meta name="twitter:card" content="summary">
+{% endif %}
+<meta name="twitter:title" content="{{ item.title }}">
+<meta name="twitter:description" content="{{ desc }}">
+{% for k, v in music %}<meta property="{{ k }}" content="{{ v }}">
+{% endfor %}
+{% endif %}
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/web/fonts/fonts.css">
+<link rel="stylesheet" href="/web/share/share.css?v={{ version }}">
+<style>:root{--accent:{{ site.accent }};--on-accent:{{ site.on_accent }};--tint:{{ tint or '40, 40, 40' }}}</style>
+</head>
+<body class="k-{{ kind or 'missing' }}">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.05 3.606l13.49 7.788a.7.7 0 0 1 0 1.212L7.05 20.394A.7.7 0 0 1 6 19.788V4.212a.7.7 0 0 1 1.05-.606z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="5.5" y="3.5" width="4.5" height="17" rx="1.2"/><rect x="14" y="3.5" width="4.5" height="17" rx="1.2"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9V6zm3 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42L17.59 5H14V3zM5 5h6v2H5v12h12v-6h2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></symbol>
+</svg>
+<div class="bg" aria-hidden="true">{% if cover %}<img src="{{ cover }}" alt="">{% endif %}</div>
+
+<header class="top">
+  <a class="brand" href="/"><span class="mark">{% if site.logo %}<img src="{{ site.logo }}" alt="">{% else %}<svg><use href="#i-note"/></svg>{% endif %}</span><span class="name">{{ site.title }}</span></a>
+  {% if not missing %}<a class="pill ghost" href="{{ open_url }}">{% if can_play %}Open in {{ site.title }}{% else %}Sign in{% endif %}</a>{% endif %}
+</header>
+
+{% if missing %}
+<main class="wrap gone">
+  <div class="gone-art"><svg><use href="#i-note"/></svg></div>
+  <h1>This link isn't available</h1>
+  <p>The song may have been removed from {{ site.title }}, or sharing has been turned off.</p>
+  <a class="pill solid" href="/">Go to {{ site.title }}</a>
+</main>
+{% else %}
+<main class="wrap">
+  <section class="hero">
+    <div class="art{% if kind == 'artist' %} round{% endif %}">{% if cover %}<img src="{{ cover }}" alt="{{ image_alt }}">{% else %}<svg><use href="#i-note"/></svg>{% endif %}</div>
+    <div class="info">
+      <div class="kind">{{ item.label }}</div>
+      {% set tl = item.title|length %}<h1{% if tl > 40 %} class="xl"{% elif tl > 22 %} class="l"{% endif %}>{{ item.title }}</h1>
+      {% if kind == 'track' %}
+      <div class="who-line">{% if item.artist_url %}<a href="{{ item.artist_url }}">{{ item.artist }}</a>{% else %}{{ item.artist }}{% endif %}</div>
+      {% if meta %}<div class="by">{% for m in meta %}{% if loop.index0 == 0 and item.album_url and not item.single %}<a href="{{ item.album_url }}">{{ m }}</a>{% else %}<span>{{ m }}</span>{% endif %}{% endfor %}</div>{% endif %}
+      {% else %}
+      <div class="by">
+        {% if item.artist %}{% if item.artist_url %}<a class="who" href="{{ item.artist_url }}">{{ item.artist }}</a>{% else %}<span class="who">{{ item.artist }}</span>{% endif %}{% endif %}
+        {% for m in meta %}<span>{{ m }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if can_play and data.tracks %}
+  {% if kind == 'track' %}
+  <div class="player">
+    <div class="seek" id="seekbox"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek"><span id="dur">{{ mmss(item.duration) or '0:00' }}</span></div>
+    <button class="play" id="play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
+  </div>
+  {% else %}
+  <div class="actions">
+    <button class="play" id="play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
+  </div>
+  {% endif %}
+  {% elif not can_play %}
+  <div class="locked">
+    <span class="lk"><svg><use href="#i-lock"/></svg></span>
+    <div class="flex1"><b>{{ site.title }} is private</b><span>Sign in to listen to this {{ noun }}.</span></div>
+    <a class="pill solid" href="{{ open_url }}">Sign in</a>
+  </div>
+  {% endif %}
+
+  {% if kind != 'track' %}
+  <section class="sec">
+    {% if kind == 'artist' %}<h2>Popular</h2>{% endif %}
+    <ol class="list{% if kind == 'artist' %} with-art{% endif %}">
+      {% for t in data.tracks %}
+      <li class="row{% if not can_play %} static{% endif %}" data-i="{{ loop.index0 }}"{% if can_play %} tabindex="0" role="button" aria-label="Play {{ t.t }}"{% endif %}>
+        <span class="n"><span class="num">{{ loop.index }}</span><span class="eq" aria-hidden="true"><i></i><i></i><i></i></span><svg class="pi"><use href="#i-play"/></svg></span>
+        {% if kind == 'artist' %}<img class="ta" src="{{ t.c }}" alt="" loading="lazy">{% endif %}
+        <span class="tt"><span class="t">{{ t.t }}</span>{% if t.a and t.a|lower != (item.artist or item.title)|lower %}<span class="a">{{ t.a }}</span>{% endif %}</span>
+        <span class="d">{{ mmss(t.d) }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+
+  {% if kind == 'artist' and item.albums %}
+  <section class="sec">
+    <h2>Discography</h2>
+    <div class="grid">
+      {% for a in item.albums[:12] %}
+      <a class="card" href="{{ a.url }}"><span class="art"><img src="{{ a.url }}/cover.jpg" alt="" loading="lazy"></span><span class="t">{{ a.title }}</span><span class="s">{{ a.label }} · {{ a.n }} {{ 'song' if a.n == 1 else 'songs' }}</span></a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</main>
+
+{% if can_play and kind != 'track' %}
+<div class="bar" id="bar" aria-label="Now playing">
+  <img id="bar-art" alt="">
+  <div class="meta"><div class="t" id="bar-t"></div><div class="a" id="bar-a"></div></div>
+  <div class="seek" id="seekbox"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek"><span id="dur">0:00</span></div>
+  <button class="play sm" id="bar-play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
+</div>
+{% endif %}
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script id="share-data" type="application/json">{{ data|tojson }}</script>
+<script src="/web/share/share.js?v={{ version }}" defer></script>
+{% endif %}
+
+<footer class="foot"><span>{{ site.title }}</span><a href="https://xo.st" target="_blank" rel="noopener">Created by xo.st</a></footer>
+</body>
+</html>

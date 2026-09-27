@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>{% if is_setup %}Set up{% else %}Sign in{% endif %} · {{ settings.site_title }} admin</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/web/fonts/fonts.css">
+<style>
+  :root { --accent: {{ settings.accent_color or '#22c55e' }}; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: radial-gradient(120% 70% at 50% 0%, #1d1d1d, #0a0a0a 65%); color: #fafafa; font: 15px/1.5 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  .card { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 14px; }
+  .mark { width: 52px; height: 52px; border-radius: 14px; background: var(--accent); color: #000; display: grid; place-items: center; margin-bottom: 6px; }
+  .mark svg { width: 28px; height: 28px; fill: currentColor; }
+  h1 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
+  p { color: #a3a3a3; margin: -6px 0 4px; font-size: 14px; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 700; }
+  input { height: 46px; border-radius: 10px; border: 1px solid rgba(255,255,255,.12); background: #161616; color: #fff; padding: 0 14px; font-size: 15px; font-weight: 500; font-family: inherit; outline: 0; }
+  input:focus { border-color: rgba(255,255,255,.35); }
+  input.code { letter-spacing: .4em; font-size: 20px; text-align: center; font-family: 'JetBrains Mono', monospace; }
+  button { height: 48px; border-radius: 999px; border: 0; background: var(--accent); color: #000; font-size: 15px; font-weight: 800; font-family: inherit; cursor: pointer; margin-top: 4px; }
+  button:hover { filter: brightness(1.08); }
+  .err { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.3); color: #fca5a5; padding: 10px 14px; border-radius: 10px; font-size: 13.5px; font-weight: 600; }
+  .foot { display: flex; justify-content: space-between; margin-top: 18px; font-size: 12.5px; }
+  .foot a { color: #737373; text-decoration: none; }
+  .foot a:hover { color: #a3a3a3; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="mark"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>
+  {% if is_setup %}
+  <h1>Set up {{ settings.site_title }}</h1>
+  <p>Create the admin account. You'll use it to manage the server.</p>
+  {% elif need_code %}
+  <h1>Two-factor sign-in</h1>
+  <p>Enter the 6-digit code from your authenticator app.</p>
+  {% else %}
+  <h1>Admin sign-in</h1>
+  <p>{{ settings.site_title }} administration</p>
+  {% endif %}
+
+  {% if error %}<div class="err" role="alert">{{ error }}</div>{% endif %}
+
+  <form method="POST" action="{% if is_setup %}/admin/setup{% else %}/admin/login{% endif %}" style="display:flex;flex-direction:column;gap:14px">
+    {% if need_code %}
+    <label>Authentication code<input class="code" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" required autofocus></label>
+    <button type="submit">Verify</button>
+    {% else %}
+    <label>Username<input type="text" name="username" required autocomplete="username" autocapitalize="off" spellcheck="false" autofocus></label>
+    <label>Password<input type="password" name="password" required autocomplete="{% if is_setup %}new-password{% else %}current-password{% endif %}"></label>
+    {% if is_setup %}
+    <label>Confirm password<input type="password" name="confirm_password" required autocomplete="new-password"></label>
+    {% endif %}
+    <button type="submit">{% if is_setup %}Create admin account{% else %}Sign in{% endif %}</button>
+    {% endif %}
+  </form>
+
+  <div class="foot"><a href="/">← Back to the player</a><a href="https://xo.st" target="_blank" rel="noopener">Created by xo.st</a></div>
+</main>
+</body>
+</html>

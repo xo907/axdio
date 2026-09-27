@@ -1,0 +1,7 @@
+.hello { max-width: 560px; margin: 0 auto; padding: 48px 0 24px; text-align: center; }
+.hello-wave { width: 84px; height: 84px; margin: 0 auto 18px; border-radius: 24px; display: grid; place-items: center; color: #fff;
+  background: linear-gradient(120deg, #0f766e, #0e7490 55%, #1d4ed8); }
+.hello-wave .i { width: 40px; height: 40px; }
+.hello h1 { font-size: 32px; font-weight: 900; letter-spacing: -.02em; margin: 0 0 8px; }
+.hello-sub { color: var(--text-2); margin: 0; }
+.hello-now { margin-top: 22px; color: var(--text-2); font-size: 14px; }

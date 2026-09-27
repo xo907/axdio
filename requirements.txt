@@ -1,0 +1,8 @@
+# Pinned so every install and rebuild gets the same, tested versions.
+# Nothing here downloads music. Plugins are installed under Plugins in the admin panel (see PLUGINS.md).
+Flask==3.1.3
+Werkzeug==3.1.8
+mutagen==1.48.1
+requests==2.34.2
+rapidfuzz==3.14.6
+gunicorn==23.0.0
