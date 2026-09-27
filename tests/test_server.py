@@ -2703,6 +2703,7 @@ class TestStorage(Social):
         before = server.read_track_tags(p)
         try:
             self.assertTrue(server._retag_from_reference(rel, p, {"status": "tags_wrong", "ref": {"source": "deezer", "id": 1}}))
+            with server.audit_lock: server.refile_pending.pop(rel, None)     # no audit may move it into "Right Artist" meanwhile
             fix = server.audit_db[rel]["fix"]
             self.assertEqual((fix["kind"], fix["before"]["title"], fix["before"]["album"]), ("retagged", before["title"], before["album"]))
             self.assertFalse(server.QUARANTINE_DIR.exists() and any(p.name == f.name for f in server.QUARANTINE_DIR.rglob("*")))
@@ -2863,8 +2864,7 @@ class TestFilingByTags(Social):
             rel = self.song(f"Filer H/GNX/{t}.flac", t, "Filer Kendrick", "GNX", albumartist="Filer Kendrick")
             with server.audit_lock: server.audit_db[rel] = {"status": "fixed", "fix": {"kind": "retagged", "before": {"artists": ["Filer H"], "album": "GNX"}}}
         self.song("Filer H/GNX/gloria.flac", "gloria", "Filer H", "GNX")
-        server.REFILE_REPAIR_MARK.unlink(missing_ok=True)
-        moved = server.repair_refiling()
+        moved = server.repair_refiling()                                   # (the mark stays, so the scanner thread can't run it at the same time)
         self.assertEqual(sorted(m["to"] for m in moved), [f"Filer Kendrick/GNX/{t}.flac" for t in ("gloria", "luther", "squabble up")])
         self.assertFalse((MUSIC / "Filer H").exists())
         self.assertTrue(server.REFILE_REPAIR_MARK.exists())
