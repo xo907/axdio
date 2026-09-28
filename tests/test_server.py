@@ -2712,6 +2712,82 @@ class TestStorage(Social):
             server.refresh_library_entry(rel)
 
 
+class TestAuditRuns(Base):
+    """An audit says why it stopped, and goes on where it left off after the disk ran low or the server restarted."""
+    def setUp(self):
+        super().setUp()
+        self.seen, self.bad = [], None
+        orig = server.audit_track
+        def check(rel, recheck=False):                                       # a quick stand-in for fingerprinting a song
+            time.sleep(0.15)
+            self.seen.append(rel)
+            if rel == self.bad: return ["not what the audit expects"], False
+            with server.audit_lock: server.audit_db[rel] = dict(server.audit_db.get(rel) or {}, status="ok", checked_at=time.time())
+            return {"status": "ok"}, False
+        server.audit_track = check
+        self.addCleanup(setattr, server, "audit_track", orig)
+        self.addCleanup(server.AUDIT_RUN_FILE.unlink, missing_ok=True)
+        self.addCleanup(server.STORAGE.update, low=False)
+        self.assertTrue(self.until("idle", "stopped", "completed", "error"))
+
+    def until(self, *states, secs=30):
+        for _ in range(secs * 20):
+            if server.audit_state["status"] in states and not (server.audit_state["status"] == "running" and "running" not in states): return True
+            time.sleep(0.05)
+        return False
+
+    def test_low_disk_space_stops_it_with_a_reason_and_it_goes_on_later(self):
+        a = self.admin()
+        self.assertEqual(a.post("/api/admin/audit/start", json={"workers": 1}).status_code, 200)
+        orig = server.storage_free
+        self.addCleanup(setattr, server, "storage_free", orig)
+        server.storage_free = lambda: (0.5e9, 100e9)
+        server.storage_check()
+        self.assertTrue(self.until("stopped"))
+        st = a.get("/api/admin/audit/status").get_json()
+        self.assertEqual(st["stop_reason"], "space")
+        self.assertTrue(any("[STOPPED] Only 0.5 GB is left" in l for l in st["logs"]), st["logs"])
+        self.assertTrue(server.AUDIT_RUN_FILE.exists())                     # it isn't finished
+        server.storage_free = lambda: (50e9, 100e9)
+        server.storage_check()                                              # room again: it goes on by itself
+        self.assertTrue(self.until("completed"))
+        self.assertTrue(any("[RESUME]" in l for l in server.audit_state["logs"]))
+        self.assertFalse(server.AUDIT_RUN_FILE.exists())
+
+    def test_stopping_it_by_hand_says_so_and_it_stays_stopped(self):
+        a = self.admin()
+        a.post("/api/admin/audit/start", json={"workers": 1})
+        self.assertTrue(server.AUDIT_RUN_FILE.exists())
+        a.post("/api/admin/audit/stop", json={})
+        self.assertTrue(self.until("stopped"))
+        st = a.get("/api/admin/audit/status").get_json()
+        self.assertEqual(st["stop_reason"], "admin")
+        self.assertTrue(any("stopped the audit" in l for l in st["logs"]))
+        self.assertFalse(server.AUDIT_RUN_FILE.exists())
+        self.assertFalse(server.resume_audit("the server restarted while it was running"))
+
+    def test_after_a_restart_it_goes_on_where_it_left_off(self):
+        rels = sorted(server.library_cache_data)
+        since = time.time()
+        with server.audit_lock:                                             # checked by this run before the restart
+            for r in rels[:2]: server.audit_db[r] = dict(server.audit_db.get(r) or {}, status="ok", checked_at=since + 1)
+        server._save_json_file(server.AUDIT_RUN_FILE, {"scope": "", "recheck": True, "auto_fix": False, "workers": 2, "paths": [], "artists": [], "since": since})
+        self.assertTrue(server.resume_audit("the server restarted while it was running"))
+        self.assertTrue(self.until("completed"))
+        self.assertEqual(sorted(self.seen), rels[2:])
+        self.assertFalse(server.AUDIT_RUN_FILE.exists())
+        self.assertFalse(server.resume_audit("again"))                       # nothing left to go on with
+
+    def test_one_songs_trouble_doesnt_end_it(self):
+        a = self.admin()
+        rels = sorted(server.library_cache_data)
+        self.bad = rels[0]
+        a.post("/api/admin/audit/start", json={"workers": 1})
+        self.assertTrue(self.until("completed"))
+        self.assertEqual(sorted(self.seen), rels)                           # every song was checked
+        self.assertTrue(any("[ERR]" in l and rels[0] in l for l in server.audit_state["logs"]))   # (lines start with the time)
+
+
 class TestFilingByTags(Social):
     """A song a fixer gives another artist or album goes into that artist's and album's folder; albums move whole."""
     def song(self, rel, title, artist, album, **tags):

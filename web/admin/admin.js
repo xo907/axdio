@@ -1120,6 +1120,7 @@ function pageAudit(el) {
     const fresh = d.scanned - d.cached;
     if (running && fresh > 3 && d.started_at) { const rate = fresh / (Date.now() / 1000 - d.started_at); if (rate > 0) line += ` · about ${fmtSecs((d.total - d.scanned) / rate)} left`; }
     if (d.fixing) line += ` · repairing ${d.fixing}` + (d.fix_queue ? ` (+${d.fix_queue} queued)` : '');
+    if (d.status === 'stopped') line += d.stop_reason === 'space' ? ' · stopped because the disk is almost full; it goes on by itself once there\'s room' : d.stop_reason === 'admin' ? ' · stopped by an admin' : '';
     $('#au-progress').textContent = line;
     const t = d.library_totals || {};
     $('#au-totals').innerHTML = AUDIT_ORDER.map(k => `<button data-act="au-show" data-k="${k}"><div class="k">${AUDIT_LABELS[k]}</div><div class="v st-${k}">${nf(t[k])}</div></button>`).join('');

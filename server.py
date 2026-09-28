@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.13.0"
+AXDIO_VERSION = "2.13.1"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -428,7 +428,10 @@ def scan_library():
     finally:
         SCAN.update(running=False, last=time.time(), took=round(time.time() - t0, 1))
 
+_audit_resumed = False
+
 def library_scanner():
+    global _audit_resumed
     time.sleep(3)
     while True:
         scan_library()
@@ -438,6 +441,10 @@ def library_scanner():
         if not REFILE_REPAIR_MARK.exists() and not SCAN["error"]:
             try: repair_refiling()
             except Exception as ex: print(f"[WARN] Filing fixed songs by their tags failed: {ex}")
+        if not _audit_resumed and not SCAN["error"]:
+            _audit_resumed = True
+            try: resume_audit("the server restarted while it was running")
+            except Exception as ex: print(f"[WARN] Going on with the library audit failed: {ex}")
         minutes = int(cfg().get("scan_interval") or 0)
         _scan_now.wait(timeout=minutes * 60 if minutes > 0 else None)
         _scan_now.clear()
@@ -1681,7 +1688,10 @@ audit_db = _load_json_file(AUDIT_DB_FILE, {})
 audit_dirty = 0
 audit_stop = threading.Event()
 audit_state = {"status": "idle", "logs": collections.deque(maxlen=600), "scanned": 0, "total": 0, "cached": 0,
-               "counts": {}, "current": "", "started_at": 0, "options": {}, "fixing": "", "fix_queue": 0}
+               "counts": {}, "current": "", "started_at": 0, "options": {}, "fixing": "", "fix_queue": 0, "stop_reason": ""}
+# An audit that's running is noted here, so one cut short by a restart (an update, the Restart button) or by the disk
+# running low goes on by itself where it left off: after the server's first library scan, or once there's room again.
+AUDIT_RUN_FILE = CONFIG_DIR / "audit_run.json"
 fix_queue = collections.deque()
 fix_thread = None
 
@@ -1821,6 +1831,8 @@ def _audit_job_body(opts):
     scope = (opts.get("scope") or "").strip().lower()
     rels = scope_rels(opts)
     if scope: rels = [r for r in rels if scope in r.lower()]
+    if opts.get("resumed") and opts.get("recheck") and opts.get("since"):        # checked already in this run
+        with audit_lock: rels = [r for r in rels if ((audit_db.get(r) or {}).get("checked_at") or 0) < opts["since"]]
     rels = _audit_order(rels)
     counts = collections.Counter()
     audit_state.update(total=len(rels), scanned=0, cached=0, counts={}, current="", started_at=time.time())
@@ -1834,24 +1846,28 @@ def _audit_job_body(opts):
         while not audit_stop.is_set():
             with it_lock: rel = next(it, None)
             if rel is None: return
-            audit_state["current"] = rel
-            try:
-                entry, cached = audit_track(rel, opts["recheck"])
-            except Exception as e:
-                entry, cached = {"status": "error", "reason": str(e)[:200]}, False
-            if entry is None: continue
-            st = entry.get("status", "error")
-            with audit_lock:
-                audit_state["scanned"] += 1
-                audit_state["cached"] += 1 if cached else 0
-                counts[st] += 1
-                audit_state["counts"] = dict(counts)
-                n = audit_state["scanned"]
-            if not cached and st not in ("ok", "unverified", "fixed"):
-                audit_log(f"[{st.upper()}] {rel} — {entry.get('reason', '')}")
-            if opts["auto_fix"] and _auto_fixable(entry): enqueue_fix([rel])
-            if n % 100 == 0:
-                audit_log(f"[PROGRESS] {n}/{len(rels)} · " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+            try: one(rel)
+            except Exception as e: audit_log(f"[ERR] {rel}: {str(e)[:200]}")        # one song's trouble doesn't end the audit
+
+    def one(rel):
+        audit_state["current"] = rel
+        try:
+            entry, cached = audit_track(rel, opts["recheck"])
+        except Exception as e:
+            entry, cached = {"status": "error", "reason": str(e)[:200]}, False
+        if entry is None: return
+        st = entry.get("status", "error")
+        with audit_lock:
+            audit_state["scanned"] += 1
+            audit_state["cached"] += 1 if cached else 0
+            counts[st] += 1
+            audit_state["counts"] = dict(counts)
+            n = audit_state["scanned"]
+        if not cached and st not in ("ok", "unverified", "fixed"):
+            audit_log(f"[{st.upper()}] {rel} — {entry.get('reason', '')}")
+        if opts["auto_fix"] and _auto_fixable(entry): enqueue_fix([rel])
+        if n % 100 == 0:
+            audit_log(f"[PROGRESS] {n}/{len(rels)} · " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(opts["workers"])]
     for t in threads: t.start()
@@ -1861,6 +1877,7 @@ def _audit_job_body(opts):
     while opts["auto_fix"] and not audit_stop.is_set() and (fix_queue or audit_state["fixing"]): time.sleep(2)
     audit_state["status"] = "stopped" if audit_stop.is_set() else "completed"
     audit_log(f"[FINISH] {audit_state['scanned']}/{len(rels)} checked · " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    if not (audit_stop.is_set() and audit_state.get("stop_reason") == "space"): AUDIT_RUN_FILE.unlink(missing_ok=True)
     _refile_audit_fixes()                                                  # re-tagged songs go where their tags say
 
 
@@ -2015,8 +2032,15 @@ def storage_refuse():
     return jsonify({"error": f"The disk Axdio's settings are on is almost full ({(STORAGE['free'] or 0) / 1e9:.1f} GB left). "
                              "Free up space first (Overview shows what's using it)."}), 507
 
-def stop_jobs():
-    """Stop everything that reads or writes the library in the background."""
+def stop_jobs(why=""):
+    """Stop everything that reads or writes the library in the background, saying why in each one's log."""
+    if why:
+        if audit_state["status"] == "running":
+            audit_state["stop_reason"] = "space"
+            audit_log(f"[STOPPED] {why} The audit goes on by itself where it left off once there's room again.")
+        if tagfix_state["status"] == "running": _tagfix_log(f"[STOPPED] {why}")
+        if dup_state["status"] == "running": _dup_log(f"[STOPPED] {why}")
+        if admin_scrape_state["status"] == "scraping": _fixer_log(f"[STOPPED] {why}")
     for ev in (audit_stop, dup_stop, tagfix_stop, scrape_stop): ev.set()
     with audit_lock: fix_queue.clear()
     for fn in plugin_hook("stop"):
@@ -2029,7 +2053,7 @@ def storage_check():
     if free is None: return
     if not STORAGE["low"] and free < STORAGE_MIN_FREE:
         STORAGE["low"] = True
-        stop_jobs()
+        stop_jobs(f"Only {free / 1e9:.1f} GB is left on the disk Axdio's settings and working files are on.")
         msg = (f"Only {free / 1e9:.1f} GB left on the disk Axdio's settings are on. Running jobs were stopped (library audit, "
                "duplicates, fixers, downloads), and they won't start again until there's more room.")
         print(f"[WARN] {msg}")
@@ -2039,6 +2063,20 @@ def storage_check():
     elif STORAGE["low"] and free > STORAGE_OK_FREE:
         STORAGE["low"] = False
         activity("system", f"There's room on the disk again ({free / 1e9:.1f} GB free), so jobs can run again.")
+        resume_audit("there's room on the disk again")
+
+def resume_audit(why):
+    """Go on with an audit that was cut short (a restart, or the disk running low), where it left off. False when there's
+    none, or one is running."""
+    opts = _load_json_file(AUDIT_RUN_FILE, None)
+    if not isinstance(opts, dict) or STORAGE["low"]: return False
+    opts = dict(opts, resumed=True)
+    with audit_lock:
+        if audit_state["status"] == "running": return False
+        audit_state.update(status="running", options=opts, stop_reason="")
+    audit_log(f"[RESUME] Going on with the audit ({why}). Songs it checked already are skipped.")
+    threading.Thread(target=_run_audit_job, args=(opts,), daemon=True).start()
+    return True
 
 def clean_work_dir(max_age=7200):
     """Delete working files (plugins', the fingerprinter's) left behind by a crash or a stopped job."""
@@ -3354,26 +3392,29 @@ def api_admin_audit_start():
     except (TypeError, ValueError): workers = 2
     if storage_refuse(): return storage_refuse()
     opts = {"scope": str(d.get("scope") or "")[:200], "recheck": bool(d.get("recheck")), "auto_fix": bool(d.get("auto_fix")), "workers": workers,
-            "paths": [str(x) for x in d.get("paths") or []][:500], "artists": [str(x) for x in d.get("artists") or []][:500]}
+            "paths": [str(x) for x in d.get("paths") or []][:500], "artists": [str(x) for x in d.get("artists") or []][:500], "since": time.time()}
     with audit_lock:
         if audit_state["status"] == "running": return jsonify({"error": "An audit is already running"}), 409
-        audit_state.update(status="running", options=opts)
+        audit_state.update(status="running", options=opts, stop_reason="")
         audit_state["logs"].clear()
+    _save_json_file(AUDIT_RUN_FILE, opts)
     threading.Thread(target=_run_audit_job, args=(opts,), daemon=True).start()
     return jsonify({"message": "Audit started", "options": opts})
 
 @app.route("/api/admin/audit/stop", methods=["POST"])
 def api_admin_audit_stop():
+    audit_state["stop_reason"] = "admin"
     audit_stop.set()
     with audit_lock: fix_queue.clear()
-    audit_log("[STOPPED] Stop requested; finishing the tracks in progress.")
+    AUDIT_RUN_FILE.unlink(missing_ok=True)
+    audit_log(f"[STOPPED] {admin_name() or 'An admin'} stopped the audit; the songs in progress finish first.")
     return jsonify({"message": "Stopping"})
 
 @app.route("/api/admin/audit/status", methods=["GET"])
 def api_admin_audit_status():
     with audit_lock:
         totals = collections.Counter(e.get("status", "error") for e in audit_db.values())
-        return jsonify({k: audit_state[k] for k in ("status", "scanned", "total", "cached", "counts", "current", "started_at", "options", "fixing", "fix_queue")}
+        return jsonify({k: audit_state[k] for k in ("status", "scanned", "total", "cached", "counts", "current", "started_at", "options", "fixing", "fix_queue", "stop_reason")}
                        | {"logs": list(audit_state["logs"]), "library_totals": dict(totals), "library_size": len(library_cache_data)})
 
 @app.route("/api/admin/audit/results", methods=["GET"])

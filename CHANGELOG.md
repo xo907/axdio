@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.13.1
+
+- **The library audit no longer stops without saying why, and it goes on by itself when it can.**
+  - When the disk Axdio's settings and working files are on gets nearly full (under 1 GB free), Axdio stops its background jobs to keep its database safe. The audit's page just said "Stopped"; now its log and progress line say it was the disk, and the audit goes on where it left off once there's room again (1.5 GB free). The duplicate finder and the fixers say why in their logs too.
+  - An audit cut short by a restart (an update, the Restart button, the container restarting) goes on where it left off after the server's first library scan. A re-check skips the songs it already re-checked.
+  - Stopping it by hand is noted with who stopped it, and it stays stopped.
+  - A song that trips up the audit in an unexpected way is noted in the log, and the audit carries on with the rest instead of ending early.
+
 ## 2.13.0
 
 - **Fixed songs go where their tags say.** When the library audit's Fix tags, or Titles & tags, finds that a song is another artist's or on another album, the song now moves into that artist's and album's folder (Artist/Album/song), which is made if there isn't one yet. Before, its tags were fixed but it stayed in the old folder, so an album tagged under the wrong artist stayed there too.
