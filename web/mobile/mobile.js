@@ -380,7 +380,7 @@ VIEWS.find = pg => {
     if (!res) { renderRecentSearches(body); return; }
     chips.innerHTML = [['top', 'Top'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
       .map(([id, l]) => `<button class="chip${st.f === id ? ' on' : ''}" data-f="${id}">${l}</button>`).join('');
-    body.innerHTML = searchResults(pg, res, st.f, st.q);
+    body.innerHTML = (Src.pending(st.q) && res.top ? '<div class="src-bar"></div>' : '') + searchResults(pg, res, st.f, st.q);
   };
   function renderRecentSearches(el) {
     const items = SEARCHES.map(s => [s, searchItem(s)]).filter(x => x[1]);
@@ -400,7 +400,7 @@ function searchResults(pg, res, f, q) {
   const songsCtx = pageCtx(pg, 'search', q, `Search: ${q}`, res.songs);
   const artistIt = res.artists.map(id => itArtist(L.artists[id])), albumIt = res.albums.map(id => itAlbum(L.albums[id]));
   const plIt = res.playlists.map(itSearchPl).filter(Boolean);
-  const none = `<div class="src-none">${emptyHtml('search', `No results for “${q}”`, 'Check the spelling, or try fewer or different keywords.')}</div>`;
+  const none = Src.pending(q) ? `<div class="src-searching"><div class="src-orb">${ic('search')}</div><h3>Searching for “${esc(q)}”</h3><p>Looking beyond your library…</p></div>` : `<div class="src-none">${emptyHtml('search', `No results for “${q}”`, 'Check the spelling, or try fewer or different keywords.')}</div>`;
   if (f === 'songs') return res.songs.length ? trackList(songsCtx) : none;
   if (f === 'artists') return artistIt.length ? artistIt.map(it => rowHtml(it)).join('') : none;
   if (f === 'albums') return albumIt.length ? albumIt.map(it => rowHtml(it, true)).join('') : none;

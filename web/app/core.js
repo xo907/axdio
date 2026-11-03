@@ -672,7 +672,7 @@ const Src = {
     q = String(q || '').trim();
     if (!res || !this.on() || q.length < 2) return res;
     const d = this.got.get(q);
-    if (!d) { this.search(q).then(r => { if (r) redraw(); }).catch(() => {}); return res; }
+    if (!d) { this.search(q).then(() => redraw(), () => redraw()); return res; }
     const fresh = [];
     for (const s of d.sources) {
       for (const x of s.songs) { const t = this.track(x); if (!res.songs.includes(t.id)) { res.songs.push(t.id); if (t.ext) fresh.push(x); } }
@@ -685,8 +685,14 @@ const Src = {
         if (lib && res.top && res.top.k === 'artist' && res.top.id === lib.id) res.top = { k: 'artist', id: a.id };
       }
       res.artists = uniq(res.artists);
-      const best = s.top || s.all.artists[0];
-      if (best && best.kind === 'artist' && norm(best.name) === norm(q)) res.top = { k: 'artist', id: this.artist(best).id };
+      // What the search is for: an artist of that name, when most of the top songs are theirs (or no song has that
+      // name); else a song of that name, unless the library's own top result is one.
+      const nq = norm(q), ar = [s.top, ...s.all.artists].find(x => x && x.kind === 'artist' && norm(x.name) === nq);
+      const theirs = ar ? s.all.songs.slice(0, 5).filter(x => (x.artists || []).some(n => norm(n) === nq)).length : 0;
+      const song = s.all.songs.find(x => norm(x.title) === nq);
+      const own = res.top && res.top.k === 'track' && !L.tracks[res.top.id].ext && L.tracks[res.top.id].st === nq;
+      if (ar && (theirs >= 2 || !song)) res.top = { k: 'artist', id: this.artist(ar).id };
+      else if (song && !own) res.top = { k: 'track', id: this.track(song).id };
       for (const x of s.albums) { const a = this.libAlbum(x) || this.album(x); if (!res.albums.includes(a.id)) res.albums.push(a.id); }
       if (!res.top && s.top) {
         const x = s.top;
@@ -759,6 +765,8 @@ const Src = {
     }
     if (any) { LS.set('axdio_src_likes', Object.fromEntries(this.likes)); pushLibrary(); UI.dirty(['liked', 'library'], true); }
   },
+  // Whether the sources are still looking for `q`.
+  pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && this.results.has(q) && !this.got.has(q); },
   wasAsked(item) { return !!item && this.asked.has(item.kind + ':' + item.id); },
   // After a Get, look for what came in (for a while), and read the library again when it changed.
   follow() {

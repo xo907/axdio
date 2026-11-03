@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.14.7
+
+- **Search shows it's still looking.** While a library source is being searched, the results show a live searching state instead of "No results" (and a moving line above the library's results), until its answers are in.
+- **A search for a song puts the song first.** When a song has the name searched for, it's the top result, unless an artist of that name has most of the top songs. Artists are still listed.
+- **The heart shows on every song**, not only when the pointer is over it.
+
 ## 2.14.6
 
 - **Searching for an artist finds them, whether or not the library has them.** When a library source has the artist, search shows the source's (with all they made, and their own picture), also where the library has only a song they're featured on. Their page links to what the library has with **In your library**.

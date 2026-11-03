@@ -801,3 +801,16 @@ body.in-chat #nav, body.in-chat #mini { display: none !important; }
 .src-res:empty { display: none; }
 .src-wait { display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 13px; padding: 20px 16px; }
 .src-err { color: var(--text-2); font-size: 13px; padding: 16px; }
+
+/* Searching beyond the library: a live state while the external results come in */
+.src-searching { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 72px 16px; gap: 10px; }
+.src-searching h3 { margin: 10px 0 0; font-size: 22px; font-weight: 800; }
+.src-searching p { margin: 0; color: var(--text-2); font-size: 14px; }
+.src-orb { position: relative; width: 64px; height: 64px; }
+.src-orb::before, .src-orb::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; animation: src-ring 1.8s ease-out infinite; }
+.src-orb::after { animation-delay: .9s; }
+.src-orb .i { position: absolute; inset: 18px; width: 28px; height: 28px; color: var(--text); animation: src-bob 1.8s ease-in-out infinite; }
+@keyframes src-ring { 0% { transform: scale(.4); opacity: .9; } 100% { transform: scale(1.4); opacity: 0; } }
+@keyframes src-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+.src-bar { height: 2px; margin: 0 0 12px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: src-slide 1.2s linear infinite; }
+@keyframes src-slide { 0% { background-position: -40% 0; } 100% { background-position: 140% 0; } }

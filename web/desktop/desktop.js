@@ -269,11 +269,11 @@ VIEWS.search = (el, p) => {
   const res = Src.merge(searchAll(q), q, () => { if (V.route.view === 'search' && (V.route.params.q || '').trim() === q) render(view.scrollTop); });
   const chips = [['all', 'All'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
     .map(([k, l]) => `<button class="chip${SR.f === k ? ' on' : ''}" data-act="search-filter" data-f="${k}">${l}</button>`).join('');
-  let h = `<div class="content" style="padding-top:76px"><div class="chips" style="position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 0">${chips}</div>`;
+  let h = `<div class="content" style="padding-top:76px"><div class="chips" style="position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 0">${chips}</div>${Src.pending(q) ? '<div class="src-bar"></div>' : ''}`;
   const songs = vctx('search', q, `Search: ${q}`, res.songs);
   const artists = res.artists.map(id => itArtist(L.artists[id])), albums = res.albums.map(id => itAlbum(L.albums[id]));
   const pls = res.playlists.map(itSearchPl).filter(Boolean);
-  const none = `<div class="src-none">${emptyHtml('search', `No results found for “${q}”`, 'Please make sure your words are spelled correctly, or use fewer or different keywords.')}</div>`;
+  const none = Src.pending(q) ? `<div class="src-searching"><div class="src-orb">${ic('search')}</div><h3>Searching for “${esc(q)}”</h3><p>Looking beyond your library…</p></div>` : `<div class="src-none">${emptyHtml('search', `No results found for “${q}”`, 'Please make sure your words are spelled correctly, or use fewer or different keywords.')}</div>`;
   if (SR.f === 'songs') h += res.songs.length ? tableShell(songs, {}) : none;
   else if (SR.f === 'artists') h += artists.length ? `<div class="grid">${artists.map(cardHtml).join('')}</div>` : none;
   else if (SR.f === 'albums') h += albums.length ? `<div class="grid">${albums.map(cardHtml).join('')}</div>` : none;
