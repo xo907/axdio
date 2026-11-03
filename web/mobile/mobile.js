@@ -408,7 +408,7 @@ function searchResults(pg, res, f, q) {
   if (!res.top) return none;
   let h = '';
   const top = res.top;
-  if (top.k === 'artist') { const ar = L.artists[top.id]; h += `<div class="top-res circle" data-act="open" data-k="artist" data-id="${ar.id}"><div class="row-art">${img(coverUrl(ar.cover))}</div><div><div class="t">${esc(ar.name)}</div><div class="s">Artist • ${count(ar.trackIds.length, 'song')}</div></div></div>`; }
+  if (top.k === 'artist') { const ar = L.artists[top.id]; h += `<div class="top-res circle" data-act="open" data-k="artist" data-id="${ar.id}"><div class="row-art">${img(coverUrl(ar.cover))}</div><div><div class="t">${esc(ar.name)}</div><div class="s">Artist${ar.ext ? '' : ' • ' + count(ar.trackIds.length, 'song')}</div></div></div>`; }
   else if (top.k === 'album') { const al = L.albums[top.id]; h += `<div class="top-res" data-act="open" data-k="album" data-id="${al.id}"><div class="row-art">${img(coverUrl(al.cover))}</div><div><div class="t">${esc(al.title)}</div><div class="s">${al.type} • ${esc(albumArtist(al))}</div></div></div>`; }
   else { const t = L.tracks[top.id]; h += `<div class="top-res" data-act="open" data-k="track" data-id="${t.id}"><div class="row-art">${img(coverUrl(t.rel))}</div><div><div class="t">${esc(t.title)}</div><div class="s">Song • ${esc(t.artist)}</div></div></div>`; }
   if (res.songs.length) h += `<div class="sec-h"><h2>Songs</h2>${res.songs.length > 5 ? '<button class="more" data-act="find-filter" data-f="songs">Show all</button>' : ''}</div>` + trackList(songsCtx, { limit: 5 });

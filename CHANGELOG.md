@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.14.6
+
+- **Searching for an artist finds them, whether or not the library has them.** When a library source has the artist, search shows the source's (with all they made, and their own picture), also where the library has only a song they're featured on. Their page links to what the library has with **In your library**.
+
 ## 2.14.5
 
 - A library source's switch (**Show <name> in the library**) is with its plugin's own settings, on the plugin's page (for the Downloader: Library > Downloader). A plugin without settings of its own has it under Library scanning on the Maintenance page.

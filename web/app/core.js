@@ -676,7 +676,17 @@ const Src = {
     const fresh = [];
     for (const s of d.sources) {
       for (const x of s.songs) { const t = this.track(x); if (!res.songs.includes(t.id)) { res.songs.push(t.id); if (t.ext) fresh.push(x); } }
-      for (const x of s.artists) { const a = this.libArtist(x) || this.artist(x); if (!res.artists.includes(a.id)) res.artists.push(a.id); }
+      // Artists: the source's, which has all they made, also where the library has some of it (a song they're
+      // featured on, say). Their page links to the library's.
+      for (const x of s.all.artists) {
+        const a = this.artist(x), lib = L.artistByKey.get(String(x.name || '').toLowerCase());
+        const i = lib && !lib.ext ? res.artists.indexOf(lib.id) : -1;
+        if (i >= 0) res.artists[i] = a.id; else res.artists.push(a.id);
+        if (lib && res.top && res.top.k === 'artist' && res.top.id === lib.id) res.top = { k: 'artist', id: a.id };
+      }
+      res.artists = uniq(res.artists);
+      const best = s.top || s.all.artists[0];
+      if (best && best.kind === 'artist' && norm(best.name) === norm(q)) res.top = { k: 'artist', id: this.artist(best).id };
       for (const x of s.albums) { const a = this.libAlbum(x) || this.album(x); if (!res.albums.includes(a.id)) res.albums.push(a.id); }
       if (!res.top && s.top) {
         const x = s.top;
