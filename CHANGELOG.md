@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.14.2
+
+- **Library sources are on by default.** An admin can still turn one off (**Show <name> in the library**, on the Maintenance page under Library scanning).
+- The player doesn't name a source anywhere: its artist and album pages look like the library's, its songs are marked **External**, and a library artist's page links to the rest of what they made with **More releases**.
+
 ## 2.14.1
 
 - **A library source's results are part of the search results.** Its songs, artists and albums are in the same Songs, Artists and Albums lists as the library's (after them), instead of sections of their own, and its songs are marked **External**.

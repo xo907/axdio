@@ -262,8 +262,8 @@ Plugins live in `config/plugins`, so they survive restarts and image updates. On
 - add **catalogs**: lists of plugins that anyone can publish, which then show up ready to install.
 
 A plugin can also add a **library source**: music from somewhere else that shows in the player's own search, artist
-and album pages and plays straight from there, until someone gets it into the library. Each source is off until an
-admin turns it on under Library in the settings.
+and album pages and plays straight from there, until someone gets it into the library. Each source is on unless an
+admin turns it off (on the Maintenance page, under Library scanning).
 
 If a plugin keeps the server from starting, set `AXDIO_SAFE_MODE=1` once: no plugin is loaded, and you can turn it off
 or remove it.

@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.14.1"
+AXDIO_VERSION = "2.14.2"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -9921,7 +9921,7 @@ def refresh_catalogs():
 # A plugin can bring music from somewhere else into the library's search, artist and album pages (api.source). Songs
 # of a source are played straight from it before they're in the library, under paths of their own, "@<source>/<id>",
 # that /api/stream_path and /api/cover hand to the source. Plays of them aren't written into listening history, since
-# the songs aren't in the library. Each source is off until an admin turns it on (a setting under Library, there while
+# the songs aren't in the library. Each source is on unless an admin turns it off (a setting under Library, there while
 # its plugin is loaded), and its plugin says whether it can be used right now, and by whom (`ready`).
 LIBRARY_SOURCES = {}                # source id -> {"pid", "id", "name", "search", "stream", "cover", "album", "artist", "get", "warm", "ready"}
 SOURCE_ID_RE = re.compile(r"[a-z][a-z0-9]{1,15}")
@@ -10110,7 +10110,7 @@ def source_cover(rel):
     return Response(DEFAULT_SVG_COVER, mimetype="image/svg+xml")
 
 def _add_source_setting(src):
-    field = {"key": source_setting(src["id"]), "type": "bool", "default": False, "label": f"Show {src['name']} in the library",
+    field = {"key": source_setting(src["id"]), "type": "bool", "default": True, "label": f"Show {src['name']} in the library",
              "help": f"Search, and artist and album pages, also show music from {src['name']} (from the {plugin_name(src['pid'])} plugin) "
                      "that isn't in the library. It plays straight from there, and is saved only when someone gets it. "
                      "Only while the plugin is on and ready to use."}
@@ -10119,7 +10119,7 @@ def _add_source_setting(src):
         if sec is None: return
         sec["fields"][:] = [f for f in sec["fields"] if f["key"] != field["key"]] + [field]
         SCHEMA_FIELDS[field["key"]] = field
-        SCHEMA_DEFAULTS[field["key"]] = False
+        SCHEMA_DEFAULTS[field["key"]] = True
         _cfg_state["data"] = {}
 
 def _drop_sources(pid):

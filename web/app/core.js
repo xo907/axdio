@@ -645,7 +645,7 @@ const Src = {
   },
   // A card for a source's album or artist (the library's own when it has it).
   card(a) {
-    if (a.kind === 'artist') { const lib = this.libArtist(a); if (lib) return itArtist(lib); const ar = this.artist(a); return { k: 'artist', id: ar.id, title: ar.name, sub: `Artist • ${this.name(a.src)}`, cover: img(coverUrl(a.cover || ar.cover)), circle: true, ext: a.src }; }
+    if (a.kind === 'artist') { const lib = this.libArtist(a); if (lib) return itArtist(lib); const ar = this.artist(a); return { k: 'artist', id: ar.id, title: ar.name, sub: 'Artist', cover: img(coverUrl(a.cover || ar.cover)), circle: true, ext: a.src }; }
     const lib = this.libAlbum(a);
     if (lib) return itAlbum(lib);
     const al = this.album(a);

@@ -477,7 +477,7 @@ function srcAlbumView(pg) {
     const ar = L.artists[al.artistId], have = ids.filter(id => !L.tracks[id].ext).length;
     const by = ar ? `<button class="hero-by" data-act="open" data-k="artist" data-id="${ar.id}">${esc(ar.name)}</button>` : '';
     pg.el.innerHTML = topbar(a.title, ctx) + '<div class="wash"></div>'
-      + heroHtml({ cover: img(coverUrl(a.cover || al.cover)), title: a.title, by, sub: [a.type || 'Album', a.year, 'On ' + d.source.name].filter(Boolean).map(esc).join(' • ') })
+      + heroHtml({ cover: img(coverUrl(a.cover || al.cover)), title: a.title, by, sub: [a.type || 'Album', a.year].filter(Boolean).map(esc).join(' • ') })
       + `<div class="actions">${srcGetBtn(al, have === ids.length ? '' : have ? 'Get the rest' : 'Get')}<span class="flex1"></span>${ids.length ? shuffleBtn() + playBtn(ctx) : ''}</div>`
       + trackList(ctx, { num: ids.length > 1 })
       + `<div class="list-foot">${count(ids.length, 'song')}${have ? ` • ${nf(have)} in your library` : ''}</div>`;
@@ -494,7 +494,7 @@ function srcArtistView(pg) {
     const ctx = pageCtx(pg, 'artist', a.key, a.name, ids);
     const lib = Src.libArtist({ name: a.name, songs: 1 });
     const rels = d.albums.length + d.singles.length;
-    const facts = [a.listeners ? a.listeners + ' monthly listeners' : '', rels ? count(rels, 'release') : '', 'On ' + d.source.name].filter(Boolean).map(esc).join(' • ');
+    const facts = [a.listeners ? a.listeners + ' monthly listeners' : '', rels ? count(rels, 'release') : ''].filter(Boolean).map(esc).join(' • ');
     let h = topbar(a.name, ctx) + `<div class="art-hero">${img(coverUrl(a.cover || ar.cover))}<h1 class="art-name">${esc(a.name)}</h1></div>`
       + `<div class="art-sub">${facts}</div>`
       + `<div class="actions">${srcGetBtn(ar, lib ? 'Get the rest' : 'Get everything')}${lib ? `<button class="pill-btn" data-act="open" data-k="artist" data-id="${lib.id}">In your library</button>` : ''}<span class="flex1"></span>${ids.length ? shuffleBtn() + playBtn(ctx) : ''}</div>`;
@@ -592,7 +592,7 @@ VIEWS.artist = pg => {
   paint(pg, ar.cover);
   if (!ar.ext && Src.on()) Src.findArtist(ar.name).then(a => {
     const box = pg.el.querySelector('.actions');
-    if (a && box && !box.querySelector('[data-src-artist]')) box.querySelector('.flex1').insertAdjacentHTML('beforebegin', `<button class="pill-btn" data-src-artist data-act="open" data-k="artist" data-id="${Src.artist(a).id}">On ${esc(Src.name(a.src))}</button>`);
+    if (a && box && !box.querySelector('[data-src-artist]')) box.querySelector('.flex1').insertAdjacentHTML('beforebegin', `<button class="pill-btn" data-src-artist data-act="open" data-k="artist" data-id="${Src.artist(a).id}">More releases</button>`);
   });
   function popScore(id) { return L.albums[id].trackIds.reduce((s, t) => s + (U.plays.get(L.tracks[t].rel) || 0), 0) * 10 + L.albums[id].trackIds.length / 4 + L.albums[id].mtime / (ar.mtime || 1); }
 };
@@ -1453,7 +1453,7 @@ function trackSheet(t, o = {}) {
 // A song from a source (not in the library yet): queue it, get it, or go to where it's from.
 function srcTrackSheet(t, o) {
   const al = albumOf(t), ar = artistOf(t), can = Src.canGet(t.ext) && !Src.wasAsked(t.item);
-  openSheet(sheetHead(img(coverUrl(t.rel)), t.title, `${t.artist} • ${Src.name(t.ext)}`) + '<div class="sheet-body">'
+  openSheet(sheetHead(img(coverUrl(t.rel)), t.title, `${t.artist} • External`) + '<div class="sheet-body">'
     + (can ? si('get', 'dl', 'Get it into the library') : '')
     + si('queue', 'queue', 'Add to queue') + si('next', 'next', 'Play next')
     + si('album', 'album', 'View album') + si('artist', 'person', 'View artist')
@@ -1472,7 +1472,7 @@ function ctxSheet(k, id) {
   const ex = k === 'album' ? L.albums[+id] : k === 'artist' ? L.artists[+id] : null;
   if (ex && ex.ext) {
     const can = ex.item.id && Src.canGet(ex.ext) && !Src.wasAsked(ex.item);
-    openSheet(sheetHead(img(coverUrl(ex.cover)), ex.title || ex.name, Src.name(ex.ext)) + '<div class="sheet-body">'
+    openSheet(sheetHead(img(coverUrl(ex.cover)), ex.title || ex.name, 'External') + '<div class="sheet-body">'
       + (can ? si('get', 'dl', k === 'artist' ? 'Get everything' : 'Get') : '') + si('open', k === 'artist' ? 'person' : 'album', 'Open') + '</div>', {
       get: (b, close) => { close(); Src.get(ex.item); },
       open: thenNav(() => openItem(k, id)),

@@ -355,7 +355,7 @@ function srcAlbumView(el, p) {
       + (a.year ? `<span class="dot"></span><span class="muted">${esc(a.year)}</span>` : '')
       + `<span class="dot"></span><span class="muted">${count(ids.length, 'song')}${have ? ` • ${nf(have)} in your library` : ''}</span>`;
     el.innerHTML = '<div class="vbg"></div>' + vhead(a.title, ctx)
-      + heroHtml({ kind: `${a.type || 'Album'} · On ${d.source.name}`, cover: img(coverUrl(a.cover || al.cover)), title: a.title, line })
+      + heroHtml({ kind: a.type || 'Album', cover: img(coverUrl(a.cover || al.cover)), title: a.title, line })
       + `<div class="actions">${ids.length ? playBtn(ctx) + shufBtn() : ''}${srcGetBtn(al, have === ids.length ? '' : have ? 'Get the rest' : 'Get')}</div>`
       + `<div class="content">${tableShell(ctx, { noAlbum: true, noArt: true, trackNo: ids.every(id => L.tracks[id].no > 0) })}</div>`;
     fillTables(el);
@@ -373,7 +373,7 @@ function srcArtistView(el, p) {
     const lib = Src.libArtist({ name: a.name, songs: 1 });
     const rels = d.albums.length + d.singles.length;
     const facts = [a.listeners ? a.listeners + ' monthly listeners' : '', a.subscribers ? a.subscribers + ' subscribers' : '', rels ? count(rels, 'release') : ''].filter(Boolean).map(esc).join(' • ');
-    let h = vhead(a.name, ctx) + `<div class="art-banner"><div class="bimg" style="background-image:${esc(cssUrl(coverUrl(a.cover || ar.cover)))}"></div><div><div class="verified src">${ic('radio')}On ${esc(d.source.name)}</div><h1 class="art-name">${esc(a.name)}</h1><div>${facts}</div></div></div>`
+    let h = vhead(a.name, ctx) + `<div class="art-banner"><div class="bimg" style="background-image:${esc(cssUrl(coverUrl(a.cover || ar.cover)))}"></div><div><h1 class="art-name">${esc(a.name)}</h1><div>${facts}</div></div></div>`
       + `<div class="actions">${ids.length ? playBtn(ctx) + shufBtn() : ''}${srcGetBtn(ar, lib ? 'Get the rest' : 'Get everything')}${lib ? `<button class="pill-btn" data-act="go" data-view="artist" data-id="${lib.id}">In your library</button>` : ''}</div><div class="content">`;
     if (ids.length) h += `<section class="sec"><div class="sec-h"><h2>Popular</h2></div>${tableShell(ctx, { limit: st.more ? 10 : 5, noHead: true, noAlbum: true })}${ids.length > 5 ? `<button class="see-more" data-act="artist-more">${st.more ? 'Show less' : 'See more'}</button>` : ''}</section>`;
     h += shelf('Albums', d.albums.map(x => Src.card(x)));
@@ -438,7 +438,7 @@ VIEWS.artist = (el, p) => {
   paint(ar.cover);
   if (!ar.ext && Src.on()) Src.findArtist(ar.name).then(a => {
     const box = el.querySelector('.actions');
-    if (a && box && V.route.view === 'artist' && V.route.params.key === p.key) box.insertAdjacentHTML('beforeend', `<button class="pill-btn" data-act="go" data-view="artist" data-id="${Src.artist(a).id}">On ${esc(Src.name(a.src))}</button>`);
+    if (a && box && V.route.view === 'artist' && V.route.params.key === p.key) box.insertAdjacentHTML('beforeend', `<button class="pill-btn" data-act="go" data-view="artist" data-id="${Src.artist(a).id}">More releases</button>`);
   });
   function albumScore(id) { const al = L.albums[id]; return al.trackIds.reduce((s, t) => s + (U.plays.get(L.tracks[t].rel) || 0), 0) * 10 + al.trackIds.length / 4 + al.mtime / (ar.mtime || 1); }
 };
