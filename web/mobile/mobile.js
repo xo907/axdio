@@ -31,7 +31,7 @@ const {
   setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
   LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink, setOnline, avatarHtml, itAlbum,
   itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds,
-  itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort,
+  itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort, Src,
 } = window.AX;
 
 /* ======================================================================
@@ -178,7 +178,7 @@ function openPage(view, params) {
     const obj = view === 'album' ? L.albums[params.id] : L.artists[params.id];
     if (!obj) return;
     params = { key: obj.key };
-    touchRecent(view + ':' + obj.key);
+    if (!obj.ext) touchRecent(view + ':' + obj.key);
   }
   if (view === 'playlist') touchRecent('playlist:' + params.name);
   if (view === 'cpl') touchRecent('cpl:' + params.id);
@@ -240,9 +240,15 @@ function trackRow(t, i, o = {}) {
   const liked = U.likedSet.has(t.rel);
   const off = !navigator.onLine && !Off.set.has(t.rel);
   const lead = o.num ? `<div class="num"><span class="num-n">${i + 1}</span>${EQB}</div>` : o.noArt ? '' : `<div class="row-art">${img(coverUrl(t.rel))}${EQB}</div>`;
-  const tail = o.tail != null ? o.tail
+  const tail = o.tail != null ? o.tail : t.ext ? srcRowTail(t)
     : `<button class="row-act${liked ? ' liked' : ''}" data-act="like" data-t="${t.id}" aria-label="${liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(liked ? 'heart-f' : 'heart', 'md')}</button><button class="row-act" data-act="more" data-t="${t.id}" aria-label="More options for ${esc(t.title)}">${ic('more-v', 'md')}</button>`;
-  return `<div class="trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}">${o.drag ? `<div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}${lead}<div class="meta"><div class="t">${esc(t.title)}</div><div class="s"><span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span>${esc(o.sub != null ? o.sub : t.artist)}</span></div></div>${tail}</div>`;
+  return `<div class="trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}">${o.drag ? `<div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}${lead}<div class="meta"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? `<span class="src-badge">${esc(Src.name(t.ext))}</span>` : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span>${esc(o.sub != null ? o.sub : t.artist)}</span></div></div>${tail}</div>`;
+}
+function srcRowTail(t) {
+  const more = `<button class="row-act" data-act="more" data-t="${t.id}" aria-label="More options for ${esc(t.title)}">${ic('more-v', 'md')}</button>`;
+  if (!Src.canGet(t.ext)) return more;
+  if (Src.wasAsked(t.item)) return `<span class="row-act liked" aria-label="Asked for">${ic('check-c', 'md')}</span>` + more;
+  return `<button class="row-get" data-act="src-get" data-t="${t.id}">Get</button>` + more;
 }
 function trackList(ctx, o = {}) { return `<div class="rows" data-ctx="${ctx.rid}">${ctx.ids.slice(0, o.limit || ctx.ids.length).map((id, i) => trackRow(L.tracks[id], i, o)).join('')}</div>`; }
 // Long lists render in chunks as you scroll; disposal is tied to the page.
@@ -373,6 +379,7 @@ VIEWS.find = pg => {
     chips.innerHTML = [['top', 'Top'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
       .map(([id, l]) => `<button class="chip${st.f === id ? ' on' : ''}" data-f="${id}">${l}</button>`).join('');
     body.innerHTML = searchResults(pg, res, st.f, st.q);
+    srcFind(pg, body, st);
   };
   function renderRecentSearches(el) {
     const items = SEARCHES.map(s => [s, searchItem(s)]).filter(x => x[1]);
@@ -392,7 +399,7 @@ function searchResults(pg, res, f, q) {
   const songsCtx = pageCtx(pg, 'search', q, `Search: ${q}`, res.songs);
   const artistIt = res.artists.map(id => itArtist(L.artists[id])), albumIt = res.albums.map(id => itAlbum(L.albums[id]));
   const plIt = res.playlists.map(itSearchPl).filter(Boolean);
-  const none = emptyHtml('search', `No results for “${q}”`, 'Check the spelling, or try fewer or different keywords.');
+  const none = `<div class="src-none">${emptyHtml('search', `No results for “${q}”`, 'Check the spelling, or try fewer or different keywords.')}</div>`;
   if (f === 'songs') return res.songs.length ? trackList(songsCtx) : none;
   if (f === 'artists') return artistIt.length ? artistIt.map(it => rowHtml(it)).join('') : none;
   if (f === 'albums') return albumIt.length ? albumIt.map(it => rowHtml(it, true)).join('') : none;
@@ -408,6 +415,96 @@ function searchResults(pg, res, f, q) {
   if (albumIt.length) h += `<div class="sec-h"><h2>Albums</h2>${albumIt.length > 4 ? '<button class="more" data-act="find-filter" data-f="albums">Show all</button>' : ''}</div>` + albumIt.slice(0, 4).map(it => rowHtml(it, true)).join('');
   if (plIt.length) h += `<div class="sec-h"><h2>Playlists</h2></div>` + plIt.slice(0, 4).map(it => rowHtml(it, true)).join('');
   return h;
+}
+
+// What the sources turned on have for a search, under the library's results (or instead of "No results").
+function srcFind(pg, body, st) {
+  const q = st.q.trim(), f = st.f;
+  if (!Src.on() || q.length < 2 || f === 'playlists') return;
+  const box = document.createElement('div');
+  box.className = 'src-res';
+  body.appendChild(box);
+  setTimeout(() => {
+    if (!box.isConnected || st.q.trim() !== q) return;
+    box.innerHTML = `<div class="src-wait"><span class="spin-sm"></span>Looking on ${esc(Src.list.map(x => x.name).join(' and '))}…</div>`;
+    Src.search(q).then(r => {
+      if (!box.isConnected || !r) return;
+      const h = r.sources.map(s => srcSection(pg, s, f, q)).join('');
+      box.innerHTML = h;
+      if (h.includes('data-src-found')) { const n = body.querySelector('.src-none'); if (n) n.remove(); }
+      Src.warm(r.sources.flatMap(s => s.songs).slice(0, 3));
+    }).catch(err => { if (box.isConnected) box.innerHTML = `<p class="src-err">${esc(err.message)}</p>`; });
+  }, 350);
+}
+function srcSection(pg, s, f, q) {
+  if (s.error) return `<p class="src-err">${esc(s.error)}</p>`;
+  const ids = s.songs.map(x => Src.track(x).id);
+  const ctx = pageCtx(pg, 'search', `src:${s.id}:${q}`, `${s.name}: ${q}`, ids);
+  const arts = s.artists.map(x => Src.card(x)), albs = s.albums.map(x => Src.card(x));
+  const head = (title, more) => `<div class="sec-h" data-src-found><div><div class="kicker">On ${esc(s.name)}</div><h2>${esc(title)}</h2></div>${more ? `<button class="more" data-act="find-filter" data-f="${more}">Show all</button>` : ''}</div>`;
+  if (f === 'songs') return ids.length ? head('Songs') + trackList(ctx) : '';
+  if (f === 'artists') return arts.length ? head('Artists') + arts.map(it => rowHtml(it)).join('') : '';
+  if (f === 'albums') return albs.length ? head('Albums') + albs.map(it => rowHtml(it, true)).join('') : '';
+  let h = '';
+  if (ids.length) h += head('Songs', ids.length > 5 ? 'songs' : '') + trackList(ctx, { limit: 5 });
+  if (arts.length) h += head('Artists', arts.length > 4 ? 'artists' : '') + arts.slice(0, 4).map(it => rowHtml(it)).join('');
+  if (albs.length) h += head('Albums', albs.length > 4 ? 'albums' : '') + albs.slice(0, 4).map(it => rowHtml(it, true)).join('');
+  return h;
+}
+// Get, for a source's song, album or artist ('' when it can't be got, or the library has all of it).
+function srcGetBtn(o, label = 'Get') {
+  if (!o || !o.ext || !label || !o.item.id || !Src.canGet(o.ext)) return '';
+  if (Src.wasAsked(o.item)) return '<button class="pill-btn" disabled>Asked for</button>';
+  const at = o.item.kind === 'song' ? `data-t="${o.id}"` : `data-k="${o.item.kind}" data-id="${o.id}"`;
+  return `<button class="pill-btn src-get" data-act="src-get" ${at}>${ic('dl', 'sm')}${esc(label)}</button>`;
+}
+// A source's album or artist page: read from the source, then drawn like the library's.
+function srcPage(pg, draw) {
+  pg.el.innerHTML = topbar('') + '<div class="mt-loading" style="padding-top:140px"><span class="spin-sm"></span></div>';
+  Src.page(pg.params.key).then(d => {
+    if (!pg.el.isConnected) return;
+    draw(d);
+    afterRender(pg);
+    requestAnimationFrame(() => measurePage(pg));
+  }).catch(err => { if (pg.el.isConnected) pg.el.innerHTML = topbar('') + `<div style="padding-top:80px">${emptyHtml('album', "This isn't available", err.message, '<button class="btn light" data-act="back">Go back</button>')}</div>`; });
+}
+function srcAlbumView(pg) {
+  srcPage(pg, d => {
+    const a = d.album, al = Src.album(a);
+    al.item = { ...a, kind: 'album' };
+    const ids = d.songs.map(x => Src.track(x).id);
+    const ctx = pageCtx(pg, 'album', a.key, a.title, ids);
+    const ar = L.artists[al.artistId], have = ids.filter(id => !L.tracks[id].ext).length;
+    const by = ar ? `<button class="hero-by" data-act="open" data-k="artist" data-id="${ar.id}">${esc(ar.name)}</button>` : '';
+    pg.el.innerHTML = topbar(a.title, ctx) + '<div class="wash"></div>'
+      + heroHtml({ cover: img(coverUrl(a.cover || al.cover)), title: a.title, by, sub: [a.type || 'Album', a.year, 'On ' + d.source.name].filter(Boolean).map(esc).join(' • ') })
+      + `<div class="actions">${srcGetBtn(al, have === ids.length ? '' : have ? 'Get the rest' : 'Get')}<span class="flex1"></span>${ids.length ? shuffleBtn() + playBtn(ctx) : ''}</div>`
+      + trackList(ctx, { num: ids.length > 1 })
+      + `<div class="list-foot">${count(ids.length, 'song')}${have ? ` • ${nf(have)} in your library` : ''}</div>`;
+    if (ids.length) paint(pg, L.tracks[ids[0]].rel);
+  });
+}
+function srcArtistView(pg) {
+  srcPage(pg, d => {
+    const a = d.artist, ar = Src.artist(a);
+    ar.item = { ...a, kind: 'artist' };
+    if (a.cover) ar.cover = a.cover;
+    const st = pg.state || (pg.state = { more: false });
+    const ids = d.songs.map(x => Src.track(x).id);
+    const ctx = pageCtx(pg, 'artist', a.key, a.name, ids);
+    const lib = Src.libArtist({ name: a.name, songs: 1 });
+    const rels = d.albums.length + d.singles.length;
+    const facts = [a.listeners ? a.listeners + ' monthly listeners' : '', rels ? count(rels, 'release') : '', 'On ' + d.source.name].filter(Boolean).map(esc).join(' • ');
+    let h = topbar(a.name, ctx) + `<div class="art-hero">${img(coverUrl(a.cover || ar.cover))}<h1 class="art-name">${esc(a.name)}</h1></div>`
+      + `<div class="art-sub">${facts}</div>`
+      + `<div class="actions">${srcGetBtn(ar, lib ? 'Get the rest' : 'Get everything')}${lib ? `<button class="pill-btn" data-act="open" data-k="artist" data-id="${lib.id}">In your library</button>` : ''}<span class="flex1"></span>${ids.length ? shuffleBtn() + playBtn(ctx) : ''}</div>`;
+    if (ids.length) h += `<div class="sec-h"><h2>Popular</h2></div><div class="rows" data-ctx="${ctx.rid}">${ids.slice(0, st.more ? 10 : 5).map((id, i) => trackRow(L.tracks[id], i, { num: true, sub: albumOf(L.tracks[id]).title })).join('')}</div>`
+      + (ids.length > 5 ? `<button class="see-more" data-act="artist-more">${st.more ? 'Show less' : 'See more'}</button>` : '');
+    h += shelf('Albums', d.albums.map(x => Src.card(x)));
+    h += shelf('Singles and EPs', d.singles.map(x => Src.card(x)));
+    pg.el.innerHTML = h;
+    if (ids.length) paint(pg, L.tracks[ids[0]].rel);
+  });
 }
 
 /* Your Library */
@@ -446,6 +543,7 @@ function heroHtml({ cover, title, desc, by, sub, xl }) {
   return `<div class="hero"><div class="hero-cover">${cover}</div><h1 class="hero-title${xl ? ' xl' : ''}">${esc(title)}</h1>${desc ? `<div class="hero-desc">${esc(desc)}</div>` : ''}${by || ''}${sub ? `<div class="hero-sub">${sub}</div>` : ''}</div>`;
 }
 VIEWS.album = pg => {
+  if (Src.key(pg.params.key)) { srcAlbumView(pg); return; }
   const al = L.albumByKey.get(pg.params.key);
   if (!al) { VIEWS.missing(pg); return; }
   const ar = al.artistId >= 0 ? L.artists[al.artistId] : null;
@@ -466,6 +564,7 @@ VIEWS.album = pg => {
   paint(pg, al.cover);
 };
 VIEWS.artist = pg => {
+  if (Src.key(pg.params.key)) { srcArtistView(pg); return; }
   const ar = L.artistByKey.get(pg.params.key);
   if (!ar || !ar.trackIds.length) { VIEWS.missing(pg); return; }
   const st = pg.state || (pg.state = { more: false });
@@ -491,6 +590,10 @@ VIEWS.artist = pg => {
   h += shelf('Appears on', [...ar.compIds].map(id => itAlbum(L.albums[id])));
   pg.el.innerHTML = h;
   paint(pg, ar.cover);
+  if (!ar.ext && Src.on()) Src.findArtist(ar.name).then(a => {
+    const box = pg.el.querySelector('.actions');
+    if (a && box && !box.querySelector('[data-src-artist]')) box.querySelector('.flex1').insertAdjacentHTML('beforebegin', `<button class="pill-btn" data-src-artist data-act="open" data-k="artist" data-id="${Src.artist(a).id}">On ${esc(Src.name(a.src))}</button>`);
+  });
   function popScore(id) { return L.albums[id].trackIds.reduce((s, t) => s + (U.plays.get(L.tracks[t].rel) || 0), 0) * 10 + L.albums[id].trackIds.length / 4 + L.albums[id].mtime / (ar.mtime || 1); }
 };
 VIEWS.discog = pg => {
@@ -1311,6 +1414,7 @@ const sheetHead = (cover, title, sub) => `<div class="sheet-head"><div class="ro
 const thenNav = fn => () => afterLayers(fn);
 
 function trackSheet(t, o = {}) {
+  if (t.ext) { srcTrackSheet(t, o); return; }
   const liked = U.likedSet.has(t.rel), dl = Off.state(t.rel);
   const acts = (window.AX.Plugins ? window.AX.Plugins.trackActions([t.id]) : []).map(a => Object.assign(a, { icon: /^[a-z0-9-]+$/.test(a.icon) ? a.icon : 'spark' }));
   const al = albumOf(t), ar = artistOf(t);
@@ -1346,7 +1450,35 @@ function trackSheet(t, o = {}) {
     eq: thenNav(() => openPage('eq')),
   });
 }
+// A song from a source (not in the library yet): queue it, get it, or go to where it's from.
+function srcTrackSheet(t, o) {
+  const al = albumOf(t), ar = artistOf(t), can = Src.canGet(t.ext) && !Src.wasAsked(t.item);
+  openSheet(sheetHead(img(coverUrl(t.rel)), t.title, `${t.artist} • ${Src.name(t.ext)}`) + '<div class="sheet-body">'
+    + (can ? si('get', 'dl', 'Get it into the library') : '')
+    + si('queue', 'queue', 'Add to queue') + si('next', 'next', 'Play next')
+    + si('album', 'album', 'View album') + si('artist', 'person', 'View artist')
+    + (o.player ? si('sleep', 'moon', 'Sleep timer', { note: sleepLabel() }) + si('eq', 'tune', 'Equalizer') : '')
+    + '</div>', {
+    get: (b, close) => { close(); Src.get(t.item); },
+    queue: (b, close) => { close(); addToQueue([t.id]); },
+    next: (b, close) => { close(); addToQueue([t.id], true); },
+    album: thenNav(() => openPage('album', { id: al.id })),
+    artist: thenNav(() => openPage('artist', { id: ar.id })),
+    sleep: (b, close) => close().then(sleepSheet),
+    eq: thenNav(() => openPage('eq')),
+  });
+}
 function ctxSheet(k, id) {
+  const ex = k === 'album' ? L.albums[+id] : k === 'artist' ? L.artists[+id] : null;
+  if (ex && ex.ext) {
+    const can = ex.item.id && Src.canGet(ex.ext) && !Src.wasAsked(ex.item);
+    openSheet(sheetHead(img(coverUrl(ex.cover)), ex.title || ex.name, Src.name(ex.ext)) + '<div class="sheet-body">'
+      + (can ? si('get', 'dl', k === 'artist' ? 'Get everything' : 'Get') : '') + si('open', k === 'artist' ? 'person' : 'album', 'Open') + '</div>', {
+      get: (b, close) => { close(); Src.get(ex.item); },
+      open: thenNav(() => openItem(k, id)),
+    });
+    return;
+  }
   let cover, title, sub, ids, items = '', h = {};
   if (k === 'album') {
     const al = L.albums[+id]; if (!al) return;
@@ -1880,6 +2012,13 @@ const ACT = {
   repeat: cycleRepeat,
   'shuffle-all': () => { haptic(); shuffleAll(); },
   like: b => toggleLike(L.tracks[+b.dataset.t], b),
+  'src-get': async b => {
+    const o = b.dataset.t != null ? L.tracks[+b.dataset.t] : b.dataset.k === 'artist' ? L.artists[+b.dataset.id] : L.albums[+b.dataset.id];
+    if (!o) return;
+    haptic();
+    await Src.get(o.item, b);
+    if (Src.wasAsked(o.item) && b.isConnected && b.classList.contains('row-get')) b.outerHTML = `<span class="row-act liked" aria-label="Asked for">${ic('check-c', 'md')}</span>`;
+  },
   'like-cur': b => toggleLike(curTrack(), b),
   more: b => {
     const row = b.closest('[data-ctx]'), ctx = row && CTX.get(row.dataset.ctx);

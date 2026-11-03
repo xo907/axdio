@@ -261,6 +261,10 @@ Plugins live in `config/plugins`, so they survive restarts and image updates. On
 - remove it, along with the Python packages only it needed, and what it saved if you want;
 - add **catalogs**: lists of plugins that anyone can publish, which then show up ready to install.
 
+A plugin can also add a **library source**: music from somewhere else that shows in the player's own search, artist
+and album pages and plays straight from there, until someone gets it into the library. Each source is off until an
+admin turns it on under Library in the settings.
+
 If a plugin keeps the server from starting, set `AXDIO_SAFE_MODE=1` once: no plugin is loaded, and you can turn it off
 or remove it.
 

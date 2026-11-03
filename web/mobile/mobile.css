@@ -789,3 +789,15 @@ body.in-chat #nav, body.in-chat #mini { display: none !important; }
 /* Pages plugins add (web/app/plugins.js) */
 .px-view { padding: 8px 16px 24px; }
 .px-wait { padding: 90px 0; display: grid; place-items: center; }
+
+/* Library sources: songs, albums and artists from elsewhere, not in the library yet */
+.src-badge { flex-shrink: 0; font-size: 9.5px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.12); color: var(--text-2); white-space: nowrap; margin-right: 2px; }
+.row-get { flex-shrink: 0; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,.4); font-size: 12px; font-weight: 700; color: #fff; }
+.row-get:active { transform: scale(.96); background: var(--press); }
+.pill-btn.src-get { display: inline-flex; align-items: center; gap: 6px; }
+.pill-btn.src-get .i { width: 15px; height: 15px; }
+.pill-btn:disabled { opacity: .55; }
+.actions .pill-btn + .pill-btn { margin-left: 8px; }
+.src-res:empty { display: none; }
+.src-wait { display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 13px; padding: 20px 16px; }
+.src-err { color: var(--text-2); font-size: 13px; padding: 16px; }

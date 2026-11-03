@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.14.0
+
+- **Library sources: music from elsewhere, in the player's own search, artist and album pages.** A plugin can now add a source (a streaming service, say). Once an admin turns it on (**Show <name> in the library**, under Library in the settings), searching shows what the source has after the library's results, or instead of "No results", marked with the source's name. Artists and albums the library doesn't have open in the normal artist and album pages, read from the source.
+  - Its songs play right away, streamed from the source through the server, and work like any song: in the queue, the now playing bar, on the lock screen. The first few results, and the next song up, are made ready ahead so they start without waiting.
+  - Nothing is saved by playing. **Get** (on songs, albums and artists, when the source's plugin can get them) asks the plugin to bring it into the library. Once it's in, the player reads the library again: it shows up straight away, and a song that's playing becomes the library's copy without stopping.
+  - Songs that aren't in the library yet can't be liked, put in playlists or saved for offline, and their plays aren't written into listening history.
+  - A library artist's page links to the same artist on the source, for the rest of what they made.
+  - Their artwork is fetched by the server, so listeners' browsers don't contact the source's image hosts.
+  - For plugin makers: `api.source(...)`, described in [PLUGINS.md](PLUGINS.md#library-sources).
+
 ## 2.13.1
 
 - **The library audit no longer stops without saying why, and it goes on by itself when it can.**

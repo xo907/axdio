@@ -2947,6 +2947,118 @@ class TestFilingByTags(Social):
         self.assertEqual(server.repair_refiling(), [])                    # nothing left to do
 
 
+class TestLibrarySources(Base):
+    """A plugin's library source: off until an admin turns it on, there only while its plugin is loaded and says it's
+    ready, and its songs play (and show their artwork) from it, without going into listening history."""
+    def setUp(self):
+        super().setUp()
+        self.ready, self.calls = [True], []
+        api = server.PluginAPI("srcplug", {"name": "Source Plugin"})
+        song = {"id": "abcdefghijk", "title": "Far Song", "artists": ["Far Artist"], "artist_id": "UCfar", "album": "Far Album", "album_id": "MPREfar",
+                "duration": 200, "cover": "https://example.com/c.jpg", "playlist": "kept as given"}
+        def search(q):
+            self.calls.append(("search", q))
+            return {"songs": [song, {"id": "../etc", "title": "bad"}, "nonsense"], "albums": [{"id": "MPREfar", "title": "Far Album", "artist": "Far Artist"}],
+                    "artists": [{"id": "UCfar", "name": "Far Artist"}], "top": dict(song, kind="song")}
+        def album(i):
+            if i == "broken": raise RuntimeError("it fell over")
+            return {"album": {"title": "Far Album", "artist": "Far Artist"}, "songs": [song]}
+        def stream(i):
+            self.calls.append(("stream", i))
+            return server.Response(b"audio of " + i.encode(), mimetype="audio/mp4")
+        def cover(i): return server.Response(b"art", mimetype="image/jpeg")
+        def get(d):
+            self.calls.append(("get", d["kind"], d["id"]))
+            return {"message": "Getting it"}
+        api.source("far", "Far Away", search=search, stream=stream, cover=cover, album=album,
+                   artist=lambda i: {"artist": {"name": "Far Artist"}, "songs": [song], "albums": [], "singles": []},
+                   get=get, warm=lambda i: self.calls.append(("warm", i)), ready=lambda: (True, "") if self.ready[0] else (False, "Not now."))
+
+    def tearDown(self):
+        server._plugin_unregister("srcplug")
+        self.settings(library_source_far=False)
+
+    def test_a_source(self):
+        a = self.admin()
+        # Its setting is under Library, off.
+        conf = a.get("/api/admin/v2/config").get_json()
+        lib = next(s for s in conf["schema"] if s["id"] == "library")
+        self.assertIn("library_source_far", [f["key"] for f in lib["fields"]])
+        self.assertFalse(conf["values"]["library_source_far"])
+        self.assertEqual(self.c.get("/api/sources").get_json(), {"sources": []})
+        self.assertEqual(self.c.get("/api/sources/search?q=far").get_json(), {"sources": []})
+        self.assertEqual(self.c.get("/api/stream_path?path=@far/abcdefghijk").status_code, 403)
+        self.assertEqual(self.c.get("/api/cover?path=@far/abcdefghijk").mimetype, "image/svg+xml")
+        self.assertEqual(self.calls, [])
+
+        self.assertEqual(a.post("/api/admin/v2/config", json={"values": {"library_source_far": True}}).status_code, 200)
+        self.assertEqual(self.c.get("/api/sources").get_json()["sources"], [{"id": "far", "name": "Far Away", "get": True, "album": True, "artist": True}])
+        res = self.c.get("/api/sources/search?q=far").get_json()["sources"][0]
+        self.assertEqual([s["id"] for s in res["songs"]], ["abcdefghijk"])            # bad ids and non-items are left out
+        s = res["songs"][0]
+        self.assertEqual((s["path"], s["src"], s["kind"], s["playlist"]), ("@far/abcdefghijk", "far", "song", "kept as given"))
+        self.assertEqual((res["albums"][0]["key"], res["artists"][0]["key"]), ("@far-album:MPREfar", "@far-artist:UCfar"))
+        self.assertEqual(res["top"]["path"], "@far/abcdefghijk")
+        self.assertEqual(self.c.get("/api/sources/search?q=f").get_json(), {"sources": []})   # too short to ask
+        # Artwork comes through the server, and only from addresses the source gave.
+        self.assertEqual(s["cover"], "/api/sources/far/art?u=https%3A%2F%2Fexample.com%2Fc.jpg")
+        orig = server.fetch_bytes
+        server.fetch_bytes = lambda url, **k: b"\xff\xd8\xff jpeg" if url == "https://example.com/c.jpg" else None
+        try:
+            r = self.c.get(s["cover"])
+            self.assertEqual((r.status_code, r.mimetype, r.data), (200, "image/jpeg", b"\xff\xd8\xff jpeg"))
+            self.assertEqual(self.c.get("/api/sources/far/art?u=https%3A%2F%2Fexample.com%2Fother.jpg").status_code, 404)
+        finally:
+            server.fetch_bytes = orig
+
+        # Pages, Get and warming.
+        al = self.c.get("/api/sources/far/album/MPREfar").get_json()
+        self.assertEqual((al["album"]["key"], al["album"]["id"], al["songs"][0]["path"], al["source"]["name"]), ("@far-album:MPREfar", "MPREfar", "@far/abcdefghijk", "Far Away"))
+        ar = self.c.get("/api/sources/far/artist/UCfar").get_json()
+        self.assertEqual((ar["artist"]["key"], ar["albums"], ar["singles"]), ("@far-artist:UCfar", [], []))
+        r = self.c.get("/api/sources/far/album/broken")
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("it fell over", r.get_json()["error"])
+        self.assertEqual(self.c.get("/api/sources/far/playlist/x").status_code, 404)
+        self.assertEqual(self.c.get("/api/sources/nope/album/x").status_code, 404)
+        self.assertEqual(self.c.post("/api/sources/far/get", json={"kind": "song", "id": "abcdefghijk"}).get_json(), {"message": "Getting it"})
+        self.assertEqual(self.c.post("/api/sources/far/get", json={"kind": "song", "id": "a/b"}).status_code, 400)
+        self.c.post("/api/sources/far/warm", json={"ids": ["a1", "a2", "a3", "a4", "../x"]})
+        self.assertEqual([c for c in self.calls if c[0] == "warm"], [("warm", "a1"), ("warm", "a2"), ("warm", "a3")])
+
+        # Playing: the audio and artwork come from the source, and the play isn't history.
+        r = self.c.get("/api/stream_path?path=@far/abcdefghijk")
+        self.assertEqual((r.status_code, r.data), (200, b"audio of abcdefghijk"))
+        self.assertEqual(self.c.get("/api/cover?path=@far/abcdefghijk").data, b"art")
+        self.register("srclistener")
+        t = self.token("srclistener")
+        r = self.c.post("/api/user/record_play", json={"rel_path": "@far/abcdefghijk"}, headers={"X-Auth-Token": t})
+        self.assertEqual(r.get_json()["skipped"], "not in the library yet")
+        self.assertNotIn("@far/abcdefghijk", [h["rel_path"] for h in server.users_data["srclistener"].get("history", [])])
+
+        # The plugin says it can't be used (the downloader is off, say): nothing of it is there.
+        self.ready[0] = False
+        self.assertEqual(self.c.get("/api/sources").get_json(), {"sources": []})
+        r = self.c.get("/api/stream_path?path=@far/abcdefghijk")
+        self.assertEqual((r.status_code, r.get_json()["error"]), (403, "Not now."))
+        self.ready[0] = True
+
+        # Unloaded with its plugin, setting and all.
+        server._plugin_unregister("srcplug")
+        self.assertNotIn("far", server.LIBRARY_SOURCES)
+        lib = next(s for s in a.get("/api/admin/v2/config").get_json()["schema"] if s["id"] == "library")
+        self.assertNotIn("library_source_far", [f["key"] for f in lib["fields"]])
+        self.assertEqual(self.c.get("/api/sources").get_json(), {"sources": []})
+        self.assertEqual(self.c.get("/api/stream_path?path=@far/abcdefghijk").status_code, 404)
+
+    def test_source_ids(self):
+        api = server.PluginAPI("otherplug")
+        for bad in ("r1a2b3c", "A", "x", "has-dash", "far"):             # like a shared server's paths, too short, taken
+            with self.assertRaises(ValueError): api.source(bad, "Bad", search=lambda q: {}, stream=lambda i: "")
+        with self.assertRaises(ValueError): api.source("fine", "Fine", search=None, stream=lambda i: "")
+        server._plugin_unregister("otherplug")
+
+
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
 

@@ -237,6 +237,44 @@ the player should accept only POST, PUT or DELETE for that, with JSON bodies.
 `api.core` is the server module itself: every function and setting of Axdio. It's there for what the methods above
 don't cover. Its names change between versions, so a plugin that uses it should say which Axdio versions it works with.
 
+## Library sources
+
+A plugin can bring music from somewhere else into the player's own search, artist and album pages (Axdio 2.14). Its
+songs are shown after the library's, marked with the source's name, and play straight from the source. Nothing is
+saved by playing. With a `get` function, each result has a **Get** button that asks the plugin to bring it into the
+library.
+
+```python
+api.source("far", "Far Away", search=search, stream=stream, cover=cover, album=album, artist=artist,
+           get=get, warm=warm, ready=ready)
+```
+
+- `source_id` is 2 to 16 lowercase letters and digits, starting with a letter. A song of the source has the path
+  `@<source_id>/<id>`. Axdio hands the player's requests for its audio (`/api/stream_path`) and artwork (`/api/cover`)
+  to `stream(id)` and `cover(id)`, which return a Flask `Response` (for audio, answer `Range` requests so seeking works).
+  Plays of these songs aren't written into listening history.
+- Each source is off until an admin turns it on: **Show <name> in the library**, under Library in the settings. The
+  setting is there only while the plugin is loaded.
+- `ready()` says whether the source can be used right now, by whoever is asking: `True`, or `(False, "why not")`.
+  Leave it out and it can always be used once it's turned on.
+- `search(q)` returns `{"songs": [...], "albums": [...], "artists": [...], "top": item or None}`.
+- `album(id)` returns `{"album": album, "songs": [...]}`, and `artist(id)` returns
+  `{"artist": artist, "songs": [...], "albums": [...], "singles": [...]}`. Leave them out and results open nothing.
+- `get(item)` gets the song, album or artist it's given (the item as the source gave it, with `kind` and `id`). It
+  returns `{"message": "what to tell the listener"}`, or a Flask response (an error, say).
+- `warm(id)` gets a song ready to start without waiting. The player asks for it for the first few search results and
+  for the next song in the queue, at most 3 at a time.
+
+Items are dicts. Ids are 1 to 120 letters, digits, `_`, `.`, `:`, `=` or `-`. The fields the player uses are:
+- song: `id`, `title`, `artists` (a list of names), `artist_id`, `album`, `album_id`, `duration` (seconds), `track`,
+  `cover` (an image's address), and `rel`, the song's path in the library when it's there already;
+- album: `id`, `title`, `artist`, `artist_id`, `year`, `type` (`Album`, `Single`, `EP`), `cover`, and `rels`, the paths
+  of its songs in the library;
+- artist: `id`, `name`, `cover`, and `songs`, how many of their songs are in the library.
+
+Other fields are kept, and given back to `get`. Songs that are in the library already, and albums and artists the
+library has, are shown from the library instead.
+
 ## In the admin panel
 
 A page in the admin panel's menu comes from `admin_pages` in the manifest, or `api.admin_page(id, title, icon, script,

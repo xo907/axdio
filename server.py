@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.13.1"
+AXDIO_VERSION = "2.14.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -579,6 +579,7 @@ def cover_file_for(rel_path):
 def cover_response(rel_path):
     """Cover art for a song (see cover_file_for), or a placeholder."""
     if FED_REMOTE_RE.match(rel_path or ""): return remote_cover(rel_path)
+    if is_source_path(rel_path): return source_cover(rel_path)
     cover_file = cover_file_for(rel_path)
     if cover_file: return send_file(cover_file, mimetype="image/jpeg", max_age=2592000)
     return Response(DEFAULT_SVG_COVER, mimetype="image/svg+xml")
@@ -645,6 +646,7 @@ def stream_by_path():
     rel_path = decode_rel_path(token) if token else request.args.get("path")
     if not rel_path: abort(404)
     if FED_REMOTE_RE.match(rel_path): return remote_stream(rel_path, QUALITY_KBPS.get(request.args.get("q", "")))
+    if is_source_path(rel_path): return source_stream(rel_path)
     file_path = resolve_safe_music_file(rel_path)
     if not file_path or not file_path.exists():
         if library_entry(rel_path) is not None and not (Path(get_real_music_dir()) / rel_path).exists():
@@ -955,6 +957,7 @@ def user_record_play():
     if not username: return jsonify({"success": False})
     rel_path = (request.json or {}).get("rel_path")
     if not rel_path: return jsonify({"error": "No track specified"}), 400
+    if is_source_path(rel_path): return jsonify({"success": True, "skipped": "not in the library yet"})
     record_play_for(username, rel_path)
     return jsonify({"success": True})
 
@@ -9914,6 +9917,225 @@ def refresh_catalogs():
         plugins_save(st)
 
 
+# --- Library sources ---
+# A plugin can bring music from somewhere else into the library's search, artist and album pages (api.source). Songs
+# of a source are played straight from it before they're in the library, under paths of their own, "@<source>/<id>",
+# that /api/stream_path and /api/cover hand to the source. Plays of them aren't written into listening history, since
+# the songs aren't in the library. Each source is off until an admin turns it on (a setting under Library, there while
+# its plugin is loaded), and its plugin says whether it can be used right now, and by whom (`ready`).
+LIBRARY_SOURCES = {}                # source id -> {"pid", "id", "name", "search", "stream", "cover", "album", "artist", "get", "warm", "ready"}
+SOURCE_ID_RE = re.compile(r"[a-z][a-z0-9]{1,15}")
+SOURCE_PATH_RE = re.compile(r"^@([a-z][a-z0-9]{1,15})/(.+)$", re.S)
+SOURCE_ITEM_RE = re.compile(r"[\w.:=-]{1,120}")
+SOURCE_SEARCH_LIMITS = {"songs": 30, "albums": 20, "artists": 12}
+# Artwork of a source's songs, albums and artists is fetched by the server (/api/sources/<id>/art): image hosts can
+# turn the player's requests down, and listeners' browsers don't talk to them. Only addresses a source gave are fetched.
+_source_art_urls = collections.OrderedDict()     # (source id, address) -> True, the addresses sources gave lately
+_source_art = collections.OrderedDict()          # (source id, address) -> (bytes, type), fetched lately
+_source_art_lock = threading.Lock()
+
+def source_setting(sid):
+    return f"library_source_{sid}"
+
+def source_of(rel):
+    """(source, item id) for a path of a source's song ("@<source>/<id>"), or (None, None)."""
+    m = SOURCE_PATH_RE.match(rel or "")
+    if not m or FED_REMOTE_RE.match(rel): return None, None
+    return LIBRARY_SOURCES.get(m.group(1)), m.group(2)
+
+def is_source_path(rel):
+    m = SOURCE_PATH_RE.match(rel or "")
+    return bool(m) and not FED_REMOTE_RE.match(rel)
+
+def source_usable(src):
+    """(usable, why not) for a source, for whoever is asking: turned on, and its plugin says it's ready."""
+    if not src: return False, "That isn't available."
+    if not cfg().get(source_setting(src["id"])): return False, f"{src['name']} isn't turned on."
+    if src.get("ready"):
+        try: r = src["ready"]()
+        except Exception as ex:
+            _plugin_note(src["pid"], f"source ready: {ex}")
+            return False, f"{src['name']} isn't available right now."
+        ok, why = (r, "") if isinstance(r, bool) else (bool(r[0]), str(r[1] or "") if len(r) > 1 else "")
+        if not ok: return False, why or f"{src['name']} isn't available right now."
+    return True, ""
+
+def usable_sources():
+    return [s for s in list(LIBRARY_SOURCES.values()) if source_usable(s)[0]]
+
+def _source_item(src, kind, it):
+    """A song, album or artist of a source, checked, with the paths and keys the player uses for it."""
+    if not isinstance(it, dict): return None
+    iid = str(it.get("id") or "")
+    if not SOURCE_ITEM_RE.fullmatch(iid): return None
+    out = {k: v for k, v in it.items() if isinstance(v, (str, int, float, bool, list, type(None))) and k not in ("src", "path", "key")}
+    out.update(kind=kind, id=iid, src=src["id"])
+    if kind == "song":
+        out["title"] = str(it.get("title") or "")
+        arts = it.get("artists")
+        out["artists"] = [str(a) for a in arts if a] if isinstance(arts, list) else ([str(it["artist"])] if it.get("artist") else [])
+        out["path"] = f"@{src['id']}/{iid}"
+        for k in ("album_id", "artist_id"):
+            if out.get(k) and not SOURCE_ITEM_RE.fullmatch(str(out[k])): out[k] = ""
+    elif kind == "album":
+        out["title"] = str(it.get("title") or "")
+        out["key"] = f"@{src['id']}-album:{iid}"
+        if out.get("artist_id") and not SOURCE_ITEM_RE.fullmatch(str(out["artist_id"])): out["artist_id"] = ""
+    else:
+        out["name"] = str(it.get("name") or "")
+        out["key"] = f"@{src['id']}-artist:{iid}"
+    if out.get("rel") is not None and not isinstance(out["rel"], str): out["rel"] = None
+    cover = out.get("cover")
+    if isinstance(cover, str) and re.match(r"https://[^/\s]+/\S+$", cover):
+        with _source_art_lock:
+            _source_art_urls[(src["id"], cover)] = True
+            _source_art_urls.move_to_end((src["id"], cover))
+            while len(_source_art_urls) > 5000: _source_art_urls.popitem(last=False)
+        out["cover"] = f"/api/sources/{src['id']}/art?" + urllib.parse.urlencode({"u": cover})
+    elif cover is not None: out["cover"] = ""
+    return out
+
+def _source_list(src, kind, items, limit=200):
+    items = items if isinstance(items, list) else []
+    return [x for x in (_source_item(src, kind, it) for it in items[:limit]) if x]
+
+def _source_call(src, fn, *a):
+    """(what a source's function gave, None), or (None, what went wrong, the way the player can show it)."""
+    try: return fn(*a), None
+    except Exception as ex:
+        _plugin_note(src["pid"], f"source {getattr(fn, '__name__', 'call')}: {ex}")
+        return None, f"{src['name']} didn't answer: {str(ex)[:160]}"
+
+def _source_or_error(sid):
+    src = LIBRARY_SOURCES.get(sid or "")
+    ok, why = source_usable(src)
+    return (src, None) if ok else (None, (jsonify({"error": why}), 403 if src else 404))
+
+@app.route("/api/sources")
+def api_sources():
+    return jsonify({"sources": [{"id": s["id"], "name": s["name"], "get": bool(s.get("get")), "album": bool(s.get("album")),
+                                 "artist": bool(s.get("artist"))} for s in usable_sources()]})
+
+@app.route("/api/sources/search")
+def api_sources_search():
+    """What each source turned on has for a search: {"sources": [{"id", "name", "songs", "albums", "artists", "top", "error"}]}."""
+    q = (request.args.get("q") or "").strip()[:200]
+    out = []
+    if len(q) < 2: return jsonify({"sources": out})
+    for src in usable_sources():
+        d, err = _source_call(src, src["search"], q)
+        d = d if isinstance(d, dict) else {}
+        res = {"id": src["id"], "name": src["name"], "get": bool(src.get("get")), "error": err}
+        for k, kind in (("songs", "song"), ("albums", "album"), ("artists", "artist")):
+            res[k] = _source_list(src, kind, d.get(k), SOURCE_SEARCH_LIMITS[k])
+        top = d.get("top")
+        res["top"] = _source_item(src, top.get("kind"), top) if isinstance(top, dict) and top.get("kind") in ("song", "album", "artist") else None
+        out.append(res)
+    return jsonify({"sources": out})
+
+@app.route("/api/sources/<sid>/<kind>/<item>")
+def api_source_page(sid, kind, item):
+    """An album ({"album", "songs"}) or an artist ({"artist", "songs", "albums", "singles"}) of a source."""
+    if kind not in ("album", "artist") or not SOURCE_ITEM_RE.fullmatch(item): abort(404)
+    src, err = _source_or_error(sid)
+    if err: return err
+    if not src.get(kind): abort(404)
+    d, err = _source_call(src, src[kind], item)
+    if err: return jsonify({"error": err}), 502
+    if not isinstance(d, dict) or not isinstance(d.get(kind), dict): return jsonify({"error": f"{src['name']} doesn't have it."}), 404
+    out = {"source": {"id": src["id"], "name": src["name"], "get": bool(src.get("get"))},
+           kind: _source_item(src, kind, dict(d[kind], id=d[kind].get("id") or item)), "songs": _source_list(src, "song", d.get("songs"))}
+    if kind == "artist":
+        for k in ("albums", "singles"): out[k] = _source_list(src, "album", d.get(k))
+    return jsonify(out)
+
+@app.route("/api/sources/<sid>/get", methods=["POST"])
+def api_source_get(sid):
+    """Ask a source's plugin to bring a song, album or artist into the library ({"kind", "id", …} as the source gave
+    it). It answers with what to tell the listener ({"message"}) and whatever else it likes."""
+    src, err = _source_or_error(sid)
+    if err: return err
+    if not src.get("get"): abort(404)
+    d = request.get_json(silent=True) or {}
+    if d.get("kind") not in ("song", "album", "artist") or not SOURCE_ITEM_RE.fullmatch(str(d.get("id") or "")):
+        return jsonify({"error": "That can't be got."}), 400
+    r = src["get"](d)
+    if isinstance(r, (Response, tuple)): return r
+    return jsonify(r if isinstance(r, dict) else {"ok": True})
+
+@app.route("/api/sources/<sid>/art")
+def api_source_art(sid):
+    src, err = _source_or_error(sid)
+    if err: return err
+    key = (src["id"], request.args.get("u") or "")
+    with _source_art_lock:
+        known, have = key in _source_art_urls, _source_art.get(key)
+    if not known: abort(404)
+    if not have:
+        data = fetch_bytes(key[1], timeout=10, limit=4 * 1024 * 1024)
+        if not data: return Response(DEFAULT_SVG_COVER, mimetype="image/svg+xml")
+        kind = "image/png" if data[:4] == b"\x89PNG" else "image/webp" if data[8:12] == b"WEBP" else "image/gif" if data[:3] == b"GIF" else "image/jpeg"
+        have = (data, kind)
+        with _source_art_lock:
+            _source_art[key] = have
+            while len(_source_art) > 150: _source_art.popitem(last=False)
+    return Response(have[0], headers={"Content-Type": have[1], "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+@app.route("/api/sources/<sid>/warm", methods=["POST"])
+def api_source_warm(sid):
+    """Get songs ready to start without waiting (the first few results shown, the next song up): at most 3 at a time."""
+    src, err = _source_or_error(sid)
+    if err: return err
+    ids = [str(x) for x in ((request.get_json(silent=True) or {}).get("ids") or [])[:3] if SOURCE_ITEM_RE.fullmatch(str(x))]
+    if src.get("warm"):
+        for i in ids: _source_call(src, src["warm"], i)
+    return jsonify({"ok": True})
+
+def source_stream(rel):
+    src, item = source_of(rel)
+    ok, why = source_usable(src)
+    if not ok: return jsonify({"error": why}), 403 if src else 404
+    try: return src["stream"](item)
+    except Exception as ex:
+        _plugin_note(src["pid"], f"source stream: {ex}")
+        return jsonify({"error": f"Couldn't play it from {src['name']}: {str(ex)[:160]}"}), 502
+
+def source_cover(rel):
+    src, item = source_of(rel)
+    if src and src.get("cover") and source_usable(src)[0]:
+        try:
+            r = src["cover"](item)
+            if r is not None: return r
+        except Exception as ex: _plugin_note(src["pid"], f"source cover: {ex}")
+    return Response(DEFAULT_SVG_COVER, mimetype="image/svg+xml")
+
+def _add_source_setting(src):
+    field = {"key": source_setting(src["id"]), "type": "bool", "default": False, "label": f"Show {src['name']} in the library",
+             "help": f"Search, and artist and album pages, also show music from {src['name']} (from the {plugin_name(src['pid'])} plugin) "
+                     "that isn't in the library. It plays straight from there, and is saved only when someone gets it. "
+                     "Only while the plugin is on and ready to use."}
+    with _cfg_lock:
+        sec = next((s for s in ADMIN_SCHEMA if s["id"] == "library"), None)
+        if sec is None: return
+        sec["fields"][:] = [f for f in sec["fields"] if f["key"] != field["key"]] + [field]
+        SCHEMA_FIELDS[field["key"]] = field
+        SCHEMA_DEFAULTS[field["key"]] = False
+        _cfg_state["data"] = {}
+
+def _drop_sources(pid):
+    gone = [sid for sid, s in LIBRARY_SOURCES.items() if s["pid"] == pid]
+    if not gone: return
+    with _cfg_lock:
+        for sid in gone:
+            LIBRARY_SOURCES.pop(sid, None)
+            key = source_setting(sid)
+            for sec in ADMIN_SCHEMA:
+                if sec["id"] == "library": sec["fields"][:] = [f for f in sec["fields"] if f["key"] != key]
+            SCHEMA_FIELDS.pop(key, None)
+            SCHEMA_DEFAULTS.pop(key, None)
+        _cfg_state["data"] = {}
+
+
 # --- Loading ---
 class PluginAPI:
     """What a plugin gets in register(api). The methods here are the stable interface (PLUGINS.md describes them);
@@ -10083,6 +10305,22 @@ class PluginAPI:
         try: return bool(session.get("is_admin"))
         except RuntimeError: return False
 
+    # Library sources
+    def source(self, source_id, name, search, stream, cover=None, album=None, artist=None, get=None, warm=None, ready=None):
+        """Music from somewhere else in the library's search, artist and album pages, played straight from there
+        (PLUGINS.md, "Library sources"). `source_id` is a short lowercase name; the source's songs have paths
+        "@<source_id>/<id>". An admin turns it on under Library; `ready()` says whether it can be used now, by whoever
+        is asking: True, or (False, why)."""
+        sid = str(source_id or "")
+        if not SOURCE_ID_RE.fullmatch(sid) or FED_REMOTE_RE.match(f"@{sid}/x"):
+            raise ValueError("A source's id is 2 to 16 lowercase letters and digits, starting with a letter.")
+        if not callable(search) or not callable(stream): raise ValueError("A source needs search and stream functions.")
+        other = LIBRARY_SOURCES.get(sid)
+        if other and other["pid"] != self.pid: raise ValueError(f"The {plugin_name(other['pid'])} plugin has a source called {sid} already.")
+        LIBRARY_SOURCES[sid] = {"pid": self.pid, "id": sid, "name": str(name or sid)[:60], "search": search, "stream": stream, "cover": cover,
+                                "album": album, "artist": artist, "get": get, "warm": warm, "ready": ready}
+        _add_source_setting(LIBRARY_SOURCES[sid])
+
     # The library
     def music_dir(self):
         return Path(get_real_music_dir())
@@ -10128,6 +10366,7 @@ def _plugin_unregister(pid):
     for reg in (PLUGIN_HOOKS, PLUGIN_EVENTS, PLUGIN_FILTERS):
         for name in list(reg): reg[name] = [h for h in reg[name] if h[0] != pid]
     _plugin_jobs[:] = [j for j in _plugin_jobs if j["pid"] != pid]
+    _drop_sources(pid)
     with _cfg_lock:
         ids = set(_plugin_schema.pop(pid, []))
         for s in [s for s in ADMIN_SCHEMA if s["id"] in ids]:

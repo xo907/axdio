@@ -204,7 +204,7 @@ const SITE = {};
    3. Colours & covers
    ====================================================================== */
 const PH = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" fill="#282828"/><path fill="#5e5e5e" d="M12.5 6v7.6a2.6 2.6 0 1 0 1.3 2.2V8.6h2.7V6z"/></svg>');
-const coverUrl = rel => '/api/cover?path=' + encodeURIComponent(rel || '');
+const coverUrl = rel => /^(https:\/\/|\/api\/sources\/)/.test(rel || '') ? rel : '/api/cover?path=' + encodeURIComponent(rel || '');
 const img = (src, alt = '') => `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" decoding="async">`;
 document.addEventListener('error', e => {
   const t = e.target;
@@ -413,6 +413,7 @@ const albumOf = t => L.albums[t.albumId];
 const artistOf = t => L.artists[t.artistId];
 // Split a display credit ("A, B & C") into text parts, linking the ones that are artists in the library.
 function creditParts(t) {
+  if (t.ext) return [{ text: t.artist, artist: artistOf(t) }];
   const out = [], re = new RegExp(SPLIT.source, 'gi');
   let last = 0, m;
   const push = s => { const name = s.trim(); if (!name) return; const ar = L.artistByKey.get(name.toLowerCase()); out.push({ text: s, artist: ar && ar.trackIds.length ? ar : null }); };
@@ -451,7 +452,7 @@ function radioIds(seedId, n = 50, exclude = new Set()) {
   relatedArtists(ar, 10).forEach(r => take(r.trackIds, 5));
   if (pool.length < n) topArtists(8).forEach(r => take(r.trackIds, 3));
   while (pool.length < n * 1.5 && L.tracks.length > n * 2) pool.push(Math.floor(rand() * L.tracks.length));
-  const out = uniq(shuffled(pool, rand)).filter(id => id !== seedId && !exclude.has(id));
+  const out = uniq(shuffled(pool, rand)).filter(id => id !== seedId && !exclude.has(id) && !L.tracks[id].ext);
   return [seedId, ...out].slice(0, n);
 }
 
@@ -534,19 +535,19 @@ function searchAll(q) {
   const has = s => toks.every(t => s.includes(t));
   const songs = [], artists = [], albums = [], playlists = [];
   for (const t of L.tracks) {
-    if (!has(t.s)) continue;
+    if (t.ext || !has(t.s)) continue;
     let sc = t.st === nq ? 130 : t.st.startsWith(nq) ? 90 : t.st.includes(nq) ? 55 : 0;
     if (t.sa.includes(nq)) sc += 25;
     sc += Math.min(30, (U.plays.get(t.rel) || 0) * 3) + (U.likedSet.has(t.rel) ? 12 : 0);
     songs.push([sc, t.id]);
   }
   for (const ar of L.artists) {
-    if (!ar.trackIds.length || !has(ar.s)) continue;
+    if (ar.ext || !ar.trackIds.length || !has(ar.s)) continue;
     const sc = (ar.s === nq ? 220 : ar.s.startsWith(nq) ? 150 : ar.s.includes(' ' + nq) ? 110 : 60) + Math.min(40, ar.trackIds.length / 3);
     artists.push([sc, ar.id]);
   }
   for (const al of L.albums) {
-    if (!has(al.s)) continue;
+    if (al.ext || !has(al.s)) continue;
     const tl = norm(al.title);
     albums.push([(tl === nq ? 120 : tl.startsWith(nq) ? 85 : tl.includes(nq) ? 55 : 20) + Math.min(20, al.trackIds.length), al.id]);
   }
@@ -560,6 +561,184 @@ function searchAll(q) {
     .filter(x => x[0]).map(x => [x[0][0] + x[2], x[1], x[0][1]]).sort(by)[0];
   if (best) top = { k: best[1], id: best[2] };
   return { top, songs: songs.slice(0, 100).map(x => x[1]), artists: artists.slice(0, 40).map(x => x[1]), albums: albums.slice(0, 40).map(x => x[1]), playlists };
+}
+
+/* ======================================================================
+   4b. Library sources
+   Music from somewhere else (a plugin's source, turned on by an admin) shows in search, and in artist and album pages
+   the library doesn't have. Its songs, albums and artists join the index above while they're shown, as entries of
+   their own (`ext` is the source's id, `item` what the source said about it). Their songs have paths
+   "@<source>/<id>" that the server plays from the source, so the queue, now playing and the lock screen work as
+   for any song. Nothing is saved by playing: Get asks the source's plugin to bring something into the library, and
+   once it's in, the library is read again and a song playing from the source becomes the library's copy.
+   ====================================================================== */
+const SRC_KEY = /^@([a-z][a-z0-9]{1,15})-(album|artist):([\w.:=-]+)$/;
+const Src = {
+  list: [], byId: {}, results: new Map(), pages: new Map(), warmed: new Set(), asked: new Set(), until: 0, timer: 0, idx: null,
+  async load() {
+    let list = [];
+    try { list = (await api('/api/sources')).sources || []; } catch (e) { /* none, or offline */ }
+    const changed = JSON.stringify(list) !== JSON.stringify(this.list);
+    this.list = list; this.byId = Object.fromEntries(list.map(s => [s.id, s]));
+    if (changed) { this.results.clear(); this.pages.clear(); UI.refresh(); }
+    return list;
+  },
+  on() { return this.list.length > 0; },
+  name(sid) { return (this.byId[sid] || {}).name || 'elsewhere'; },
+  canGet(sid) { return !!(this.byId[sid] || {}).get; },
+  // The library's own copy of a song, album or artist of a source, if it has one.
+  libSong(s) {
+    if (s.rel) { const t = L.byRel.get(s.rel); if (t && !t.ext) return t; }
+    if (!this.idx || this.idx.of !== L.tracks) {
+      const by = new Map();
+      for (const t of L.tracks) if (!t.ext) { if (!by.has(t.st)) by.set(t.st, []); by.get(t.st).push(t); }
+      this.idx = { by, of: L.tracks };
+    }
+    const a = norm((s.artists || [])[0] || '');
+    return (this.idx.by.get(norm(s.title)) || []).find(t => !a || t.sa.includes(a) || norm(albumArtist(albumOf(t))).includes(a)) || null;
+  },
+  libAlbum(a) {
+    if (a.rels && a.rels.length) { const t = L.byRel.get(a.rels[0]); if (t && !t.ext) return albumOf(t); }
+    return null;
+  },
+  libArtist(a) {
+    const ar = L.artistByKey.get(String(a.name || '').toLowerCase());
+    return ar && !ar.ext && ar.trackIds.length && (a.songs || ar.trackIds.length >= 3) ? ar : null;
+  },
+  artist(a) {
+    const key = a.key || `@${a.src}-artist:${a.id || ''}`;
+    let ar = L.artistByKey.get(key);
+    if (!ar) {
+      ar = { id: L.artists.length, key, name: a.name || 'Unknown Artist', albumIds: [], trackIds: [], featIds: [], compIds: new Set(), rel: new Map(), cover: a.cover || '', s: norm(a.name || ''), mtime: 0, ext: a.src, item: { ...a, kind: 'artist' } };
+      L.artists.push(ar); L.artistByKey.set(key, ar);
+    } else if (a.cover && !/^(https:|\/api\/)/.test(ar.cover)) ar.cover = a.cover;
+    return ar;
+  },
+  album(a) {
+    const key = a.key || `@${a.src}-album:${a.id || ''}`;
+    let al = L.albumByKey.get(key);
+    if (!al) {
+      const name = String(a.artist || 'Unknown Artist').split(', ')[0];
+      const ar = this.artist({ src: a.src, id: a.artist_id, name, key: a.artist_id ? undefined : `@${a.src}-artist:~${name}` });
+      al = { id: L.albums.length, key, name: a.title || '', title: a.title || '', artistId: ar.id, trackIds: [], mtime: 0, type: a.type || 'Album', comp: false, cover: a.cover || '', s: norm((a.title || '') + ' ' + ar.name), seen: new Map(), hc: true, ext: a.src, item: { ...a, kind: 'album' } };
+      ar.albumIds.push(al.id);
+      L.albums.push(al); L.albumByKey.set(key, al);
+    } else if (a.cover && !/^(https:|\/api\/)/.test(al.cover)) al.cover = a.cover;
+    return al;
+  },
+  // A song of a source as a track of the player: the library's copy when it has one.
+  track(s) {
+    const own = this.libSong(s);
+    if (own) return own;
+    const have = L.byRel.get(s.path);
+    if (have) return have;
+    const name = (s.artists || [])[0] || 'Unknown Artist';
+    const ar = this.artist({ src: s.src, id: s.artist_id, name, key: s.artist_id ? undefined : `@${s.src}-artist:~${name}` });
+    const al = this.album({ src: s.src, id: s.album_id, title: s.album || s.title, artist: name, artist_id: s.artist_id, cover: s.cover, key: s.album_id ? undefined : `@${s.src}-album:~${s.id}` });
+    const t = { id: L.tracks.length, rel: s.path, title: s.title || 'Untitled', artist: (s.artists || []).join(', ') || name, artistId: ar.id, albumId: al.id, no: +s.track || 0,
+                mtime: 0, hc: true, st: norm(s.title || ''), sa: norm((s.artists || []).join(' ')), s: '', src: '', ext: s.src, item: s };
+    t.s = `${t.st} ${t.sa} ${norm(al.title)}`;
+    L.tracks.push(t); L.byRel.set(t.rel, t); al.trackIds.push(t.id); ar.trackIds.push(t.id);
+    if (!al.cover) al.cover = t.rel;
+    if (!ar.cover) ar.cover = t.rel;
+    return t;
+  },
+  // A card for a source's album or artist (the library's own when it has it).
+  card(a) {
+    if (a.kind === 'artist') { const lib = this.libArtist(a); if (lib) return itArtist(lib); const ar = this.artist(a); return { k: 'artist', id: ar.id, title: ar.name, sub: `Artist • ${this.name(a.src)}`, cover: img(coverUrl(a.cover || ar.cover)), circle: true, ext: a.src }; }
+    const lib = this.libAlbum(a);
+    if (lib) return itAlbum(lib);
+    const al = this.album(a);
+    return { k: 'album', id: al.id, title: al.title, sub: [a.type || 'Album', a.year, a.artist].filter(Boolean).join(' • '), cover: img(coverUrl(a.cover || al.cover)), ext: a.src };
+  },
+  // A key of a source's album or artist page ("@<source>-album:<id>"), or null.
+  key(k) { const m = SRC_KEY.exec(k || ''); return m && !m[3].startsWith('~') ? { src: m[1], kind: m[2], id: m[3] } : null; },
+  // What the sources have for a search, less what the library has: {sources: [{id, name, get, error, songs, albums, artists}]} of items.
+  search(q) {
+    q = String(q || '').trim();
+    if (!this.on() || q.length < 2) return Promise.resolve(null);
+    const hit = this.results.get(q);
+    if (hit) return hit;
+    const p = api('/api/sources/search?q=' + encodeURIComponent(q)).then(d => ({ sources: (d.sources || []).map(s => ({
+      ...s, all: s, songs: s.songs.filter(x => !this.libSong(x)), albums: s.albums.filter(x => !this.libAlbum(x)), artists: s.artists.filter(x => !this.libArtist(x)),
+    })) })).catch(e => { this.results.delete(q); throw e; });
+    this.results.set(q, p);
+    if (this.results.size > 30) this.results.delete(this.results.keys().next().value);
+    return p;
+  },
+  // The artist of that name on a source, for "On <source>" on a library artist's page (or null).
+  async findArtist(name) {
+    const r = await this.search(name).catch(() => null);
+    const n = norm(name);
+    for (const s of (r && r.sources) || []) { const a = s.all.artists.find(x => norm(x.name) === n); if (a) return a; }
+    return null;
+  },
+  // An album ({album, songs}) or artist ({artist, songs, albums, singles}) page of a source.
+  page(key) {
+    const k = this.key(key);
+    if (!k) return Promise.reject(new Error("This isn't available"));
+    const hit = this.pages.get(key);
+    if (hit) return hit;
+    const p = api(`/api/sources/${k.src}/${k.kind}/${encodeURIComponent(k.id)}`).catch(e => { this.pages.delete(key); throw e; });
+    this.pages.set(key, p);
+    return p;
+  },
+  // Get songs ready to start without waiting: the first few results shown, the next song up.
+  warm(songs) {
+    const by = {};
+    for (const s of songs) {
+      if (!s || !s.src || this.warmed.has(s.path)) continue;
+      (by[s.src] = by[s.src] || []).push(s.id);
+      this.warmed.add(s.path);
+    }
+    for (const [sid, ids] of Object.entries(by)) api(`/api/sources/${sid}/warm`, { ids: ids.slice(0, 3) }).catch(() => {});
+  },
+  // Bring a song, album or artist into the library.
+  async get(item, btn) {
+    if (!item || !item.id || !item.kind || !this.canGet(item.src)) return;
+    if (btn) btn.disabled = true;
+    try {
+      const label = item.kind === 'song' ? `${(item.artists || []).join(', ')} - ${item.title}` : item.kind === 'album' ? `${item.artist ? item.artist + ' - ' : ''}${item.title}` : item.name;
+      const r = await api(`/api/sources/${item.src}/get`, { ...item, label });
+      this.asked.add(item.kind + ':' + item.id);
+      UI.toast(r.message || `Getting ${label}`);
+      this.follow();
+      UI.dirty(['search', 'album', 'artist'], true);
+    } catch (e) { if (btn) btn.disabled = false; UI.toast(e.message); }
+  },
+  wasAsked(item) { return !!item && this.asked.has(item.kind + ':' + item.id); },
+  // After a Get, look for what came in (for a while), and read the library again when it changed.
+  follow() {
+    this.until = Date.now() + 30 * 60e3;
+    if (this.timer) return;
+    this.timer = setInterval(async () => {
+      if (Date.now() > this.until) { clearInterval(this.timer); this.timer = 0; return; }
+      try {
+        const v = await api('/api/library/version');
+        if (v.version != null && v.version !== L.version) await refreshLibrary();
+      } catch (e) { /* next time */ }
+    }, 12000);
+  },
+  // The library was read again: songs of sources the player holds come back (as the library's copy, once it has one).
+  carry(old) {
+    const keep = new Set([P.cur, ...P.queue, ...(P.ctx ? P.ctx.ids : []), P.pending && P.pending.id, D.ready && D.ready.id].filter(x => x != null));
+    for (const id of keep) {
+      const t = old[id];
+      if (!t || !t.ext || L.byRel.has(t.rel)) continue;
+      const nt = this.track(t.item);
+      if (nt.rel !== t.rel) L.byRel.set(t.rel, nt);       // in the library now: the player carries on with its copy
+    }
+  },
+};
+// Read the library again from the server (what came in since the player started), keeping what's playing.
+async function refreshLibrary() {
+  const data = await fetchLibrary();
+  if (!data || !Array.isArray(data.library)) return;
+  const before = curTrack();
+  useLibrary(data, 'server', () => {});
+  UI.refresh();
+  const now = curTrack();
+  if (before && now && before.ext && !now.ext) { trackChanged(); UI.toast(`“${now.title}” is in your library now`); }
 }
 
 /* ======================================================================
@@ -657,6 +836,7 @@ async function finishSignIn(d, fallbackName) {
   if (extraFollows.length || extraSaved.length) pushPrefs();
   LS.set(K.local, { history: [] });
   Connect.beat();
+  Src.load();
   return d.display_name || d.username || fallbackName;
 }
 /* Discord: signing in comes back as ?login=<one-time code> (traded for a token here) or ?discord=<outcome>. */
@@ -720,6 +900,7 @@ function signOut(silent) {
   U.token = ''; LS.del(K.token); LS.del(K.userCache);
   loadLocalUser();
   UI.refresh();
+  Src.load();
   if (!silent) UI.toast('Logged out');
 }
 async function updateProfile(displayName) {
@@ -790,6 +971,7 @@ async function deleteAccount(password) {
   signOut(true);
 }
 function recordPlay(t) {
+  if (t.ext) return;
   const iso = new Date().toISOString();
   const i = U.history.findIndex(h => h.rel_path === t.rel);
   const h = i >= 0 ? U.history.splice(i, 1)[0] : { rel_path: t.rel, count: 0 };
@@ -799,8 +981,10 @@ function recordPlay(t) {
   if (U.token) { api('/api/user/record_play', { rel_path: t.rel }).catch(() => {}); cacheUser(); } else saveLocalUser();
   UI.dirty(['recent', 'home', 'profile']);
 }
+const notYet = t => { UI.toast(`“${t.title}” isn't in the library yet${Src.canGet(t.ext) ? '. Get it first' : ''}`); };
 function toggleLike(t, btn) {
   if (!t) return;
+  if (t.ext) { notYet(t); return; }
   haptic();
   if (U.likedSet.has(t.rel)) {
     U.likedSet.delete(t.rel); U.liked = U.liked.filter(r => r !== t.rel);
@@ -817,6 +1001,8 @@ function toggleLike(t, btn) {
 }
 // Like/unlike many songs at once (desktop multi-select).
 function setLikedMany(ids, on) {
+  ids = ids.filter(id => !L.tracks[id].ext);
+  if (!ids.length) return;
   const rels = ids.map(id => L.tracks[id].rel);
   if (on) rels.forEach(r => { if (!U.likedSet.has(r)) { U.likedSet.add(r); U.liked.push(r); } });
   else { const s = new Set(rels); U.liked = U.liked.filter(r => !s.has(r)); rels.forEach(r => U.likedSet.delete(r)); }
@@ -842,6 +1028,7 @@ function toggleSaveAlbum(al) {
   UI.dirty(['library']);
 }
 function addToPlaylist(name, ids) {
+  ids = ids.filter(id => !L.tracks[id].ext);
   const list = U.playlists[name] || (U.playlists[name] = []);
   const rels = ids.map(id => L.tracks[id].rel).filter(r => !list.includes(r));
   list.push(...rels);
@@ -1001,6 +1188,7 @@ const Off = {
     return { done, busy, total: ids.length, pct: ids.length ? pct / ids.length : 0 };
   },
   enqueue(rels) {
+    rels = rels.filter(r => { const t = L.byRel.get(r); return !(t && t.ext); });
     if (!feat('offline')) { UI.toast('Downloads are turned off on this server'); return 0; }
     if (!('caches' in window)) { UI.toast('Downloads are not supported in this browser'); return 0; }
     const add = rels.filter(r => !this.set.has(r) && !this.active.has(r) && !this.queue.includes(r));
@@ -1306,7 +1494,7 @@ function pause() { endCrossfade(true); D.a.pause(); }
 function togglePlay() { haptic(); if (PartyHook.h && PartyHook.h.toggle()) return; if (audio.paused || P.pending) play(); else pause(); }
 function shuffleAll() {
   if (!L.tracks.length) return;
-  playCtx(makeCtx('library', 'all', 'Your Library', L.tracks.map(t => t.id)), -1, { shuffle: true });
+  playCtx(makeCtx('library', 'all', 'Your Library', L.tracks.filter(t => !t.ext).map(t => t.id)), -1, { shuffle: true });
   UI.toast('Shuffling your whole library');
 }
 function next(auto = false, fromError = false) {
@@ -1585,6 +1773,8 @@ function trackChanged() {
     $$('[data-ck]').forEach(n => n.classList.toggle('ctx-playing', !!(c && n.dataset.ck === c.recent)));
     updateMediaSession(t);
     loadLyricsSoon(t);
+    const nx = L.tracks[P.queue.length ? P.queue[0] : (upcoming(1)[0] || {}).id];
+    if (nx && nx.ext) Src.warm([nx.item]);            // the next song up, from a source: ready to start without waiting
   } else document.title = SITE.site_title || 'Axdio';
   updatePlayButtons(); updateModes();
   UI.track(t);
@@ -2196,7 +2386,7 @@ function useLibrary(data, source, log) {
   L.version = data.version;
   if (!siteLive) applySite(data.settings);
   log('OK', `Indexed ${nf(L.tracks.length)} tracks · ${nf(L.azArtists.length)} artists · ${nf(L.albums.length)} releases in ${ms} ms (${source})`);
-  if (oldTracks.length) remapPlayer(oldTracks);
+  if (oldTracks.length) { Src.carry(oldTracks); remapPlayer(oldTracks); }
 }
 // After a library refresh, numeric track ids change: carry the player over by file path.
 function remapPlayer(old) {
@@ -2270,6 +2460,7 @@ async function boot({ platform = 'mobile', log = () => {}, onLibrary = () => {} 
   const pendingDl = LS.get(K.dlQueue, []).filter(r => L.byRel.has(r));
   if (pendingDl.length && navigator.onLine) Off.enqueue(pendingDl);
   Connect.init(platform);
+  Src.load();
 }
 
 window.AX = {
@@ -2277,7 +2468,7 @@ window.AX = {
   byId, $$, esc, norm, clamp, fmt, nf, count, ic, EQB, debounce, uniq, now, setUse, collator, haptic, hashStr, rng, shuffled, pick, dayKey, weekKey, monthYear,
   LS, K, S, saveS, saveSSoon, AUDIO_CACHE, META_CACHE, streamUrl, playUrl, QUALITIES, streamQuality, setQuality, onCellular, SITE, feat, featOn, CREDIT, minPassword, pendingInvite, authGate,
   PH, coverUrl, img, tone, hexRgb, dominant, applyAccent, ACCENTS, setAccent, setThemeColor,
-  L, sortName, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
+  L, Src, refreshLibrary, sortName, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
   U, api, signIn, signOut, finishSignIn, takeDiscordNote, discordSignIn, discordLink, discordUnlink, discordFinish, discordButton, presenceInfo, presenceSetup, presenceOff, updateProfile, pickImage, squarePhoto, uploadAvatar, removeAvatar, changePassword, listSessions, revokeSession, exportMyData, deleteAccount, subsonicInfo, subsonicPassword, scrobbleInfo, connectListenBrainz, disconnectScrobbler, cacheUser, recordPlay, toggleLike, setLikedMany, toggleFollow, toggleSaveAlbum,
   addToPlaylist, removeFromPlaylist, reorderPlaylist, plCreate, plRename, plDelete, pushLibrary, pushPrefs, Collab,
   RECENTS, touchRecent, recentTs, SEARCHES, rememberSearch, forgetSearch, clearSearches,
