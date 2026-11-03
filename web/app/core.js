@@ -659,7 +659,7 @@ const Src = {
     if (!this.on() || q.length < 2) return Promise.resolve(null);
     const hit = this.results.get(q);
     if (hit) return hit;
-    const p = this.cachedApi('/api/sources/search?q=' + encodeURIComponent(q), 6 * 3600e3).then(d => ({ sources: (d.sources || []).map(s => ({
+    const p = this.cachedApi('/api/sources/search?c=2&q=' + encodeURIComponent(q), 6 * 3600e3).then(d => ({ sources: (d.sources || []).map(s => ({
       ...s, all: s, songs: s.songs.filter(x => !this.libSong(x)), albums: s.albums.filter(x => !this.libAlbum(x)), artists: s.artists.filter(x => !this.libArtist(x)),
     })) })).then(v => { this.got.set(q, v); if (this.got.size > 30) this.got.delete(this.got.keys().next().value); return v; }).catch(e => { this.results.delete(q); throw e; });
     this.results.set(q, p);
@@ -869,7 +869,8 @@ const Src = {
     return d;
   },
   keep(c, url, d) {
-    if (c) c.put(url, new Response(JSON.stringify(d), { headers: { 'Content-Type': 'application/json', 'x-at': String(Date.now()) } })).catch(() => {});
+    const empty = d && Array.isArray(d.sources) && d.sources.every(s => s.error || !(s.songs.length || s.albums.length || s.artists.length || s.top));
+    if (c && !empty) c.put(url, new Response(JSON.stringify(d), { headers: { 'Content-Type': 'application/json', 'x-at': String(Date.now()) } })).catch(() => {});
   },
   refreshing: new Set(),
   // Whether the sources are still looking for `q`.

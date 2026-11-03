@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.15.3"
+AXDIO_VERSION = "2.15.4"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -10011,7 +10011,8 @@ def _source_call(src, fn, *a, ttl=0):
         if hit and time.time() - hit[0] < ttl: return hit[1], None
     try:
         out = fn(*a)
-        if ttl:
+        empty = isinstance(out, dict) and not any(out.get(k) for k in ("songs", "albums", "artists", "album", "artist", "top"))
+        if ttl and not empty:                       # nothing found may be for now only: asked again next time
             with _source_art_lock:
                 _source_cache[key] = (time.time(), out)
                 _source_cache.move_to_end(key)
