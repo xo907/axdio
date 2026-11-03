@@ -749,10 +749,23 @@ const Src = {
   like(t, btn) {
     const on = !this.likes.has(t.item.path);
     if (on) this.likes.set(t.item.path, t.item); else this.likes.delete(t.item.path);
-    LS.set('axdio_src_likes', Object.fromEntries(this.likes));
+    this.saveLikes();
     $$(`[data-act="like"][data-t="${t.id}"], .pb-like`).filter(b => b.dataset.t != null || curTrack() === t).forEach(b => { b.classList.toggle('liked', on); setUse(b, on ? 'heart-f' : 'heart'); });
     UI.toast(on ? 'Liked. It goes into Liked Songs once it’s in your library' : 'Removed from Liked Songs');
     return true;
+  },
+  // They're kept with the listener's account (its preferences), so every device has them, and on this device.
+  saveLikes() {
+    const o = {};
+    for (const [k, v] of this.likes) { const { link, rel, explicit, ...keep } = v; o[k] = keep; }
+    LS.set('axdio_src_likes', o);
+    if (U.token) { U.prefs.external_likes = o; pushPrefs(); }
+  },
+  // The account's, once it's read (the first time, it takes what this device liked before).
+  fromPrefs() {
+    const o = U.token && U.prefs && U.prefs.external_likes;
+    if (o && typeof o === 'object') { this.likes = new Map(Object.entries(o)); LS.set('axdio_src_likes', o); }
+    else if (U.token && this.likes.size) this.saveLikes();
   },
   // Songs liked before they were in the library: liked for real once they are.
   likeArrived() {
@@ -763,7 +776,7 @@ const Src = {
       this.likes.delete(path); any = true;
       if (!U.likedSet.has(t.rel)) { U.likedSet.add(t.rel); U.liked.push(t.rel); }
     }
-    if (any) { LS.set('axdio_src_likes', Object.fromEntries(this.likes)); pushLibrary(); UI.dirty(['liked', 'library'], true); }
+    if (any) { this.saveLikes(); pushLibrary(); UI.dirty(['liked', 'library'], true); }
   },
   // Liked songs that aren't in the library yet, newest first, as tracks of the player.
   likedTracks() { return [...this.likes.values()].reverse().map(x => this.track(x)).filter(t => t.ext); },
@@ -907,6 +920,7 @@ function cacheUser() {
 function applyUser(d) {
   U.username = d.username || ''; U.name = d.display_name || d.name || U.username; U.avatar = d.avatar || '';
   U.prefs = d.preferences || d.prefs || {};
+  Src.fromPrefs();
   setLiked(d.liked_songs || d.liked); setHistory(d.history);
   U.playlists = (d.playlists && typeof d.playlists === 'object' && !Array.isArray(d.playlists)) ? d.playlists : {};
   U.follows = d.follows || U.prefs.followed_artists || [];

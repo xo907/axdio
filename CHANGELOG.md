@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.15.1
+
+- **Liked External songs are on every device.** They're kept with your account, so they're in Liked Songs wherever you sign in. Those liked on a device before this version are added to your account the first time it signs in.
+
 ## 2.15.0
 
 - **Liked External songs are in Liked Songs.** A song liked before it's in the library shows in Liked Songs straight away (on this device), and is liked for real once it's in.
