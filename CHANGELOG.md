@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.14.5
+
+- A library source's switch (**Show <name> in the library**) is with its plugin's own settings, on the plugin's page (for the Downloader: Library > Downloader). A plugin without settings of its own has it under Library scanning on the Maintenance page.
+
 ## 2.14.4
 
 - Liking an External song no longer gets it: only **Get** does. A liked one goes into Liked Songs once it's in the library.

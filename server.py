@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.14.4"
+AXDIO_VERSION = "2.14.5"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -10115,7 +10115,9 @@ def _add_source_setting(src):
                      "that isn't in the library. It plays straight from there, and is saved only when someone gets it. "
                      "Only while the plugin is on and ready to use."}
     with _cfg_lock:
-        sec = next((s for s in ADMIN_SCHEMA if s["id"] == "library"), None)
+        # With the plugin's own settings (its page shows them), else under Library.
+        own = (_plugin_schema.get(src["pid"]) or [None])[0]
+        sec = next((s for s in ADMIN_SCHEMA if s["id"] == own), None) or next((s for s in ADMIN_SCHEMA if s["id"] == "library"), None)
         if sec is None: return
         sec["fields"][:] = [f for f in sec["fields"] if f["key"] != field["key"]] + [field]
         SCHEMA_FIELDS[field["key"]] = field
@@ -10130,7 +10132,7 @@ def _drop_sources(pid):
             LIBRARY_SOURCES.pop(sid, None)
             key = source_setting(sid)
             for sec in ADMIN_SCHEMA:
-                if sec["id"] == "library": sec["fields"][:] = [f for f in sec["fields"] if f["key"] != key]
+                sec["fields"][:] = [f for f in sec["fields"] if f["key"] != key]
             SCHEMA_FIELDS.pop(key, None)
             SCHEMA_DEFAULTS.pop(key, None)
         _cfg_state["data"] = {}

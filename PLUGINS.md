@@ -253,7 +253,8 @@ api.source("far", "Far Away", search=search, stream=stream, cover=cover, album=a
   `@<source_id>/<id>`. Axdio hands the player's requests for its audio (`/api/stream_path`) and artwork (`/api/cover`)
   to `stream(id)` and `cover(id)`, which return a Flask `Response` (for audio, answer `Range` requests so seeking works).
   Plays of these songs aren't written into listening history.
-- Each source is on unless an admin turns it off: **Show <name> in the library**, under Library in the settings. The
+- Each source is on unless an admin turns it off: **Show <name> in the library**, with the plugin's own settings (the first section it adds),
+  else under Library scanning. The
   setting is there only while the plugin is loaded.
 - `ready()` says whether the source can be used right now, by whoever is asking: `True`, or `(False, "why not")`.
   Leave it out and it can always be used once it's turned on.
