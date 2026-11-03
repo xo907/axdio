@@ -574,7 +574,7 @@ function searchAll(q) {
    ====================================================================== */
 const SRC_KEY = /^@([a-z][a-z0-9]{1,15})-(album|artist):([\w.:=-]+)$/;
 const Src = {
-  list: [], byId: {}, results: new Map(), pages: new Map(), warmed: new Set(), asked: new Set(), until: 0, timer: 0, idx: null,
+  list: [], byId: {}, results: new Map(), got: new Map(), warmedQ: new Set(), pages: new Map(), warmed: new Set(), asked: new Set(), until: 0, timer: 0, idx: null,
   async load() {
     let list = [];
     try { list = (await api('/api/sources')).sources || []; } catch (e) { /* none, or offline */ }
@@ -661,10 +661,32 @@ const Src = {
     if (hit) return hit;
     const p = api('/api/sources/search?q=' + encodeURIComponent(q)).then(d => ({ sources: (d.sources || []).map(s => ({
       ...s, all: s, songs: s.songs.filter(x => !this.libSong(x)), albums: s.albums.filter(x => !this.libAlbum(x)), artists: s.artists.filter(x => !this.libArtist(x)),
-    })) })).catch(e => { this.results.delete(q); throw e; });
+    })) })).then(v => { this.got.set(q, v); if (this.got.size > 30) this.got.delete(this.got.keys().next().value); return v; }).catch(e => { this.results.delete(q); throw e; });
     this.results.set(q, p);
     if (this.results.size > 30) this.results.delete(this.results.keys().next().value);
     return p;
+  },
+  // Search results with the sources' songs, artists and albums mixed in, as if they were the library's. When the
+  // sources haven't answered for `q` yet, they're asked, and `redraw` is called once they have.
+  merge(res, q, redraw) {
+    q = String(q || '').trim();
+    if (!res || !this.on() || q.length < 2) return res;
+    const d = this.got.get(q);
+    if (!d) { this.search(q).then(r => { if (r) redraw(); }).catch(() => {}); return res; }
+    const fresh = [];
+    for (const s of d.sources) {
+      for (const x of s.songs) { const t = this.track(x); if (!res.songs.includes(t.id)) { res.songs.push(t.id); if (t.ext) fresh.push(x); } }
+      for (const x of s.artists) { const a = this.libArtist(x) || this.artist(x); if (!res.artists.includes(a.id)) res.artists.push(a.id); }
+      for (const x of s.albums) { const a = this.libAlbum(x) || this.album(x); if (!res.albums.includes(a.id)) res.albums.push(a.id); }
+      if (!res.top && s.top) {
+        const x = s.top;
+        res.top = x.kind === 'artist' ? { k: 'artist', id: (this.libArtist(x) || this.artist(x)).id }
+          : x.kind === 'album' ? { k: 'album', id: (this.libAlbum(x) || this.album(x)).id } : { k: 'track', id: this.track(x).id };
+      }
+    }
+    if (!res.top && res.songs.length) res.top = { k: 'track', id: res.songs[0] };
+    if (!this.warmedQ.has(q)) { this.warmedQ.add(q); this.warm(fresh.slice(0, 3)); }
+    return res;
   },
   // The artist of that name on a source, for "On <source>" on a library artist's page (or null).
   async findArtist(name) {
@@ -2072,8 +2094,8 @@ function avatarHtml(cls = '') {
   const safe = /^(https?:|data:image\/|\/)/i.test(U.avatar || '');
   return `<span class="avatar ${cls}" data-i="${U.token ? init : ''}">${U.avatar && safe ? img(U.avatar) : U.token ? init : ic('person', 'md')}</span>`;
 }
-function itAlbum(al) { return { k: 'album', id: al.id, title: al.title, sub: `${al.type} • ${albumArtist(al)}`, cover: img(coverUrl(al.cover)), ck: 'album:' + al.key, ts: al.mtime, ids: al.trackIds }; }
-function itArtist(ar) { return { k: 'artist', id: ar.id, title: ar.name, sub: 'Artist', cover: img(coverUrl(ar.cover)), circle: true, ck: 'artist:' + ar.key, ts: ar.mtime }; }
+function itAlbum(al) { return { ext: al.ext, k: 'album', id: al.id, title: al.title, sub: `${al.type} • ${albumArtist(al)}`, cover: img(coverUrl(al.cover)), ck: 'album:' + al.key, ts: al.mtime, ids: al.trackIds }; }
+function itArtist(ar) { return { ext: ar.ext, k: 'artist', id: ar.id, title: ar.name, sub: 'Artist', cover: img(coverUrl(ar.cover)), circle: true, ck: 'artist:' + ar.key, ts: ar.mtime }; }
 function itPlaylist(name) {
   const rels = U.playlists[name] || [];
   return { k: 'playlist', id: name, title: name, sub: `Playlist • ${U.name || 'You'} • ${count(rels.length, 'song')}`, cover: plCover(rels), ck: 'playlist:' + name, ts: 0 };

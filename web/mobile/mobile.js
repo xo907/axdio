@@ -242,7 +242,7 @@ function trackRow(t, i, o = {}) {
   const lead = o.num ? `<div class="num"><span class="num-n">${i + 1}</span>${EQB}</div>` : o.noArt ? '' : `<div class="row-art">${img(coverUrl(t.rel))}${EQB}</div>`;
   const tail = o.tail != null ? o.tail : t.ext ? srcRowTail(t)
     : `<button class="row-act${liked ? ' liked' : ''}" data-act="like" data-t="${t.id}" aria-label="${liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(liked ? 'heart-f' : 'heart', 'md')}</button><button class="row-act" data-act="more" data-t="${t.id}" aria-label="More options for ${esc(t.title)}">${ic('more-v', 'md')}</button>`;
-  return `<div class="trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}">${o.drag ? `<div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}${lead}<div class="meta"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? `<span class="src-badge">${esc(Src.name(t.ext))}</span>` : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span>${esc(o.sub != null ? o.sub : t.artist)}</span></div></div>${tail}</div>`;
+  return `<div class="trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}">${o.drag ? `<div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}${lead}<div class="meta"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? '<span class="src-badge">External</span>' : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span>${esc(o.sub != null ? o.sub : t.artist)}</span></div></div>${tail}</div>`;
 }
 function srcRowTail(t) {
   const more = `<button class="row-act" data-act="more" data-t="${t.id}" aria-label="More options for ${esc(t.title)}">${ic('more-v', 'md')}</button>`;
@@ -374,12 +374,12 @@ VIEWS.find = pg => {
     st.q = input.value;
     clear.hidden = !st.q; chips.hidden = !st.q.trim();
     pg.ctxs.forEach(id => CTX.delete(id)); pg.ctxs = [];
-    const res = searchAll(st.q);
+    const q = st.q;
+    const res = Src.merge(searchAll(st.q), st.q, () => { if (st.q === q && body.isConnected) run(); });
     if (!res) { renderRecentSearches(body); return; }
     chips.innerHTML = [['top', 'Top'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
       .map(([id, l]) => `<button class="chip${st.f === id ? ' on' : ''}" data-f="${id}">${l}</button>`).join('');
     body.innerHTML = searchResults(pg, res, st.f, st.q);
-    srcFind(pg, body, st);
   };
   function renderRecentSearches(el) {
     const items = SEARCHES.map(s => [s, searchItem(s)]).filter(x => x[1]);

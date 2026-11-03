@@ -266,7 +266,7 @@ VIEWS.search = (el, p) => {
       + `<div class="sec-h"><h2>Browse all</h2></div><div class="browse">${BROWSE.map(tile).join('')}${arts.map((a, i) => `<div class="tile" style="background:${PALETTE[(i * 3 + 1) % PALETTE.length]}" data-act="open" data-k="artist" data-id="${a.id}"><span>${esc(a.name)}</span>${img(coverUrl(a.cover))}</div>`).join('')}</div></div>`;
     return;
   }
-  const res = searchAll(q);
+  const res = Src.merge(searchAll(q), q, () => { if (V.route.view === 'search' && (V.route.params.q || '').trim() === q) render(view.scrollTop); });
   const chips = [['all', 'All'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
     .map(([k, l]) => `<button class="chip${SR.f === k ? ' on' : ''}" data-act="search-filter" data-f="${k}">${l}</button>`).join('');
   let h = `<div class="content" style="padding-top:76px"><div class="chips" style="position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 0">${chips}</div>`;
@@ -292,7 +292,6 @@ VIEWS.search = (el, p) => {
   }
   el.innerHTML = h + '</div>';
   fillTables(el);
-  srcResults(el, q);
 };
 // What the sources turned on have for a search, under the library's results (or instead of "No results").
 function srcResults(el, q) {
@@ -735,7 +734,7 @@ function trRow(t, i, o = {}) {
   const liked = U.likedSet.has(t.rel), off = !navigator.onLine && !Off.set.has(t.rel);
   return `<div class="tr trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}" draggable="true">`
     + `<div class="c-num"><span class="n">${o.trackNo ? (t.no || i + 1) : i + 1}</span>${EQB}<button class="c-play" data-act="row-play" tabindex="-1" aria-label="Play ${esc(t.title)}">${ic(P.cur === t.id && isPlaying() ? 'pause' : 'play')}</button></div>`
-    + `<div class="c-title">${o.noArt ? '' : `<div class="art">${img(coverUrl(t.rel))}</div>`}<div class="flex1"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? `<span class="src-badge">${esc(Src.name(t.ext))}</span>` : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span class="who">${credits(t)}</span></div></div></div>`
+    + `<div class="c-title">${o.noArt ? '' : `<div class="art">${img(coverUrl(t.rel))}</div>`}<div class="flex1"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? '<span class="src-badge">External</span>' : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span class="who">${credits(t)}</span></div></div></div>`
     + (o.noAlbum ? '' : `<div class="c-album"><a class="lnk" data-act="go" data-view="album" data-id="${t.albumId}">${esc(albumOf(t).title)}</a></div>`)
     + `<div class="c-end">${o.by ? o.by(t) : ''}${o.add ? `<button class="row-add" data-act="pl-add-one" data-t="${t.id}" data-tip="Add to this playlist">${ic('add')}</button>` : ''}${t.ext ? srcRowGet(t) : `<button class="row-like${liked ? ' liked' : ''}" data-act="like" data-t="${t.id}" data-tip="${liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(liked ? 'heart-f' : 'heart')}</button>`}${o.plays ? `<span class="plays">${U.plays.get(t.rel) ? nf(U.plays.get(t.rel)) : ''}</span>` : ''}<button class="row-more" data-act="row-more" data-tip="More options for ${esc(t.title)}">${ic('more-h')}</button></div></div>`;
 }

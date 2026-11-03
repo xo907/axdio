@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.14.1
+
+- **A library source's results are part of the search results.** Its songs, artists and albums are in the same Songs, Artists and Albums lists as the library's (after them), instead of sections of their own, and its songs are marked **External**.
+
 ## 2.14.0
 
 - **Library sources: music from elsewhere, in the player's own search, artist and album pages.** A plugin can now add a source (a streaming service, say). Once an admin turns it on (**Show <name> in the library**, under Library in the settings), searching shows what the source has after the library's results, or instead of "No results", marked with the source's name. Artists and albums the library doesn't have open in the normal artist and album pages, read from the source.
