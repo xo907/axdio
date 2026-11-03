@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.14.7"
+AXDIO_VERSION = "2.15.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -10014,7 +10014,7 @@ def _source_or_error(sid):
 @app.route("/api/sources")
 def api_sources():
     return jsonify({"sources": [{"id": s["id"], "name": s["name"], "get": bool(s.get("get")), "album": bool(s.get("album")),
-                                 "artist": bool(s.get("artist"))} for s in usable_sources()]})
+                                 "artist": bool(s.get("artist")), "radio": bool(s.get("radio"))} for s in usable_sources()]})
 
 @app.route("/api/sources/search")
 def api_sources_search():
@@ -10048,6 +10048,17 @@ def api_source_page(sid, kind, item):
     if kind == "artist":
         for k in ("albums", "singles"): out[k] = _source_list(src, "album", d.get(k))
     return jsonify(out)
+
+@app.route("/api/sources/<sid>/radio/<item>")
+def api_source_radio(sid, item):
+    """Songs like one of the source's songs ({"songs"}), for mixes and recommendations."""
+    if not SOURCE_ITEM_RE.fullmatch(item): abort(404)
+    src, err = _source_or_error(sid)
+    if err: return err
+    if not src.get("radio"): abort(404)
+    d, err = _source_call(src, src["radio"], item)
+    if err: return jsonify({"error": err}), 502
+    return jsonify({"songs": _source_list(src, "song", (d or {}).get("songs") if isinstance(d, dict) else d, 50)})
 
 @app.route("/api/sources/<sid>/get", methods=["POST"])
 def api_source_get(sid):
@@ -10308,7 +10319,7 @@ class PluginAPI:
         except RuntimeError: return False
 
     # Library sources
-    def source(self, source_id, name, search, stream, cover=None, album=None, artist=None, get=None, warm=None, ready=None):
+    def source(self, source_id, name, search, stream, cover=None, album=None, artist=None, get=None, warm=None, ready=None, radio=None):
         """Music from somewhere else in the library's search, artist and album pages, played straight from there
         (PLUGINS.md, "Library sources"). `source_id` is a short lowercase name; the source's songs have paths
         "@<source_id>/<id>". An admin turns it on under Library; `ready()` says whether it can be used now, by whoever
@@ -10320,7 +10331,7 @@ class PluginAPI:
         other = LIBRARY_SOURCES.get(sid)
         if other and other["pid"] != self.pid: raise ValueError(f"The {plugin_name(other['pid'])} plugin has a source called {sid} already.")
         LIBRARY_SOURCES[sid] = {"pid": self.pid, "id": sid, "name": str(name or sid)[:60], "search": search, "stream": stream, "cover": cover,
-                                "album": album, "artist": artist, "get": get, "warm": warm, "ready": ready}
+                                "album": album, "artist": artist, "get": get, "warm": warm, "ready": ready, "radio": radio}
         _add_source_setting(LIBRARY_SOURCES[sid])
 
     # The library

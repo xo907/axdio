@@ -2972,7 +2972,8 @@ class TestLibrarySources(Base):
             return {"message": "Getting it"}
         api.source("far", "Far Away", search=search, stream=stream, cover=cover, album=album,
                    artist=lambda i: {"artist": {"name": "Far Artist"}, "songs": [song], "albums": [], "singles": []},
-                   get=get, warm=lambda i: self.calls.append(("warm", i)), ready=lambda: (True, "") if self.ready[0] else (False, "Not now."))
+                   get=get, warm=lambda i: self.calls.append(("warm", i)), ready=lambda: (True, "") if self.ready[0] else (False, "Not now."),
+                   radio=lambda i: {"songs": [dict(song, id="lmnopqrstuv", title="Like It")]})
 
     def tearDown(self):
         server._plugin_unregister("srcplug")
@@ -2993,7 +2994,7 @@ class TestLibrarySources(Base):
         self.assertEqual(self.calls, [])
 
         self.assertEqual(a.post("/api/admin/v2/config", json={"values": {"library_source_far": True}}).status_code, 200)
-        self.assertEqual(self.c.get("/api/sources").get_json()["sources"], [{"id": "far", "name": "Far Away", "get": True, "album": True, "artist": True}])
+        self.assertEqual(self.c.get("/api/sources").get_json()["sources"], [{"id": "far", "name": "Far Away", "get": True, "album": True, "artist": True, "radio": True}])
         res = self.c.get("/api/sources/search?q=far").get_json()["sources"][0]
         self.assertEqual([s["id"] for s in res["songs"]], ["abcdefghijk"])            # bad ids and non-items are left out
         s = res["songs"][0]
@@ -3017,6 +3018,7 @@ class TestLibrarySources(Base):
         self.assertEqual((al["album"]["key"], al["album"]["id"], al["songs"][0]["path"], al["source"]["name"]), ("@far-album:MPREfar", "MPREfar", "@far/abcdefghijk", "Far Away"))
         ar = self.c.get("/api/sources/far/artist/UCfar").get_json()
         self.assertEqual((ar["artist"]["key"], ar["albums"], ar["singles"]), ("@far-artist:UCfar", [], []))
+        self.assertEqual([s["path"] for s in self.c.get("/api/sources/far/radio/abcdefghijk").get_json()["songs"]], ["@far/lmnopqrstuv"])
         r = self.c.get("/api/sources/far/album/broken")
         self.assertEqual(r.status_code, 502)
         self.assertIn("it fell over", r.get_json()["error"])

@@ -221,14 +221,15 @@ VIEWS.home = el => {
   const anchor = tops[0] || pick(L.artists.filter(a => a.rel.size), rand);
   if (anchor && (f === 'all' || f === 'albums')) {
     const albs = uniq(relatedArtists(anchor, 12).flatMap(r => r.albumIds.slice(0, 2))).map(id => itAlbum(L.albums[id]));
-    if (albs.length >= 3) h += shelf(`More like ${anchor.name}`, shuffled(albs, rand).slice(0, 12), { kicker: tops[0] ? 'Because you listen to' : 'Artists you might like' });
+    const ext = Src.recFor(L.tracks[popular(anchor, 1)[0]]);
+    if (albs.length + ext.length >= 3) h += shelf(`More like ${anchor.name}`, Src.blend(shuffled(albs, rand), ext), { kicker: tops[0] ? 'Because you listen to' : 'Artists you might like' });
   }
   const followed = U.follows.map(k => L.artistByKey.get(k)).filter(a => a && a.trackIds.length);
   if (followed.length && (f === 'all' || f === 'albums')) h += shelf('New from artists you follow', uniq(followed.flatMap(a => a.albumIds.slice(0, 2))).sort((a, b) => L.albums[b].mtime - L.albums[a].mtime).slice(0, 12).map(id => itAlbum(L.albums[id])));
   if (f === 'all' || f === 'albums') {
     const played = new Set(U.history.map(x => { const t = L.byRel.get(x.rel_path); return t ? t.albumId : -1; }));
     const unplayed = L.albums.filter(a => a.trackIds.length >= 5 && !played.has(a.id));
-    h += shelf('Something different', shuffled(unplayed.length > 12 ? unplayed : L.albums, rand).slice(0, 12).map(itAlbum), { kicker: 'Picked for today' });
+    h += shelf('Something different', Src.blend(shuffled(unplayed.length > 12 ? unplayed : L.albums, rand).slice(0, 12).map(itAlbum), Src.recFor(Src.seedDifferent())), { kicker: 'Picked for today' });
     h += shelf('Fresh singles', L.newestAlbums.map(id => L.albums[id]).filter(a => a.type === 'Single' || a.type === 'EP').slice(0, 14).map(itAlbum), { more: 'singles' });
   }
   if (f === 'artists') h += shelf('All artists', L.azArtists.slice(0, 14).map(id => itArtist(L.artists[id])), { more: 'artists' });
@@ -438,7 +439,19 @@ VIEWS.artist = (el, p) => {
   paint(ar.cover);
   if (!ar.ext && Src.on()) Src.findArtist(ar.name).then(a => {
     const box = el.querySelector('.actions');
-    if (a && box && V.route.view === 'artist' && V.route.params.key === p.key) box.insertAdjacentHTML('beforeend', `<button class="pill-btn" data-act="go" data-view="artist" data-id="${Src.artist(a).id}">More releases</button>`);
+    if (!a || !box || V.route.view !== 'artist' || V.route.params.key !== p.key) return;
+    box.insertAdjacentHTML('beforeend', `<button class="pill-btn" data-act="go" data-view="artist" data-id="${Src.artist(a).id}">More releases</button>`);
+    // What they made that the library doesn't have.
+    Src.page(Src.artist(a).key).then(d => {
+      if (V.route.view !== 'artist' || V.route.params.key !== p.key) return;
+      const ids = d.songs.map(x => Src.track(x)).filter(t => t.ext).map(t => t.id);
+      const albs = d.albums.concat(d.singles).filter(x => !Src.libAlbum(x)).map(x => Src.card(x));
+      let more = '';
+      if (ids.length) more += `<section class="sec"><div class="sec-h"><h2>More songs by ${esc(ar.name)}</h2></div>${tableShell(vctx('artist', ar.key + ':more', ar.name, ids), { noHead: true, noAlbum: true })}</section>`;
+      more += shelf(`More releases by ${ar.name}`, albs);
+      const content = el.querySelector('.content');
+      if (content && more) { content.insertAdjacentHTML('beforeend', more); fillTables(content); }
+    }).catch(() => {});
   });
   function albumScore(id) { const al = L.albums[id]; return al.trackIds.reduce((s, t) => s + (U.plays.get(L.tracks[t].rel) || 0), 0) * 10 + al.trackIds.length / 4 + al.mtime / (ar.mtime || 1); }
 };
@@ -488,7 +501,7 @@ const AXradio = id => window.AX.radioIds(id, 10).slice(1);
 const LIKED = { sort: 'recent' };
 VIEWS.liked = el => {
   if (!L.ready) { el.innerHTML = loading(); return; }
-  const all = U.liked.slice().reverse().map(r => L.byRel.get(r)).filter(Boolean);
+  const all = Src.likedTracks().concat(U.liked.slice().reverse().map(r => L.byRel.get(r)).filter(Boolean));
   if (LIKED.sort === 'title') all.sort((a, b) => collator.compare(a.title, b.title));
   if (LIKED.sort === 'artist') all.sort((a, b) => collator.compare(a.artist, b.artist));
   if (LIKED.sort === 'album') all.sort((a, b) => collator.compare(albumOf(a).title, albumOf(b).title));
@@ -507,7 +520,7 @@ VIEWS.mix = (el, p) => {
   if (!L.ready) { el.innerHTML = loading(); return; }
   const m = getMix(p.id);
   if (!m) { VIEWS.missing(el); return; }
-  const ctx = vctx('mix', m.id, m.name, m.ids.filter(id => L.tracks[id]), 'mix:' + m.id);
+  const ctx = vctx('mix', m.id, m.name, Src.mixIds(m, () => { if (V.route.view === 'mix' && V.route.params.id === p.id) render(view.scrollTop); }), 'mix:' + m.id);
   let h = '<div class="vbg"></div>' + vhead(m.name, ctx) + heroHtml({ kind: 'Mix', cover: mixCover(m), title: m.name, desc: m.desc, line: `<span class="brand-mark" style="width:24px;height:24px">${ic('note', 'sm')}</span><b>Made for ${esc(U.name || 'you')}</b><span class="dot"></span><span class="muted">${count(ctx.ids.length, 'song')}</span>` })
     + `<div class="actions">${playBtn(ctx)}${shufBtn()}<button class="act-btn" data-act="mix-save" data-id="${esc(m.id)}" data-tip="Save as playlist">${ic('add')}</button>${dlBtn(ctx)}${moreBtn('mix', m.id)}</div><div class="content">${tableShell(ctx, {})}`;
   el.innerHTML = h + '</div>';

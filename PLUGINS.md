@@ -263,6 +263,8 @@ api.source("far", "Far Away", search=search, stream=stream, cover=cover, album=a
   `{"artist": artist, "songs": [...], "albums": [...], "singles": [...]}`. Leave them out and results open nothing.
 - `get(item)` gets the song, album or artist it's given (the item as the source gave it, with `kind` and `id`). It
   returns `{"message": "what to tell the listener"}`, or a Flask response (an error, say).
+- `radio(id)` returns `{"songs": [...]}`: songs like one of the source's songs. The player mixes them into Made for you
+  mixes and home recommendations.
 - `warm(id)` gets a song ready to start without waiting. The player asks for it for the first few search results and
   for the next song in the queue, at most 3 at a time.
 

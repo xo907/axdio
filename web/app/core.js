@@ -574,7 +574,7 @@ function searchAll(q) {
    ====================================================================== */
 const SRC_KEY = /^@([a-z][a-z0-9]{1,15})-(album|artist):([\w.:=-]+)$/;
 const Src = {
-  list: [], byId: {}, results: new Map(), got: new Map(), warmedQ: new Set(), likes: new Map(Object.entries(LS.get('axdio_src_likes', {}))), pages: new Map(), warmed: new Set(), asked: new Set(), until: 0, timer: 0, idx: null,
+  list: [], byId: {}, results: new Map(), got: new Map(), warmedQ: new Set(), likes: new Map(Object.entries(LS.get('axdio_src_likes', {}))), radios: new Map(), radioDone: new Map(), pages: new Map(), warmed: new Set(), asked: new Set(), until: 0, timer: 0, idx: null,
   async load() {
     let list = [];
     try { list = (await api('/api/sources')).sources || []; } catch (e) { /* none, or offline */ }
@@ -765,6 +765,68 @@ const Src = {
     }
     if (any) { LS.set('axdio_src_likes', Object.fromEntries(this.likes)); pushLibrary(); UI.dirty(['liked', 'library'], true); }
   },
+  // Liked songs that aren't in the library yet, newest first, as tracks of the player.
+  likedTracks() { return [...this.likes.values()].reverse().map(x => this.track(x)).filter(t => t.ext); },
+  // Songs like a track (the source's radio of it), for mixes and recommendations: the items once they're in, else
+  // null (they're asked for, and `redraw` is called when they come).
+  radioOf(t, redraw) {
+    const src = t && this.list.find(s => s.radio && (!t.ext || s.id === t.ext));
+    if (!src) return null;
+    const k = t.rel;
+    if (this.radioDone.has(k)) return this.radioDone.get(k);
+    if (!this.radios.has(k)) this.radios.set(k, (async () => {
+      let id = t.ext ? t.item.id : null;
+      if (!id) {                                    // the library's song: find it on the source first
+        const r = await this.search(`${t.title} ${t.artist}`);
+        const s = ((r && r.sources) || []).find(x => x.id === src.id);
+        const hit = s && (s.all.songs.find(x => norm(x.title) === t.st) || s.all.songs[0]);
+        if (!hit) return [];
+        id = hit.id;
+      }
+      return (await api(`/api/sources/${src.id}/radio/${encodeURIComponent(id)}`)).songs || [];
+    })().then(v => v, () => []).then(v => { this.radioDone.set(k, v); if (redraw) redraw(); return v; }));
+    return null;
+  },
+  // Of those, the songs the library doesn't have (as tracks), and their albums (as cards).
+  newTracks(items, n = 20) { return uniq((items || []).filter(x => !this.libSong(x)).map(x => this.track(x).id)).slice(0, n); },
+  newAlbums(items, n = 8) {
+    const seen = new Set(), out = [];
+    for (const x of items || []) {
+      if (!x.album_id || seen.has(x.album_id) || this.libSong(x)) continue;
+      seen.add(x.album_id);
+      const a = { kind: 'album', src: x.src, id: x.album_id, title: x.album || x.title, artist: (x.artists || [])[0] || '', artist_id: x.artist_id, cover: x.cover, key: `@${x.src}-album:${x.album_id}` };
+      if (!this.libAlbum(a)) out.push(this.card(a));
+      if (out.length >= n) break;
+    }
+    return out;
+  },
+  // A mix with songs from outside the library mixed in (one after every two of the library's), from the radio of its
+  // first song.
+  mixIds(m, redraw) {
+    const ids = m.ids.filter(id => L.tracks[id]);
+    const seed = L.tracks[ids[0]], items = seed && this.on() ? this.radioOf(seed, redraw) : null;
+    const extra = items ? this.newTracks(items, Math.ceil(ids.length / 2) || 20) : [];
+    if (!extra.length) return ids;
+    const out = [];
+    for (let i = 0, j = 0; i < ids.length || j < extra.length; i++) {
+      if (i < ids.length) out.push(ids[i]);
+      if ((i % 2 === 1 || i >= ids.length) && j < extra.length) out.push(extra[j++]);
+    }
+    return uniq(out);
+  },
+  // Albums from outside the library like a track, for the home page's recommendations ([] until they're in).
+  recFor(t) { const items = t && this.on() ? this.radioOf(t, () => UI.dirty(['home'], true)) : null; return items ? this.newAlbums(items, 6) : []; },
+  // A song to find "something different" from: one listened to lately that isn't the very latest.
+  seedDifferent() { const h = U.history.map(x => L.byRel.get(x.rel_path)).filter(Boolean); return h[Math.min(2, h.length - 1)] || null; },
+  // A shelf of the library's items with others mixed in (one after every two).
+  blend(own, more, n = 12) {
+    const out = [];
+    for (let i = 0, j = 0; out.length < n && (i < own.length || j < more.length); i++) {
+      if (i < own.length) out.push(own[i]);
+      if ((i % 2 === 1 || i >= own.length) && j < more.length && out.length < n) out.push(more[j++]);
+    }
+    return out;
+  },
   // Whether the sources are still looking for `q`.
   pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && this.results.has(q) && !this.got.has(q); },
   wasAsked(item) { return !!item && this.asked.has(item.kind + ':' + item.id); },
@@ -791,6 +853,16 @@ const Src = {
     }
   },
 };
+// A song from a source is made ready to start as the pointer rests on it (or a finger touches it).
+let srcHover = 0;
+const srcPrime = e => {
+  const row = e.target.closest && e.target.closest('[data-t]');
+  const t = row && L.tracks[+row.dataset.t];
+  clearTimeout(srcHover);
+  if (t && t.ext) srcHover = setTimeout(() => Src.warm([t.item]), e.type === 'touchstart' ? 0 : 250);
+};
+document.addEventListener('mouseover', srcPrime, { passive: true });
+document.addEventListener('touchstart', srcPrime, { passive: true });
 // Read the library again from the server (what came in since the player started), keeping what's playing.
 async function refreshLibrary() {
   const data = await fetchLibrary();
@@ -1835,8 +1907,8 @@ function trackChanged() {
     $$('[data-ck]').forEach(n => n.classList.toggle('ctx-playing', !!(c && n.dataset.ck === c.recent)));
     updateMediaSession(t);
     loadLyricsSoon(t);
-    const nx = L.tracks[P.queue.length ? P.queue[0] : (upcoming(1)[0] || {}).id];
-    if (nx && nx.ext) Src.warm([nx.item]);            // the next song up, from a source: ready to start without waiting
+    const next = P.queue.slice(0, 2).concat(upcoming(2).map(u => u.id)).slice(0, 2).map(id => L.tracks[id]);
+    Src.warm(next.filter(x => x && x.ext).map(x => x.item));   // the next songs up, from a source: ready to start without waiting
   } else document.title = SITE.site_title || 'Axdio';
   updatePlayButtons(); updateModes();
   UI.track(t);

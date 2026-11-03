@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.15.0
+
+- **Liked External songs are in Liked Songs.** A song liked before it's in the library shows in Liked Songs straight away (on this device), and is liked for real once it's in.
+- **An artist's page has what the library doesn't.** Under the library's songs and releases, **More songs by** and **More releases by** list the rest of what they made, from the library sources.
+- **Recommendations reach beyond the library.** Made for you mixes mix in External songs like theirs, and **More like** and **Something different** on the home page mix in External albums, picked from songs like the ones you listen to. (Library sources can now give songs like a song: `radio(id)`, see PLUGINS.md.)
+- **External songs start sooner.** The next two songs up are made ready ahead, and so is a song as the pointer rests on it (or a finger touches it).
+
 ## 2.14.7
 
 - **Search shows it's still looking.** While a library source is being searched, the results show a live searching state instead of "No results" (and a moving line above the library's results), until its answers are in.
