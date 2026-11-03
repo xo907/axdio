@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.14.3
+
+- **External songs have the heart, where it always is, next to Get.** Liking one gets it into the library, and it goes into Liked Songs once it's in.
+
 ## 2.14.2
 
 - **Library sources are on by default.** An admin can still turn one off (**Show <name> in the library**, on the Maintenance page under Library scanning).

@@ -574,7 +574,7 @@ function searchAll(q) {
    ====================================================================== */
 const SRC_KEY = /^@([a-z][a-z0-9]{1,15})-(album|artist):([\w.:=-]+)$/;
 const Src = {
-  list: [], byId: {}, results: new Map(), got: new Map(), warmedQ: new Set(), pages: new Map(), warmed: new Set(), asked: new Set(), until: 0, timer: 0, idx: null,
+  list: [], byId: {}, results: new Map(), got: new Map(), warmedQ: new Set(), likes: new Map(Object.entries(LS.get('axdio_src_likes', {}))), pages: new Map(), warmed: new Set(), asked: new Set(), until: 0, timer: 0, idx: null,
   async load() {
     let list = [];
     try { list = (await api('/api/sources')).sources || []; } catch (e) { /* none, or offline */ }
@@ -728,6 +728,29 @@ const Src = {
       UI.dirty(['search', 'album', 'artist'], true);
     } catch (e) { if (btn) btn.disabled = false; UI.toast(e.message); }
   },
+  // Liking a song that isn't in the library yet gets it, and it's in Liked Songs once it's in.
+  liked(t) { return !!(t && t.ext && this.likes.has(t.item.path)); },
+  like(t, btn) {
+    if (!this.canGet(t.ext)) return false;
+    const on = !this.likes.has(t.item.path);
+    if (on) this.likes.set(t.item.path, t.item); else this.likes.delete(t.item.path);
+    LS.set('axdio_src_likes', Object.fromEntries(this.likes));
+    $$(`[data-act="like"][data-t="${t.id}"], .pb-like`).filter(b => b.dataset.t != null || curTrack() === t).forEach(b => { b.classList.toggle('liked', on); setUse(b, on ? 'heart-f' : 'heart'); });
+    if (on) { UI.toast('Getting it. It goes into Liked Songs once it’s in your library'); if (!this.wasAsked(t.item)) this.get(t.item); else this.follow(); }
+    else UI.toast('Removed from Liked Songs');
+    return true;
+  },
+  // Songs liked before they were in the library: liked for real once they are.
+  likeArrived() {
+    let any = false;
+    for (const [path, it] of this.likes) {
+      const t = this.libSong(it);
+      if (!t) continue;
+      this.likes.delete(path); any = true;
+      if (!U.likedSet.has(t.rel)) { U.likedSet.add(t.rel); U.liked.push(t.rel); }
+    }
+    if (any) { LS.set('axdio_src_likes', Object.fromEntries(this.likes)); pushLibrary(); UI.dirty(['liked', 'library'], true); }
+  },
   wasAsked(item) { return !!item && this.asked.has(item.kind + ':' + item.id); },
   // After a Get, look for what came in (for a while), and read the library again when it changed.
   follow() {
@@ -758,6 +781,7 @@ async function refreshLibrary() {
   if (!data || !Array.isArray(data.library)) return;
   const before = curTrack();
   useLibrary(data, 'server', () => {});
+  Src.likeArrived();
   UI.refresh();
   const now = curTrack();
   if (before && now && before.ext && !now.ext) { trackChanged(); UI.toast(`“${now.title}” is in your library now`); }
@@ -1006,7 +1030,7 @@ function recordPlay(t) {
 const notYet = t => { UI.toast(`“${t.title}” isn't in the library yet${Src.canGet(t.ext) ? '. Get it first' : ''}`); };
 function toggleLike(t, btn) {
   if (!t) return;
-  if (t.ext) { notYet(t); return; }
+  if (t.ext) { if (!Src.like(t, btn)) notYet(t); return; }
   haptic();
   if (U.likedSet.has(t.rel)) {
     U.likedSet.delete(t.rel); U.liked = U.liked.filter(r => r !== t.rel);

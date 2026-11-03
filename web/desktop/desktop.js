@@ -731,12 +731,12 @@ function tableShell(ctx, o = {}) {
   return `<div class="tt${o.noAlbum ? ' no-album' : ''}" data-ctx="${ctx.rid}"${o.pl ? ` data-pl="${esc(o.pl)}"` : ''}${o.cpl ? ` data-cpl="${esc(o.cpl)}"` : ''}>${head}<div class="tt-rows"></div></div>`;
 }
 function trRow(t, i, o = {}) {
-  const liked = U.likedSet.has(t.rel), off = !navigator.onLine && !Off.set.has(t.rel);
+  const liked = U.likedSet.has(t.rel) || Src.liked(t), off = !navigator.onLine && !Off.set.has(t.rel);
   return `<div class="tr trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}" draggable="true">`
     + `<div class="c-num"><span class="n">${o.trackNo ? (t.no || i + 1) : i + 1}</span>${EQB}<button class="c-play" data-act="row-play" tabindex="-1" aria-label="Play ${esc(t.title)}">${ic(P.cur === t.id && isPlaying() ? 'pause' : 'play')}</button></div>`
     + `<div class="c-title">${o.noArt ? '' : `<div class="art">${img(coverUrl(t.rel))}</div>`}<div class="flex1"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? '<span class="src-badge">External</span>' : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span class="who">${credits(t)}</span></div></div></div>`
     + (o.noAlbum ? '' : `<div class="c-album"><a class="lnk" data-act="go" data-view="album" data-id="${t.albumId}">${esc(albumOf(t).title)}</a></div>`)
-    + `<div class="c-end">${o.by ? o.by(t) : ''}${o.add ? `<button class="row-add" data-act="pl-add-one" data-t="${t.id}" data-tip="Add to this playlist">${ic('add')}</button>` : ''}${t.ext ? srcRowGet(t) : `<button class="row-like${liked ? ' liked' : ''}" data-act="like" data-t="${t.id}" data-tip="${liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(liked ? 'heart-f' : 'heart')}</button>`}${o.plays ? `<span class="plays">${U.plays.get(t.rel) ? nf(U.plays.get(t.rel)) : ''}</span>` : ''}<button class="row-more" data-act="row-more" data-tip="More options for ${esc(t.title)}">${ic('more-h')}</button></div></div>`;
+    + `<div class="c-end">${o.by ? o.by(t) : ''}${o.add ? `<button class="row-add" data-act="pl-add-one" data-t="${t.id}" data-tip="Add to this playlist">${ic('add')}</button>` : ''}${t.ext ? srcRowGet(t) : ''}<button class="row-like${liked ? ' liked' : ''}" data-act="like" data-t="${t.id}" data-tip="${liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(liked ? 'heart-f' : 'heart')}</button>${o.plays ? `<span class="plays">${U.plays.get(t.rel) ? nf(U.plays.get(t.rel)) : ''}</span>` : ''}<button class="row-more" data-act="row-more" data-tip="More options for ${esc(t.title)}">${ic('more-h')}</button></div></div>`;
 }
 function srcRowGet(t) {
   if (!Src.canGet(t.ext)) return '';

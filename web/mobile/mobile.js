@@ -245,7 +245,8 @@ function trackRow(t, i, o = {}) {
   return `<div class="trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}">${o.drag ? `<div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}${lead}<div class="meta"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? '<span class="src-badge">External</span>' : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span>${esc(o.sub != null ? o.sub : t.artist)}</span></div></div>${tail}</div>`;
 }
 function srcRowTail(t) {
-  const more = `<button class="row-act" data-act="more" data-t="${t.id}" aria-label="More options for ${esc(t.title)}">${ic('more-v', 'md')}</button>`;
+  const lk = Src.liked(t);
+  const more = `<button class="row-act${lk ? ' liked' : ''}" data-act="like" data-t="${t.id}" aria-label="${lk ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(lk ? 'heart-f' : 'heart', 'md')}</button>` + `<button class="row-act" data-act="more" data-t="${t.id}" aria-label="More options for ${esc(t.title)}">${ic('more-v', 'md')}</button>`;
   if (!Src.canGet(t.ext)) return more;
   if (Src.wasAsked(t.item)) return `<span class="row-act liked" aria-label="Asked for">${ic('check-c', 'md')}</span>` + more;
   return `<button class="row-get" data-act="src-get" data-t="${t.id}">Get</button>` + more;
