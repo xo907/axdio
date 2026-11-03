@@ -659,7 +659,7 @@ const Src = {
     if (!this.on() || q.length < 2) return Promise.resolve(null);
     const hit = this.results.get(q);
     if (hit) return hit;
-    const p = api('/api/sources/search?q=' + encodeURIComponent(q)).then(d => ({ sources: (d.sources || []).map(s => ({
+    const p = this.cachedApi('/api/sources/search?q=' + encodeURIComponent(q), 6 * 3600e3).then(d => ({ sources: (d.sources || []).map(s => ({
       ...s, all: s, songs: s.songs.filter(x => !this.libSong(x)), albums: s.albums.filter(x => !this.libAlbum(x)), artists: s.artists.filter(x => !this.libArtist(x)),
     })) })).then(v => { this.got.set(q, v); if (this.got.size > 30) this.got.delete(this.got.keys().next().value); return v; }).catch(e => { this.results.delete(q); throw e; });
     this.results.set(q, p);
@@ -717,7 +717,7 @@ const Src = {
     if (!k) return Promise.reject(new Error("This isn't available"));
     const hit = this.pages.get(key);
     if (hit) return hit;
-    const p = api(`/api/sources/${k.src}/${k.kind}/${encodeURIComponent(k.id)}`).catch(e => { this.pages.delete(key); throw e; });
+    const p = this.cachedApi(`/api/sources/${k.src}/${k.kind}/${encodeURIComponent(k.id)}`, 24 * 3600e3).catch(e => { this.pages.delete(key); throw e; });
     this.pages.set(key, p);
     return p;
   },
@@ -801,7 +801,7 @@ const Src = {
         if (!hit) return [];
         id = hit.id;
       }
-      return (await api(`/api/sources/${src.id}/radio/${encodeURIComponent(id)}`)).songs || [];
+      return (await this.cachedApi(`/api/sources/${src.id}/radio/${encodeURIComponent(id)}`, 24 * 3600e3)).songs || [];
     })().then(v => v, () => []).then(v => { this.radioDone.set(k, v); if (redraw) redraw(); return v; }));
     return null;
   },
@@ -845,6 +845,33 @@ const Src = {
     }
     return out;
   },
+  // What the sources said, kept on this device (Cache Storage) for `maxAge`: given at once, and read again in the
+  // background when it's more than 10 minutes old, so the next time is up to date.
+  async cachedApi(url, maxAge) {
+    let c = null;
+    try {
+      if ('caches' in window) {
+        c = await caches.open(META_CACHE);
+        const r = await c.match(url);
+        const age = r ? Date.now() - +(r.headers.get('x-at') || 0) : Infinity;
+        if (r && age < maxAge) {
+          const d = await r.json();
+          if (age > 600e3 && !this.refreshing.has(url)) {
+            this.refreshing.add(url);
+            api(url).then(x => this.keep(c, url, x)).catch(() => {}).finally(() => this.refreshing.delete(url));
+          }
+          return d;
+        }
+      }
+    } catch (e) { /* no storage: ask the server */ }
+    const d = await api(url);
+    this.keep(c, url, d);
+    return d;
+  },
+  keep(c, url, d) {
+    if (c) c.put(url, new Response(JSON.stringify(d), { headers: { 'Content-Type': 'application/json', 'x-at': String(Date.now()) } })).catch(() => {});
+  },
+  refreshing: new Set(),
   // Whether the sources are still looking for `q`.
   searching() { return `<div class="src-banner" role="status"><span class="src-spin2"></span><div><b>Searching for more…</b><small>Finding songs, artists and albums beyond your library</small></div></div><div class="src-sk">${'<div class="src-sk-row"><i></i><span><em></em><em></em></span></div>'.repeat(3)}</div>`; },
   pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && this.results.has(q) && !this.got.has(q); },

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.15.3
+
+- **External music is cached.** What a library source said is kept: by the server for every listener (searches for 15 minutes, artist and album pages and recommendations for an hour), and by each device (searches for 6 hours, the rest for a day), so going back to a search or a page is instant. Cached answers are refreshed in the background once they're 10 minutes old. Artwork is kept on the server's disk (`config/covers/sources`) and in the browser for 30 days.
+
 ## 2.15.2
 
 - **External songs liked while signed out go with you.** Signing in adds them to your account, like the library's songs you liked.

@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.15.2"
+AXDIO_VERSION = "2.15.3"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -9999,9 +9999,24 @@ def _source_list(src, kind, items, limit=200):
     items = items if isinstance(items, list) else []
     return [x for x in (_source_item(src, kind, it) for it in items[:limit]) if x]
 
-def _source_call(src, fn, *a):
-    """(what a source's function gave, None), or (None, what went wrong, the way the player can show it)."""
-    try: return fn(*a), None
+_source_cache = collections.OrderedDict()   # (source id, what, args) -> (when, answer): what sources said lately
+SOURCE_ART_DIR = COVERS_CACHE_DIR / "sources"   # sources' artwork, kept on disk
+
+def _source_call(src, fn, *a, ttl=0):
+    """(what a source's function gave, None), or (None, what went wrong, the way the player can show it). With `ttl`,
+    an answer from the last `ttl` seconds is given again without asking the source (for every listener)."""
+    key = (src["id"], getattr(fn, "__name__", "call"), a)
+    if ttl:
+        with _source_art_lock: hit = _source_cache.get(key)
+        if hit and time.time() - hit[0] < ttl: return hit[1], None
+    try:
+        out = fn(*a)
+        if ttl:
+            with _source_art_lock:
+                _source_cache[key] = (time.time(), out)
+                _source_cache.move_to_end(key)
+                while len(_source_cache) > 400: _source_cache.popitem(last=False)
+        return out, None
     except Exception as ex:
         _plugin_note(src["pid"], f"source {getattr(fn, '__name__', 'call')}: {ex}")
         return None, f"{src['name']} didn't answer: {str(ex)[:160]}"
@@ -10023,7 +10038,7 @@ def api_sources_search():
     out = []
     if len(q) < 2: return jsonify({"sources": out})
     for src in usable_sources():
-        d, err = _source_call(src, src["search"], q)
+        d, err = _source_call(src, src["search"], q, ttl=900)
         d = d if isinstance(d, dict) else {}
         res = {"id": src["id"], "name": src["name"], "get": bool(src.get("get")), "error": err}
         for k, kind in (("songs", "song"), ("albums", "album"), ("artists", "artist")):
@@ -10040,7 +10055,7 @@ def api_source_page(sid, kind, item):
     src, err = _source_or_error(sid)
     if err: return err
     if not src.get(kind): abort(404)
-    d, err = _source_call(src, src[kind], item)
+    d, err = _source_call(src, src[kind], item, ttl=3600)
     if err: return jsonify({"error": err}), 502
     if not isinstance(d, dict) or not isinstance(d.get(kind), dict): return jsonify({"error": f"{src['name']} doesn't have it."}), 404
     out = {"source": {"id": src["id"], "name": src["name"], "get": bool(src.get("get"))},
@@ -10056,7 +10071,7 @@ def api_source_radio(sid, item):
     src, err = _source_or_error(sid)
     if err: return err
     if not src.get("radio"): abort(404)
-    d, err = _source_call(src, src["radio"], item)
+    d, err = _source_call(src, src["radio"], item, ttl=3600)
     if err: return jsonify({"error": err}), 502
     return jsonify({"songs": _source_list(src, "song", (d or {}).get("songs") if isinstance(d, dict) else d, 50)})
 
@@ -10082,15 +10097,24 @@ def api_source_art(sid):
     with _source_art_lock:
         known, have = key in _source_art_urls, _source_art.get(key)
     if not known: abort(404)
+    disk = SOURCE_ART_DIR / (hashlib.md5(key[1].encode()).hexdigest() + ".img")
+    if not have and disk.is_file():
+        try: data = disk.read_bytes()
+        except OSError: data = None
+        if data: have = (data, "image/png" if data[:4] == b"\x89PNG" else "image/webp" if data[8:12] == b"WEBP" else "image/gif" if data[:3] == b"GIF" else "image/jpeg")
     if not have:
         data = fetch_bytes(key[1], timeout=10, limit=4 * 1024 * 1024)
         if not data: return Response(DEFAULT_SVG_COVER, mimetype="image/svg+xml")
+        try:
+            SOURCE_ART_DIR.mkdir(parents=True, exist_ok=True)
+            disk.write_bytes(data)
+        except OSError: pass
         kind = "image/png" if data[:4] == b"\x89PNG" else "image/webp" if data[8:12] == b"WEBP" else "image/gif" if data[:3] == b"GIF" else "image/jpeg"
         have = (data, kind)
         with _source_art_lock:
             _source_art[key] = have
             while len(_source_art) > 150: _source_art.popitem(last=False)
-    return Response(have[0], headers={"Content-Type": have[1], "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+    return Response(have[0], headers={"Content-Type": have[1], "Cache-Control": "private, max-age=2592000, immutable", "X-Content-Type-Options": "nosniff"})
 
 @app.route("/api/sources/<sid>/warm", methods=["POST"])
 def api_source_warm(sid):
@@ -10138,6 +10162,8 @@ def _add_source_setting(src):
 def _drop_sources(pid):
     gone = [sid for sid, s in LIBRARY_SOURCES.items() if s["pid"] == pid]
     if not gone: return
+    with _source_art_lock:
+        for k in [k for k in _source_cache if k[0] in gone]: _source_cache.pop(k, None)
     with _cfg_lock:
         for sid in gone:
             LIBRARY_SOURCES.pop(sid, None)

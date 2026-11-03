@@ -3002,6 +3002,8 @@ class TestLibrarySources(Base):
         self.assertEqual((res["albums"][0]["key"], res["artists"][0]["key"]), ("@far-album:MPREfar", "@far-artist:UCfar"))
         self.assertEqual(res["top"]["path"], "@far/abcdefghijk")
         self.assertEqual(self.c.get("/api/sources/search?q=f").get_json(), {"sources": []})   # too short to ask
+        self.c.get("/api/sources/search?q=far")
+        self.assertEqual([c for c in self.calls if c[0] == "search"], [("search", "far")])     # the same search again: kept
         # Artwork comes through the server, and only from addresses the source gave.
         self.assertEqual(s["cover"], "/api/sources/far/art?u=https%3A%2F%2Fexample.com%2Fc.jpg")
         orig = server.fetch_bytes
