@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.14.4
+
+- Liking an External song no longer gets it: only **Get** does. A liked one goes into Liked Songs once it's in the library.
+
 ## 2.14.3
 
 - **External songs have the heart, where it always is, next to Get.** Liking one gets it into the library, and it goes into Liked Songs once it's in.

@@ -728,16 +728,14 @@ const Src = {
       UI.dirty(['search', 'album', 'artist'], true);
     } catch (e) { if (btn) btn.disabled = false; UI.toast(e.message); }
   },
-  // Liking a song that isn't in the library yet gets it, and it's in Liked Songs once it's in.
+  // A song liked before it's in the library goes into Liked Songs once it's in (Get brings it in; liking doesn't).
   liked(t) { return !!(t && t.ext && this.likes.has(t.item.path)); },
   like(t, btn) {
-    if (!this.canGet(t.ext)) return false;
     const on = !this.likes.has(t.item.path);
     if (on) this.likes.set(t.item.path, t.item); else this.likes.delete(t.item.path);
     LS.set('axdio_src_likes', Object.fromEntries(this.likes));
     $$(`[data-act="like"][data-t="${t.id}"], .pb-like`).filter(b => b.dataset.t != null || curTrack() === t).forEach(b => { b.classList.toggle('liked', on); setUse(b, on ? 'heart-f' : 'heart'); });
-    if (on) { UI.toast('Getting it. It goes into Liked Songs once it’s in your library'); if (!this.wasAsked(t.item)) this.get(t.item); else this.follow(); }
-    else UI.toast('Removed from Liked Songs');
+    UI.toast(on ? 'Liked. It goes into Liked Songs once it’s in your library' : 'Removed from Liked Songs');
     return true;
   },
   // Songs liked before they were in the library: liked for real once they are.
