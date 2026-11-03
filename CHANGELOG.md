@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.15.5
+
+- **A link pasted into search has its song ready to play.** When the search is a link to a song, the player asks the library source to have all of it ready (`preload(id)`, see PLUGINS.md), so it starts at once when played.
+
 ## 2.15.4
 
 - **Searching again finds what wasn't there before.** A search that found nothing outside the library isn't cached any more (on the server or the device), so a link pasted into search, say, finds its song as soon as the library source can read it. Searches cached by 2.15.3 are asked again.

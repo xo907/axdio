@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.15.4"
+AXDIO_VERSION = "2.15.5"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -10117,6 +10117,17 @@ def api_source_art(sid):
             while len(_source_art) > 150: _source_art.popitem(last=False)
     return Response(have[0], headers={"Content-Type": have[1], "Cache-Control": "private, max-age=2592000, immutable", "X-Content-Type-Options": "nosniff"})
 
+@app.route("/api/sources/<sid>/preload", methods=["POST"])
+def api_source_preload(sid):
+    """Have a song all ready to play (a search that was a link to it): more than warm, the source may fetch all of it."""
+    src, err = _source_or_error(sid)
+    if err: return err
+    i = str((request.get_json(silent=True) or {}).get("id") or "")
+    if not SOURCE_ITEM_RE.fullmatch(i): return jsonify({"error": "That isn't a song."}), 400
+    fn = src.get("preload") or src.get("warm")
+    if fn: _source_call(src, fn, i)
+    return jsonify({"ok": True})
+
 @app.route("/api/sources/<sid>/warm", methods=["POST"])
 def api_source_warm(sid):
     """Get songs ready to start without waiting (the first few results shown, the next song up): at most 3 at a time."""
@@ -10346,7 +10357,7 @@ class PluginAPI:
         except RuntimeError: return False
 
     # Library sources
-    def source(self, source_id, name, search, stream, cover=None, album=None, artist=None, get=None, warm=None, ready=None, radio=None):
+    def source(self, source_id, name, search, stream, cover=None, album=None, artist=None, get=None, warm=None, ready=None, radio=None, preload=None):
         """Music from somewhere else in the library's search, artist and album pages, played straight from there
         (PLUGINS.md, "Library sources"). `source_id` is a short lowercase name; the source's songs have paths
         "@<source_id>/<id>". An admin turns it on under Library; `ready()` says whether it can be used now, by whoever
@@ -10358,7 +10369,7 @@ class PluginAPI:
         other = LIBRARY_SOURCES.get(sid)
         if other and other["pid"] != self.pid: raise ValueError(f"The {plugin_name(other['pid'])} plugin has a source called {sid} already.")
         LIBRARY_SOURCES[sid] = {"pid": self.pid, "id": sid, "name": str(name or sid)[:60], "search": search, "stream": stream, "cover": cover,
-                                "album": album, "artist": artist, "get": get, "warm": warm, "ready": ready, "radio": radio}
+                                "album": album, "artist": artist, "get": get, "warm": warm, "ready": ready, "radio": radio, "preload": preload}
         _add_source_setting(LIBRARY_SOURCES[sid])
 
     # The library

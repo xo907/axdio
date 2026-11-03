@@ -3030,6 +3030,8 @@ class TestLibrarySources(Base):
         self.assertEqual(self.c.post("/api/sources/far/get", json={"kind": "song", "id": "a/b"}).status_code, 400)
         self.c.post("/api/sources/far/warm", json={"ids": ["a1", "a2", "a3", "a4", "../x"]})
         self.assertEqual([c for c in self.calls if c[0] == "warm"], [("warm", "a1"), ("warm", "a2"), ("warm", "a3")])
+        self.c.post("/api/sources/far/preload", json={"id": "abcdefghijk"})                     # (no preload of its own: warm)
+        self.assertEqual(self.calls[-1], ("warm", "abcdefghijk"))
 
         # Playing: the audio and artwork come from the source, and the play isn't history.
         r = self.c.get("/api/stream_path?path=@far/abcdefghijk")

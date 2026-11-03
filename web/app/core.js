@@ -701,7 +701,13 @@ const Src = {
       }
     }
     if (!res.top && res.songs.length) res.top = { k: 'track', id: res.songs[0] };
-    if (!this.warmedQ.has(q)) { this.warmedQ.add(q); this.warm(fresh.slice(0, 3)); }
+    if (!this.warmedQ.has(q)) {
+      this.warmedQ.add(q);
+      this.warm(fresh.slice(0, 3));
+      // A link to a song: that's what's wanted, so it's made all ready to play.
+      const t = /^\s*(https?:\/\/|[\w-]+\.[a-z]{2,}\/)/i.test(q) && res.top && res.top.k === 'track' && L.tracks[res.top.id];
+      if (t && t.ext) api(`/api/sources/${t.ext}/preload`, { id: t.item.id }).catch(() => {});
+    }
     return res;
   },
   // The artist of that name on a source, for "On <source>" on a library artist's page (or null).

@@ -265,6 +265,8 @@ api.source("far", "Far Away", search=search, stream=stream, cover=cover, album=a
   returns `{"message": "what to tell the listener"}`, or a Flask response (an error, say).
 - `radio(id)` returns `{"songs": [...]}`: songs like one of the source's songs. The player mixes them into Made for you
   mixes and home recommendations.
+- `preload(id)` gets a song all ready to play, when a search was a link to it (it may fetch the whole song). Without
+  it, `warm` is used.
 - `warm(id)` gets a song ready to start without waiting. The player asks for it for the first few search results and
   for the next song in the queue, at most 3 at a time.
 
