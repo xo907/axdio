@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.15.6
+
+- **Album and playlist links pasted into search are ready to play too.** Their first three songs are made all ready straight away, and the rest as they play.
+
 ## 2.15.5
 
 - **A link pasted into search has its song ready to play.** When the search is a link to a song, the player asks the library source to have all of it ready (`preload(id)`, see PLUGINS.md), so it starts at once when played.

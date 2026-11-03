@@ -704,9 +704,10 @@ const Src = {
     if (!this.warmedQ.has(q)) {
       this.warmedQ.add(q);
       this.warm(fresh.slice(0, 3));
-      // A link to a song: that's what's wanted, so it's made all ready to play.
-      const t = /^\s*(https?:\/\/|[\w-]+\.[a-z]{2,}\/)/i.test(q) && res.top && res.top.k === 'track' && L.tracks[res.top.id];
-      if (t && t.ext) api(`/api/sources/${t.ext}/preload`, { id: t.item.id }).catch(() => {});
+      // A link to a song, an album or a playlist: that's what's wanted, so its first songs are made all ready to play
+      // (the rest are made ready as it plays, as for any list).
+      if (/^\s*(https?:\/\/|[\w-]+\.[a-z]{2,}\/)/i.test(q) && !(res.top && res.top.k === 'artist'))
+        for (const x of fresh.slice(0, 3)) api(`/api/sources/${x.src}/preload`, { id: x.id }).catch(() => {});
     }
     return res;
   },
