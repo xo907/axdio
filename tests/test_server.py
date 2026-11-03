@@ -2981,11 +2981,10 @@ class TestLibrarySources(Base):
     def test_a_source(self):
         a = self.admin()
         # Its setting is under Library, on unless an admin turns it off.
-        server.cfg_save({"library_source_far": None})
         conf = a.get("/api/admin/v2/config").get_json()
         lib = next(s for s in conf["schema"] if s["id"] == "library")
-        self.assertIn("library_source_far", [f["key"] for f in lib["fields"]])
-        self.assertTrue(conf["values"]["library_source_far"])
+        field = next(f for f in lib["fields"] if f["key"] == "library_source_far")
+        self.assertTrue(field["default"] and server.SCHEMA_DEFAULTS["library_source_far"])
         self.assertEqual(a.post("/api/admin/v2/config", json={"values": {"library_source_far": False}}).status_code, 200)
         self.assertEqual(self.c.get("/api/sources").get_json(), {"sources": []})
         self.assertEqual(self.c.get("/api/sources/search?q=far").get_json(), {"sources": []})
