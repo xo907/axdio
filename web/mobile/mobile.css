@@ -814,3 +814,17 @@ body.in-chat #nav, body.in-chat #mini { display: none !important; }
 @keyframes src-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 .src-bar { height: 2px; margin: 0 0 12px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: src-slide 1.2s linear infinite; }
 @keyframes src-slide { 0% { background-position: -40% 0; } 100% { background-position: 140% 0; } }
+
+/* Searching beyond the library, while the library's results are already shown */
+.src-banner { display: flex; align-items: center; gap: 14px; margin: 4px 0 16px; padding: 14px 18px; border-radius: 12px; background: linear-gradient(90deg, rgba(var(--accent-rgb, 30, 215, 96), .22), rgba(255,255,255,.06), rgba(var(--accent-rgb, 30, 215, 96), .22)); background-size: 200% 100%; animation: src-sweep 1.6s linear infinite; border: 1px solid rgba(255,255,255,.12); }
+.src-banner b { display: block; font-size: 16px; font-weight: 800; }
+.src-banner small { display: block; color: var(--text-2); font-size: 13px; margin-top: 2px; }
+.src-spin2 { flex: none; width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin .7s linear infinite; }
+.src-sk { display: grid; gap: 10px; margin: 0 0 20px; }
+.src-sk-row { display: flex; align-items: center; gap: 12px; }
+.src-sk-row i, .src-sk-row em { display: block; border-radius: 6px; background: linear-gradient(90deg, rgba(255,255,255,.06), rgba(255,255,255,.16), rgba(255,255,255,.06)); background-size: 200% 100%; animation: src-sweep 1.2s linear infinite; }
+.src-sk-row i { width: 44px; height: 44px; flex: none; }
+.src-sk-row span { flex: 1; display: grid; gap: 6px; }
+.src-sk-row em:first-child { height: 13px; width: 45%; } .src-sk-row em:last-child { height: 11px; width: 28%; }
+@keyframes src-sweep { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+@keyframes spin { to { transform: rotate(360deg); } }

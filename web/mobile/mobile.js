@@ -381,7 +381,7 @@ VIEWS.find = pg => {
     if (!res) { renderRecentSearches(body); return; }
     chips.innerHTML = [['top', 'Top'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
       .map(([id, l]) => `<button class="chip${st.f === id ? ' on' : ''}" data-f="${id}">${l}</button>`).join('');
-    body.innerHTML = (Src.pending(st.q) && res.top ? '<div class="src-bar"></div>' : '') + searchResults(pg, res, st.f, st.q);
+    body.innerHTML = (Src.pending(st.q) && res.top ? Src.searching() : '') + searchResults(pg, res, st.f, st.q);
   };
   function renderRecentSearches(el) {
     const items = SEARCHES.map(s => [s, searchItem(s)]).filter(x => x[1]);

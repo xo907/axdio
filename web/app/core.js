@@ -767,6 +767,11 @@ const Src = {
     if (o && typeof o === 'object') { this.likes = new Map(Object.entries(o)); LS.set('axdio_src_likes', o); }
     else if (U.token && this.likes.size) this.saveLikes();
   },
+  addLikes(entries) {
+    let more = false;
+    for (const [k, v] of entries) if (!this.likes.has(k)) { this.likes.set(k, v); more = true; }
+    if (more) { this.saveLikes(); UI.dirty(['liked', 'library'], true); }
+  },
   // Songs liked before they were in the library: liked for real once they are.
   likeArrived() {
     let any = false;
@@ -841,6 +846,7 @@ const Src = {
     return out;
   },
   // Whether the sources are still looking for `q`.
+  searching() { return `<div class="src-banner" role="status"><span class="src-spin2"></span><div><b>Searching for more…</b><small>Finding songs, artists and albums beyond your library</small></div></div><div class="src-sk">${'<div class="src-sk-row"><i></i><span><em></em><em></em></span></div>'.repeat(3)}</div>`; },
   pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && this.results.has(q) && !this.got.has(q); },
   wasAsked(item) { return !!item && this.asked.has(item.kind + ':' + item.id); },
   // After a Get, look for what came in (for a while), and read the library again when it changed.
@@ -972,7 +978,7 @@ async function signIn(username, password, register, displayName, inviteCode) {
   return finishSignIn(d, username);
 }
 async function finishSignIn(d, fallbackName) {
-  const local = { liked: U.liked.slice(), follows: U.follows.slice(), saved: U.saved.slice() };
+  const local = { liked: U.liked.slice(), follows: U.follows.slice(), saved: U.saved.slice(), ext: [...Src.likes] };
   U.token = d.token; LS.setRaw(K.token, d.token);
   await syncUser();
   // Carry over anything liked or followed while logged out.
@@ -982,6 +988,7 @@ async function finishSignIn(d, fallbackName) {
   U.follows = U.follows.concat(extraFollows); U.saved = U.saved.concat(extraSaved);
   if (U.liked.length !== before) pushLibrary();
   if (extraFollows.length || extraSaved.length) pushPrefs();
+  Src.addLikes(local.ext);                     // External songs liked while signed out, too
   LS.set(K.local, { history: [] });
   Connect.beat();
   Src.load();

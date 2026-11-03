@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.15.2
+
+- **External songs liked while signed out go with you.** Signing in adds them to your account, like the library's songs you liked.
+- **It's plain that search is still looking.** While the library's results are shown and more are still coming, a banner says so ("Searching for more…"), over placeholder rows that shimmer until the rest is in.
+
 ## 2.15.1
 
 - **Liked External songs are on every device.** They're kept with your account, so they're in Liked Songs wherever you sign in. Those liked on a device before this version are added to your account the first time it signs in.

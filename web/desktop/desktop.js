@@ -270,7 +270,7 @@ VIEWS.search = (el, p) => {
   const res = Src.merge(searchAll(q), q, () => { if (V.route.view === 'search' && (V.route.params.q || '').trim() === q) render(view.scrollTop); });
   const chips = [['all', 'All'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
     .map(([k, l]) => `<button class="chip${SR.f === k ? ' on' : ''}" data-act="search-filter" data-f="${k}">${l}</button>`).join('');
-  let h = `<div class="content" style="padding-top:76px"><div class="chips" style="position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 0">${chips}</div>${Src.pending(q) ? '<div class="src-bar"></div>' : ''}`;
+  let h = `<div class="content" style="padding-top:76px"><div class="chips" style="position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 0">${chips}</div>${Src.pending(q) && res.top ? Src.searching() : ''}`;
   const songs = vctx('search', q, `Search: ${q}`, res.songs);
   const artists = res.artists.map(id => itArtist(L.artists[id])), albums = res.albums.map(id => itAlbum(L.albums[id]));
   const pls = res.playlists.map(itSearchPl).filter(Boolean);
