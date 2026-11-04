@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.17.1
+
+- The lock screen and notifications get covers in the sizes they ask for (96, 192 or 384 pixels, or the full art), instead of the full art for every size.
+
 ## 2.17.0
 
 - **The player opens at once, and without a connection.** A service worker keeps the player itself (its page, scripts, stylesheets and fonts) on each device. Pages still come from the server when it answers within a moment; on a slow or missing connection, the copy kept on the device opens instead, with your library and the songs you saved for offline (which the player already kept). Before, saved songs could only be played offline if the player was already open. Browsers allow service workers on HTTPS servers (and on localhost).

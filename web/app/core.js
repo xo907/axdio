@@ -2080,9 +2080,11 @@ function updateMediaSession(t) {
   try {
     const al = albumOf(t);
     // Android can't draw the SVG placeholder the server returns for missing art, so fall back to the PNG app icon.
-    const src = t.hc ? coverUrl(t.rel) : al.hc ? coverUrl(al.cover) : '';
-    const artwork = src
-      ? [96, 256, 512].map(s => ({ src: location.origin + src, sizes: `${s}x${s}`, type: 'image/jpeg' }))
+    // Each size its own copy of the cover (the lock screen and notifications pick the one they need), the full art last.
+    const rel = t.hc ? t.rel : al.hc ? al.cover : '';
+    const abs = u => (/^https?:/.test(u) ? u : location.origin + u);
+    const artwork = rel
+      ? [[96, 96], [192, 192], [384, 384], [512, 0]].map(([s, px]) => ({ src: abs(coverUrl(rel, px || undefined)), sizes: `${s}x${s}`, type: 'image/jpeg' }))
       : [{ src: location.origin + '/api/app-icon', sizes: '512x512', type: 'image/png' }];
     navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: al.title, artwork });
   } catch (e) { /* unsupported */ }
