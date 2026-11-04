@@ -2947,6 +2947,22 @@ class TestFilingByTags(Social):
         self.assertEqual(server.repair_refiling(), [])                    # nothing left to do
 
 
+class TestServiceWorker(Base):
+    def test_service_worker(self):
+        r = self.c.get("/sw.js")
+        self.assertEqual((r.status_code, r.mimetype, r.headers["Service-Worker-Allowed"]), (200, "application/javascript", "/"))
+        self.assertIn("no-cache", r.headers["Cache-Control"])
+        self.assertIn(b"axdio-shell", r.data)
+        r.close()
+        self.settings(require_login=True)
+        try:
+            r = self.c.get("/sw.js")                                         # a private server: still there for its sign-in page
+            self.assertEqual(r.status_code, 200)
+            r.close()
+        finally:
+            self.settings(require_login=False)
+
+
 class TestCoverThumbs(Base):
     """Small copies of covers for rows and cards: made in the background, and sent once they're ready."""
     def test_small_covers(self):

@@ -2629,6 +2629,9 @@ function remapPlayer(old) {
 // Load user, offline cache and library (cache first, then the server), then restore the session.
 async function boot({ platform = 'mobile', log = () => {}, onLibrary = () => {} } = {}) {
   Connect.platform = platform;
+  // The service worker (sw.js): the player opens at once from what's kept on this device, and without a connection.
+  // Browsers allow it on HTTPS (and on this computer).
+  if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
   LS.del('spotdl_lib_cache');   // superseded by Cache Storage (the JSON outgrew localStorage)
   const accent = LS.raw(K.accent);
   if (accent) applyAccent(accent);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.17.0
+
+- **The player opens at once, and without a connection.** A service worker keeps the player itself (its page, scripts, stylesheets and fonts) on each device. Pages still come from the server when it answers within a moment; on a slow or missing connection, the copy kept on the device opens instead, with your library and the songs you saved for offline (which the player already kept). Before, saved songs could only be played offline if the player was already open. Browsers allow service workers on HTTPS servers (and on localhost).
+
 ## 2.16.0
 
 - **Covers load much faster, and use far less data.** Song rows, cards and lists were sent every cover at the size it's embedded in the file (often 1000+ pixels and hundreds of KB, for a 48-pixel row). They now get small copies (96, 192 or 384 pixels, a few KB to a few tens of KB), made by the server in the background once and kept with the covers; the first time, the full cover is sent while the copy is made. Big places (an album's header, Now Playing) still show the full art. External artwork comes in smaller sizes for rows and cards, too, and pages take their colour from a small copy.

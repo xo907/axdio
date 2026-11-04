@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.16.0"
+AXDIO_VERSION = "2.17.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -521,6 +521,15 @@ def spa_router():
 def plugin_page(sub):
     """Pages that plugins add to the player (/x/<plugin id>/<page>): the player draws them."""
     return spa_router()
+
+@app.route("/sw.js")
+def service_worker():
+    """The player's service worker (web/sw.js): it opens at once, and without a connection. Served from the top, so it
+    looks after every page, and never kept by browsers (a new version takes over at the next visit)."""
+    resp = send_file(str(SCRIPT_DIR / "web" / "sw.js"), mimetype="application/javascript", max_age=0)
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 @app.route("/manifest.json")
 def manifest_json():
@@ -4643,7 +4652,7 @@ def api_branding():
 
 # --- Request gates: maintenance, private server, feature switches ---
 _OPEN_PREFIXES = ("/admin", "/api/admin/", "/api/auth/", "/api/branding", "/api/app-icon", "/api/health", "/metrics", "/rest/", "/web/", "/favicon.ico",
-                  "/manifest.json", "/robots.txt", "/api/federation/", "/api/presence")
+                  "/manifest.json", "/robots.txt", "/api/federation/", "/api/presence", "/sw.js")
 _PAGE_PATHS = {"/", "/offline", "/history", "/artists", "/albums", "/liked", "/playlist", "/profile", "/settings", "/messages", "/friends", "/user",
                "/mobile", "/mobile.html"}
 
