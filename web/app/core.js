@@ -54,6 +54,12 @@ const pick = (arr, rand = Math.random) => arr[Math.floor(rand() * arr.length)];
 const dayKey = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
 const weekKey = () => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toDateString(); };
 const monthYear = ts => ts ? new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : '';
+// A release date tag ("2021", "2021-09" or "2021-09-03"): its year, or the whole date written out.
+const relYear = d => String(d || '').slice(0, 4);
+const relDate = d => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || '');
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : relYear(d);
+};
 const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 // One sprite for both UIs (24px Material-style glyphs). Injected once so every <use href="#i-…"> resolves.
@@ -354,11 +360,12 @@ function buildLibrary(raw) {
         const tr = {
           id: tracks.length, rel: t.rel_path, title: String(t.title || fileTitle(t.rel_path)),
           artist: String(t.display_artist || ar.name), artistId: ar.id, albumId: al.id,
-          no: trackNo(t), mtime: +t.mtime || 0, hc: t.has_cover !== false, st: '', sa: '', s: '', src: t.src || '',
+          no: trackNo(t), mtime: +t.mtime || 0, hc: t.has_cover !== false, st: '', sa: '', s: '', src: t.src || '', date: String(t.date || ''),
         };
         if (t.src) sources[t.src] = t.src_name || 'another server';
         tracks.push(tr); byRel.set(tr.rel, tr); al.trackIds.push(tr.id); ar.trackIds.push(tr.id); al.seen.set(dupKey, tr.id);
         if (tr.mtime > al.mtime) al.mtime = tr.mtime;
+        if (tr.date && (!al.date || tr.date < al.date)) al.date = tr.date;     // the album's release: its earliest song's
         if (tr.mtime > ar.mtime) ar.mtime = tr.mtime;
       }
     }
@@ -2693,7 +2700,7 @@ window.AX = {
   byId, $$, esc, norm, clamp, fmt, nf, count, ic, EQB, debounce, uniq, now, setUse, collator, haptic, hashStr, rng, shuffled, pick, dayKey, weekKey, monthYear,
   LS, K, S, saveS, saveSSoon, AUDIO_CACHE, META_CACHE, streamUrl, playUrl, QUALITIES, streamQuality, setQuality, onCellular, SITE, feat, featOn, CREDIT, minPassword, pendingInvite, authGate,
   PH, coverUrl, img, tone, hexRgb, dominant, applyAccent, ACCENTS, setAccent, setThemeColor,
-  L, Src, refreshLibrary, sortName, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
+  L, Src, refreshLibrary, relYear, relDate, sortName, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
   U, api, signIn, signOut, finishSignIn, takeDiscordNote, discordSignIn, discordLink, discordUnlink, discordFinish, discordButton, presenceInfo, presenceSetup, presenceOff, updateProfile, pickImage, squarePhoto, uploadAvatar, removeAvatar, changePassword, listSessions, revokeSession, exportMyData, deleteAccount, subsonicInfo, subsonicPassword, scrobbleInfo, connectListenBrainz, disconnectScrobbler, cacheUser, recordPlay, toggleLike, setLikedMany, toggleFollow, toggleSaveAlbum,
   addToPlaylist, removeFromPlaylist, reorderPlaylist, plCreate, plRename, plDelete, pushLibrary, pushPrefs, Collab,
   RECENTS, touchRecent, recentTs, SEARCHES, rememberSearch, forgetSearch, clearSearches,

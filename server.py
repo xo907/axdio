@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.17.1"
+AXDIO_VERSION = "2.18.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -330,6 +330,7 @@ def _first(tags, *keys):
 
 def extract_tags_for_file(file_path, rel_path):
     title, artist, album, album_artist, track_num, has_cover, duration = file_path.stem, "Unknown Artist", "Singles", "", None, False, None
+    date = ""
     unread = False
     if HAS_MUTAGEN:
         try:
@@ -341,6 +342,7 @@ def extract_tags_for_file(file_path, rel_path):
                 album = _first(audio, "album") or album
                 album_artist = _first(audio, "albumartist", "album artist") or ""
                 track_num = _first(audio, "tracknumber")
+                date = _first(audio, "date", "originaldate", "year") or ""
                 if audio.pictures: has_cover = _save_cover(rel_path, audio.pictures[0].data)
             elif ext == ".mp3":
                 audio = MP3(str(file_path))
@@ -350,6 +352,7 @@ def extract_tags_for_file(file_path, rel_path):
                 album = _first(tags, "TALB") or album
                 album_artist = _first(tags, "TPE2") or ""
                 track_num = _first(tags, "TRCK")
+                date = _first(tags, "TDRC", "TDOR", "TYER") or ""
                 for k in list(tags.keys()):
                     if k.startswith("APIC:"):
                         has_cover = _save_cover(rel_path, tags[k].data); break
@@ -363,6 +366,7 @@ def extract_tags_for_file(file_path, rel_path):
                 album_artist = _first(tags, "aART", "albumartist", "TPE2") or ""
                 trk = tags.get("trkn") if hasattr(tags, "get") else None
                 track_num = str(trk[0][0]) if trk else _first(tags, "tracknumber", "TRCK")
+                date = _first(tags, "\xa9day", "date", "year", "TDRC") or ""
                 covr = tags.get("covr") if hasattr(tags, "get") else None
                 if covr: has_cover = _save_cover(rel_path, covr[0])
                 elif hasattr(tags, "get") and tags.get("metadata_block_picture"):
@@ -379,7 +383,8 @@ def extract_tags_for_file(file_path, rel_path):
         "album": album,
         "track_number": track_num or inf_num,
         "has_cover": has_cover,
-        "mtime": file_path.stat().st_mtime
+        "mtime": file_path.stat().st_mtime,
+        "date": _release_date(date),                     # when it came out (the player shows it), not when it was added
     }
     if album_artist: entry["album_artist"] = album_artist
     if duration: entry["duration"] = duration
@@ -389,6 +394,11 @@ def extract_tags_for_file(file_path, rel_path):
 # Before 2.9 a read that failed was cached as the file's tags (its name as the title, "Singles" as the album) until the
 # file changed. The first scan after updating reads those songs again, once.
 REREAD_MARK = CONFIG_DIR / "library_reread_v1"
+
+def _release_date(v):
+    """A release date tag as "YYYY", "YYYY-MM" or "YYYY-MM-DD" ("" when there's none)."""
+    m = re.match(r"\s*(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?", str(v or ""))
+    return "-".join(x for x in m.groups() if x) if m else ""
 
 def _looks_unread(entry, rel):
     return entry.get("has_cover") is None and entry.get("album") == "Singles" and entry.get("title") == Path(rel).stem
@@ -417,7 +427,8 @@ def scan_library():
                 try: mtime = p.stat().st_mtime
                 except OSError: continue
                 with library_cache_lock: existing = library_cache_data.get(rel)
-                if existing and existing.get("mtime") == mtime and not existing.get("unread") and not (reread and _looks_unread(existing, rel)): continue
+                if (existing and existing.get("mtime") == mtime and not existing.get("unread") and "date" in existing
+                        and not (reread and _looks_unread(existing, rel))): continue
                 entry = extract_tags_for_file(p, rel)   # slow file IO stays outside the lock
                 with library_cache_lock: library_cache_data[rel] = entry
                 if existing: updated += 1; changed_rels.append(rel)

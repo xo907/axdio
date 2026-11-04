@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.18.0
+
+- **Albums show when they came out, not when they were added.** An album's page, discographies and album lists show its release year (from the songs' date tags), and the foot of an album's page the whole release date. "Recently added" still sorts by when songs came into the library. Songs are read once more on the first scan after updating, to get their dates.
+
 ## 2.17.1
 
 - The lock screen and notifications get covers in the sizes they ask for (96, 192 or 384 pixels, or the full art), instead of the full art for every size.

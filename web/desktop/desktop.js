@@ -23,7 +23,7 @@ const {
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, stageTrack,
   SL, setSleep, sleepLabel, trackChanged, LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink,
   avatarHtml, libItems, itAlbum, itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds, itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort,
-  Src,
+  Src, relYear, relDate,
 } = window.AX;
 
 /* ======================================================================
@@ -397,12 +397,12 @@ VIEWS.album = (el, p) => {
   const ctx = vctx('album', al.key, al.title, al.trackIds, 'album:' + al.key);
   const saved = U.saved.includes(al.key);
   const line = (ar ? `<img class="av" src="${esc(coverUrl(ar.cover))}" alt=""><b><a class="lnk" data-act="go" data-view="artist" data-id="${ar.id}">${esc(ar.name)}</a></b>` : '<b>Various Artists</b>')
-    + (al.mtime ? `<span class="dot"></span><span class="muted">Added ${esc(monthYear(al.mtime))}</span>` : '')
+    + (al.date ? `<span class="dot"></span><span class="muted">${esc(relYear(al.date))}</span>` : '')
     + `<span class="dot"></span><span class="muted">${count(al.trackIds.length, 'song')}</span>`;
   let h = '<div class="vbg"></div>' + vhead(al.title, ctx) + heroHtml({ kind: al.type + (albumSource(al) ? ` · Shared by ${albumSource(al)}` : ''), cover: img(coverUrl(al.cover)), title: al.title, line })
     + `<div class="actions">${playBtn(ctx)}${shufBtn()}<button class="act-btn${saved ? ' lit' : ''}" data-act="save-album" data-id="${al.id}" data-save="${al.id}" data-tip="${saved ? 'Remove from' : 'Save to'} Your Library">${ic(saved ? 'check-c' : 'add')}</button>${dlBtn(ctx)}${moreBtn('album', al.id)}</div>`
     + `<div class="content">${tableShell(ctx, { noAlbum: !al.comp, noArt: !al.comp, trackNo: !al.comp && realTrackNos(al) })}`
-    + `<p class="list-foot">${al.mtime ? esc(new Date(al.mtime * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })) + '<br>' : ''}${count(al.trackIds.length, 'song')}${al.comp ? ` • ${count(uniq(al.trackIds.map(id => L.tracks[id].artistId)).length, 'artist')}` : ''} • ${esc(fileExt(al.cover))}</p>`;
+    + `<p class="list-foot">${al.date ? esc(relDate(al.date)) + '<br>' : ''}${count(al.trackIds.length, 'song')}${al.comp ? ` • ${count(uniq(al.trackIds.map(id => L.tracks[id].artistId)).length, 'artist')}` : ''} • ${esc(fileExt(al.cover))}</p>`;
   if (ar) h += shelf(`More by ${ar.name}`, ar.albumIds.filter(id => id !== al.id).slice(0, 12).map(id => itAlbum(L.albums[id])), { moreAttr: ar.albumIds.length > 6 ? `data-act="go" data-view="discog" data-id="${ar.id}"` : '' });
   el.innerHTML = h + '</div>';
   fillTables(el);
@@ -429,7 +429,7 @@ VIEWS.artist = (el, p) => {
   const groups = { popular: ar.albumIds.slice().sort((a, b) => albumScore(b) - albumScore(a)), albums: ar.albumIds.filter(id => L.albums[id].type === 'Album'), singles: ar.albumIds.filter(id => ['Single', 'EP'].includes(L.albums[id].type)), comps: [...ar.compIds] };
   const discChips = [['popular', 'Popular releases'], ['albums', 'Albums'], ['singles', 'Singles and EPs'], ['comps', 'Compilations']].filter(([k]) => groups[k].length)
     .map(([k, l]) => `<button class="chip${st.disc === k ? ' on' : ''}" data-act="disc-chip" data-f="${k}">${l}</button>`).join('');
-  h += `<section class="sec"><div class="sec-h"><h2><a class="lnk" data-act="go" data-view="discog" data-id="${ar.id}">Discography</a></h2><button class="more" data-act="go" data-view="discog" data-id="${ar.id}">Show all</button></div><div class="chips" style="margin-bottom:12px">${discChips}</div><div class="shelf">${(groups[st.disc] || groups.popular).slice(0, 12).map(id => cardHtml({ ...itAlbum(L.albums[id]), sub: `${L.albums[id].type}${L.albums[id].mtime ? ' • ' + monthYear(L.albums[id].mtime) : ''}` })).join('')}</div></section>`;
+  h += `<section class="sec"><div class="sec-h"><h2><a class="lnk" data-act="go" data-view="discog" data-id="${ar.id}">Discography</a></h2><button class="more" data-act="go" data-view="discog" data-id="${ar.id}">Show all</button></div><div class="chips" style="margin-bottom:12px">${discChips}</div><div class="shelf">${(groups[st.disc] || groups.popular).slice(0, 12).map(id => cardHtml({ ...itAlbum(L.albums[id]), sub: `${L.albums[id].type}${L.albums[id].date ? ' • ' + relYear(L.albums[id].date) : ''}` })).join('')}</div></section>`;
   const extras = [getMix('feat:' + ar.key), getMix('artist-radio:' + ar.key)].filter(Boolean).map(itMix);
   h += shelf(`Featuring ${ar.name}`, extras);
   h += shelf('Fans also like', relatedArtists(ar, 12).map(itArtist));
@@ -462,7 +462,7 @@ VIEWS.discog = (el, p) => {
   const groups = { all: ar.albumIds, albums: ar.albumIds.filter(id => L.albums[id].type === 'Album'), singles: ar.albumIds.filter(id => ['Single', 'EP'].includes(L.albums[id].type)), comps: [...ar.compIds] };
   const ids = groups[st.f] || groups.all;
   el.innerHTML = `<div class="content"><h1 class="page-title"><a class="lnk" data-act="go" data-view="artist" data-id="${ar.id}">${esc(ar.name)}</a></h1><div class="page-sub">Discography</div><div class="chips" style="margin:20px 0">${[['all', 'All'], ['albums', 'Albums'], ['singles', 'Singles and EPs'], ['comps', 'Compilations']].filter(([k]) => groups[k].length).map(([k, l]) => `<button class="chip${st.f === k ? ' on' : ''}" data-act="discog-filter" data-f="${k}">${l}</button>`).join('')}</div><div class="grid"></div></div>`;
-  chunked(el.querySelector('.grid'), ids.length, i => { const al = L.albums[ids[i]]; return cardHtml({ ...itAlbum(al), sub: `${al.type} • ${count(al.trackIds.length, 'song')}${al.mtime ? ' • ' + monthYear(al.mtime) : ''}` }); }, 48);
+  chunked(el.querySelector('.grid'), ids.length, i => { const al = L.albums[ids[i]]; return cardHtml({ ...itAlbum(al), sub: `${al.type} • ${count(al.trackIds.length, 'song')}${al.date ? ' • ' + relYear(al.date) : ''}` }); }, 48);
 };
 VIEWS.playlist = (el, p) => {
   if (!L.ready) { el.innerHTML = loading(); return; }

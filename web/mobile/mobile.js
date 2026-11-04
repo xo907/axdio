@@ -31,7 +31,7 @@ const {
   setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
   LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink, setOnline, avatarHtml, itAlbum,
   itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds,
-  itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort, Src,
+  itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort, Src, relYear, relDate,
 } = window.AX;
 
 /* ======================================================================
@@ -553,7 +553,7 @@ VIEWS.album = pg => {
   const saved = U.saved.includes(al.key);
   const by = ar ? `<button class="hero-by" data-act="open" data-k="artist" data-id="${ar.id}">${img(coverUrl(ar.cover))}${esc(ar.name)}</button>` : '<div class="hero-by">Various Artists</div>';
   let h = topbar(al.title, ctx) + '<div class="wash"></div>'
-    + heroHtml({ cover: img(coverUrl(al.cover)), title: al.title, by, sub: albumSource(al) ? `${al.type} • Shared by ${albumSource(al)}` : `${al.type} • ${monthYear(al.mtime) ? 'Added ' + monthYear(al.mtime) : ''}` })
+    + heroHtml({ cover: img(coverUrl(al.cover)), title: al.title, by, sub: albumSource(al) ? `${al.type} • Shared by ${albumSource(al)}` : `${al.type}${al.date ? ' • ' + relYear(al.date) : ''}` })
     + `<div class="actions"><button class="ib${saved ? ' lit' : ''}" data-act="save-album" data-id="${al.id}" data-save="${al.id}" aria-label="Save to Your Library">${ic(saved ? 'check-c' : 'add')}</button>${dlBtn(ctx)}<button class="ib" data-act="more-ctx" data-k="album" data-id="${al.id}" aria-label="More options">${ic('more-v')}</button><span class="flex1"></span>${shuffleBtn()}${playBtn(ctx)}</div>`
     + trackList(ctx, { num: al.trackIds.length > 1, noArt: false })
     + `<div class="list-foot">${count(al.trackIds.length, 'song')}${al.comp ? ` • ${count(uniq(al.trackIds.map(id => L.tracks[id].artistId)).length, 'artist')}` : ''}</div>`;
@@ -616,7 +616,7 @@ VIEWS.discog = pg => {
   const groups = { all: ar.albumIds, albums: ar.albumIds.filter(id => L.albums[id].type === 'Album'), singles: ar.albumIds.filter(id => ['Single', 'EP'].includes(L.albums[id].type)), comps: [...ar.compIds] };
   const ids = groups[st.f] || groups.all;
   pg.el.innerHTML = topbar('Discography') + `<div class="hero" style="padding-bottom:4px"><h1 class="hero-title">${esc(ar.name)}</h1><div class="hero-sub">Discography</div></div><div class="chips">${[['all', 'All'], ['albums', 'Albums'], ['singles', 'Singles and EPs'], ['comps', 'Appears on']].filter(([k]) => groups[k].length).map(([k, l]) => `<button class="chip${st.f === k ? ' on' : ''}" data-act="discog-filter" data-f="${k}">${l}</button>`).join('')}</div><div class="rows"></div>`;
-  chunked(pg, pg.el.querySelector('.rows'), ids.length, i => { const al = L.albums[ids[i]]; return rowHtml({ ...itAlbum(al), sub: `${al.type} • ${count(al.trackIds.length, 'song')}${al.mtime ? ' • ' + monthYear(al.mtime) : ''}` }, true); });
+  chunked(pg, pg.el.querySelector('.rows'), ids.length, i => { const al = L.albums[ids[i]]; return rowHtml({ ...itAlbum(al), sub: `${al.type} • ${count(al.trackIds.length, 'song')}${al.date ? ' • ' + relYear(al.date) : ''}` }, true); });
 };
 VIEWS.playlist = pg => {
   const name = pg.params.name, rels = U.playlists[name];
