@@ -2970,6 +2970,7 @@ class TestCoverThumbs(Base):
         big = TMP / "big-cover.jpg"
         subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=900x900", "-frames:v", "1", "-q:v", "2", str(big)], check=True)
         cover = server.COVERS_CACHE_DIR / f"{hashlib.md5(rel.encode()).hexdigest()}.jpg"
+        cover.parent.mkdir(parents=True, exist_ok=True)          # (an earlier test may have moved the config folder)
         before = cover.read_bytes() if cover.exists() else None
         cover.write_bytes(big.read_bytes())
         try:
