@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.15.8"
+AXDIO_VERSION = "2.15.9"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -9992,6 +9992,11 @@ _source_art_urls = collections.OrderedDict()     # (source id, address) -> True,
 _source_art = collections.OrderedDict()          # (source id, address) -> (bytes, type), fetched lately
 _source_art_lock = threading.Lock()
 
+def _art_sig(sid, url):
+    """The signature on an artwork address the server gave: it's fetched for whoever has it, also after a restart
+    (results players kept from before still show their artwork), and nothing else is."""
+    return hmac.new(str(app.secret_key).encode(), f"art\n{sid}\n{url}".encode(), hashlib.sha256).hexdigest()[:24]
+
 def source_setting(sid):
     return f"library_source_{sid}"
 
@@ -10049,7 +10054,7 @@ def _source_item(src, kind, it):
             _source_art_urls[(src["id"], cover)] = True
             _source_art_urls.move_to_end((src["id"], cover))
             while len(_source_art_urls) > 5000: _source_art_urls.popitem(last=False)
-        out["cover"] = f"/api/sources/{src['id']}/art?" + urllib.parse.urlencode({"u": cover})
+        out["cover"] = f"/api/sources/{src['id']}/art?" + urllib.parse.urlencode({"u": cover, "s": _art_sig(src["id"], cover)})
     elif cover is not None: out["cover"] = ""
     return out
 
@@ -10155,7 +10160,7 @@ def api_source_art(sid):
     key = (src["id"], request.args.get("u") or "")
     with _source_art_lock:
         known, have = key in _source_art_urls, _source_art.get(key)
-    if not known: abort(404)
+    if not known and not (key[1] and hmac.compare_digest(request.args.get("s") or "", _art_sig(src["id"], key[1]))): abort(404)
     disk = SOURCE_ART_DIR / (hashlib.md5(key[1].encode()).hexdigest() + ".img")
     if not have and disk.is_file():
         try: data = disk.read_bytes()

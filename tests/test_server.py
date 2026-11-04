@@ -3005,13 +3005,17 @@ class TestLibrarySources(Base):
         self.c.get("/api/sources/search?q=far")
         self.assertEqual([c for c in self.calls if c[0] == "search"], [("search", "far")])     # the same search again: kept
         # Artwork comes through the server, and only from addresses the source gave.
-        self.assertEqual(s["cover"], "/api/sources/far/art?u=https%3A%2F%2Fexample.com%2Fc.jpg")
+        self.assertTrue(s["cover"].startswith("/api/sources/far/art?u=https%3A%2F%2Fexample.com%2Fc.jpg&s="))
         orig = server.fetch_bytes
         server.fetch_bytes = lambda url, **k: b"\xff\xd8\xff jpeg" if url == "https://example.com/c.jpg" else None
         try:
             r = self.c.get(s["cover"])
             self.assertEqual((r.status_code, r.mimetype, r.data), (200, "image/jpeg", b"\xff\xd8\xff jpeg"))
             self.assertEqual(self.c.get("/api/sources/far/art?u=https%3A%2F%2Fexample.com%2Fother.jpg").status_code, 404)
+            # After a restart (what it saw is forgotten) the address it gave still works, and a made-up signature doesn't.
+            with server._source_art_lock: server._source_art_urls.clear(); server._source_art.clear()
+            self.assertEqual(self.c.get(s["cover"]).status_code, 200)
+            self.assertEqual(self.c.get("/api/sources/far/art?u=https%3A%2F%2Fexample.com%2Fother.jpg&s=" + "0" * 24).status_code, 404)
         finally:
             server.fetch_bytes = orig
 

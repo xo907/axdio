@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.15.9
+
+- **External artwork shows after the server restarts.** Search results kept from before a restart (or an update) asked for artwork the server no longer knew it had given out, and got none. Artwork addresses now carry the server's signature, so they keep working.
+
 ## 2.15.8
 
 - **Searching doesn't wait on itself any more.** External sources are asked once typing pauses, not for every few letters on the way (typing a song's name sent a dozen searches, each making songs ready in the background; on a small server that made the one that mattered wait). The search shows it's looking meanwhile.
