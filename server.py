@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.15.7"
+AXDIO_VERSION = "2.15.8"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -100,6 +100,17 @@ FAVICON_FILE = CONFIG_DIR / "favicon.png"
 PWA_ICON_FILE = CONFIG_DIR / "icon-512.png"
 
 app = Flask(__name__, template_folder=str(SCRIPT_DIR / "web"), static_folder=str(SCRIPT_DIR / "web"))
+
+from flask.sessions import SecureCookieSessionInterface as _CookieSessions
+
+class _Sessions(_CookieSessions):
+    """The player's scripts, stylesheets and fonts (/web/) are the same for everyone: no session cookie is sent with
+    them, and they don't vary by cookie, so browsers keep them (the session cookie is renewed with every other answer)."""
+    def save_session(self, app, session, response):
+        if request.path.startswith("/web/") and not session.modified: return None
+        return super().save_session(app, session, response)
+
+app.session_interface = _Sessions()
 app.secret_key = os.environ.get("SECRET_KEY") or os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024   # uploads and backup restores
 
@@ -4701,18 +4712,37 @@ def _asset_stamp(path):
     _asset_stamps[path] = (key, stamp)
     return stamp
 
+_stamped = {}           # script path -> (its file's version, [(address it names, stamp)], the body with stamps)
+
 def _stamp_assets(resp):
     """Point /web/ scripts and stylesheets at their current version (?v=<stamp>), in pages and in the scripts that load
-    other scripts. A new release or an edited file gets a new address; unchanged ones stay cached."""
+    other scripts. A new release or an edited file gets a new address; unchanged ones stay cached. A script's stamped
+    copy is kept until it, or a file it names, changes."""
     try:
         if resp.status_code != 200 or resp.mimetype not in ("text/html", "application/javascript", "text/javascript"): return resp
         if resp.mimetype != "text/html" and not request.path.startswith(("/web/desktop/", "/web/mobile/", "/web/app/")): return resp
         resp.direct_passthrough = False
         source = resp.response
+        if resp.mimetype != "text/html":
+            hit, fkey = _stamped.get(request.path), _asset_stamp(request.path)
+            if hit and hit[0] == fkey and all(_asset_stamp(p) == s for p, s in hit[1]):
+                if hasattr(source, "close"): source.close()
+                resp.set_data(hit[2])
+                resp.headers.pop("Last-Modified", None)
+                resp.set_etag(hit[3])
+                resp.make_conditional(request)
+                return resp
         body = resp.get_data(as_text=True)
         if hasattr(source, "close"): source.close()          # the file behind a send_file response
         if "/web/" not in body: return resp
-        new = _ASSET_RE.sub(lambda m: f"{m.group(1)}?v={_asset_stamp(m.group(1)) or AXDIO_VERSION}", body)
+        named = []
+        def stamp(m):
+            s = _asset_stamp(m.group(1))
+            named.append((m.group(1), s))
+            return f"{m.group(1)}?v={s or AXDIO_VERSION}"
+        new = _ASSET_RE.sub(stamp, body)
+        if resp.mimetype != "text/html":
+            _stamped[request.path] = (_asset_stamp(request.path), named, new, hashlib.md5(new.encode()).hexdigest())
         if new != body:
             resp.set_data(new)
             resp.headers.pop("Last-Modified", None)
@@ -4722,11 +4752,26 @@ def _stamp_assets(resp):
         print(f"[WARN] asset versioning skipped: {ex}")
     return resp
 
+_gzip_assets = collections.OrderedDict()   # (path, ETag) -> gzipped body of a /web/ file
+
+def _cache_assets(resp):
+    """A script or stylesheet asked for at its current version (?v=<stamp>) never changes at that address: browsers keep
+    it for a year without asking again. Fonts and images are kept a week."""
+    p = request.path
+    if resp.status_code not in (200, 304) or not p.startswith("/web/"): return resp
+    v = request.args.get("v")
+    if v and p.endswith((".js", ".css")) and v == (_asset_stamp(p) or AXDIO_VERSION):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif p.endswith((".woff2", ".woff", ".ttf", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico")):
+        resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
+
 @app.after_request
 def finish_response(resp):
     _request_counts[f"{resp.status_code // 100}xx"] += 1
     resp = _inject_head(resp)
     resp = _stamp_assets(resp)
+    resp = _cache_assets(resp)
     for k, v in SECURITY_HEADERS.items(): resp.headers.setdefault(k, v)
     if cfg().get("force_ssl") and (request.is_secure or request.headers.get("X-Forwarded-Proto") == "https"):
         resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
@@ -4739,6 +4784,19 @@ def finish_response(resp):
                 if _gzip_library["key"] != key:
                     _gzip_library.update(key=key, body=gzip.compress(resp.get_data(), 6))
                 body = _gzip_library["body"]
+            elif request.path.startswith("/web/") and resp.headers.get("ETag"):
+                key = (request.path, resp.headers.get("ETag"))
+                body = _gzip_assets.get(key)
+                if body is None:
+                    resp.direct_passthrough = False
+                    raw = resp.get_data()
+                    body = gzip.compress(raw, 9) if len(raw) > 1024 else None
+                    if body is not None:
+                        _gzip_assets[key] = body
+                        while len(_gzip_assets) > 80: _gzip_assets.popitem(last=False)
+                else:
+                    src = resp.response
+                    if hasattr(src, "close"): src.close()
             else:
                 resp.direct_passthrough = False
                 raw = resp.get_data()

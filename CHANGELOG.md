@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.15.8
+
+- **Searching doesn't wait on itself any more.** External sources are asked once typing pauses, not for every few letters on the way (typing a song's name sent a dozen searches, each making songs ready in the background; on a small server that made the one that mattered wait). The search shows it's looking meanwhile.
+- **The player loads faster, and from the browser after the first time.** Its scripts and stylesheets are kept by browsers for a year at each version (a new version has a new address), instead of being checked on every visit; the server works out each file's versioned copy and its compressed copy once, not on every request (it did both for every file of every page load); and they're compressed harder. Fonts and images are kept a week. Static files no longer carry a session cookie, which kept browsers from keeping them.
+- **The next External song is all ready before it starts.** The server saves it ahead (it starts at once, seeking included), and the one after it is made ready too.
+
 ## 2.15.7
 
 - **The hearts line up.** Every song row has the same place for Get (empty for the library's songs), so the hearts are in one column, External songs or not.

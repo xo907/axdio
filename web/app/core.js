@@ -672,7 +672,15 @@ const Src = {
     q = String(q || '').trim();
     if (!res || !this.on() || q.length < 2) return res;
     const d = this.got.get(q);
-    if (!d) { this.search(q).then(() => redraw(), () => redraw()); return res; }
+    if (!d) {
+      if (this.results.has(q)) this.results.get(q).then(() => redraw(), () => redraw());
+      else {
+        this.want = q;
+        clearTimeout(this.wantTimer);
+        this.wantTimer = setTimeout(() => { if (this.want === q) this.search(q).then(() => redraw(), () => redraw()); }, 300);
+      }
+      return res;
+    }
     const fresh = [];
     for (const s of d.sources) {
       for (const x of s.songs) { const t = this.track(x); if (!res.songs.includes(t.id)) { res.songs.push(t.id); if (t.ext) fresh.push(x); } }
@@ -707,7 +715,7 @@ const Src = {
       // A link to a song, an album or a playlist: that's what's wanted, so its first songs are made all ready to play
       // (the rest are made ready as it plays, as for any list).
       if (/^\s*(https?:\/\/|[\w-]+\.[a-z]{2,}\/)/i.test(q) && !(res.top && res.top.k === 'artist'))
-        for (const x of fresh.slice(0, 3)) api(`/api/sources/${x.src}/preload`, { id: x.id }).catch(() => {});
+        for (const x of fresh.slice(0, 3)) this.preload(x);
     }
     return res;
   },
@@ -883,7 +891,15 @@ const Src = {
   refreshing: new Set(),
   // Whether the sources are still looking for `q`.
   searching() { return `<div class="src-banner" role="status"><span class="src-spin2"></span><div><b>Searching for more…</b><small>Finding songs, artists and albums beyond your library</small></div></div><div class="src-sk">${'<div class="src-sk-row"><i></i><span><em></em><em></em></span></div>'.repeat(3)}</div>`; },
-  pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && this.results.has(q) && !this.got.has(q); },
+  pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && !this.got.has(q) && (this.results.has(q) || this.want === q); },
+  // A song all ready to play (saved by the server ahead of time): the next one up, a link searched for.
+  preload(item) {
+    if (!item || !item.src || this.preloaded.has(item.path)) return;
+    this.preloaded.add(item.path);
+    this.warmed.add(item.path);
+    api(`/api/sources/${item.src}/preload`, { id: item.id }).catch(() => this.preloaded.delete(item.path));
+  },
+  preloaded: new Set(),
   wasAsked(item) { return !!item && this.asked.has(item.kind + ':' + item.id); },
   // After a Get, look for what came in (for a while), and read the library again when it changed.
   follow() {
@@ -914,10 +930,10 @@ const srcPrime = e => {
   const row = e.target.closest && e.target.closest('[data-t], [data-k="album"], [data-k="artist"]');
   if (!row) return;
   clearTimeout(srcHover);
-  const wait = e.type === 'touchstart' ? 0 : 200;
+  const wait = e.type === 'touchstart' ? 0 : 300;
   if (row.dataset.t != null) { const t = L.tracks[+row.dataset.t]; if (t && t.ext) srcHover = setTimeout(() => Src.warm([t.item]), wait); return; }
   const o = row.dataset.k === 'album' ? L.albums[+row.dataset.id] : L.artists[+row.dataset.id];
-  if (o && o.ext && Src.key(o.key)) srcHover = setTimeout(() => Src.page(o.key).catch(() => {}), wait);
+  if (o && o.ext && Src.key(o.key) && !Src.pages.has(o.key)) srcHover = setTimeout(() => Src.page(o.key).catch(() => {}), wait);
 };
 document.addEventListener('mouseover', srcPrime, { passive: true });
 document.addEventListener('touchstart', srcPrime, { passive: true });
@@ -1967,8 +1983,9 @@ function trackChanged() {
     $$('[data-ck]').forEach(n => n.classList.toggle('ctx-playing', !!(c && n.dataset.ck === c.recent)));
     updateMediaSession(t);
     loadLyricsSoon(t);
-    const next = P.queue.slice(0, 2).concat(upcoming(2).map(u => u.id)).slice(0, 2).map(id => L.tracks[id]);
-    Src.warm(next.filter(x => x && x.ext).map(x => x.item));   // the next songs up, from a source: ready to start without waiting
+    const [n1, n2] = P.queue.slice(0, 2).concat(upcoming(2).map(u => u.id)).slice(0, 2).map(id => L.tracks[id]);
+    if (n1 && n1.ext) Src.preload(n1.item);                  // the next song up, from a source: all of it ready to play
+    if (n2 && n2.ext) Src.warm([n2.item]);                   // and the one after that, ready to start
   } else document.title = SITE.site_title || 'Axdio';
   updatePlayButtons(); updateModes();
   UI.track(t);
