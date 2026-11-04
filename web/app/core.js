@@ -204,7 +204,14 @@ const SITE = {};
    3. Colours & covers
    ====================================================================== */
 const PH = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" fill="#282828"/><path fill="#5e5e5e" d="M12.5 6v7.6a2.6 2.6 0 1 0 1.3 2.2V8.6h2.7V6z"/></svg>');
-const coverUrl = rel => /^(https:\/\/|\/api\/sources\/)/.test(rel || '') ? rel : '/api/cover?path=' + encodeURIComponent(rel || '');
+// A cover's address. `size` asks for a small copy (96, 192 or 384 pixels) for rows and cards; without it, the full art.
+const coverUrl = (rel, size) => {
+  rel = rel || '';
+  if (rel.startsWith('/api/sources/')) return size ? rel + '&px=' + size : rel;
+  if (rel.startsWith('https://')) return rel;
+  if (size && rel[0] === '@') { const t = L.byRel.get(rel); if (t && t.ext && t.item && t.item.cover) return coverUrl(t.item.cover, size); }
+  return '/api/cover?path=' + encodeURIComponent(rel) + (size ? '&s=' + size : '');
+};
 const img = (src, alt = '') => `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" decoding="async">`;
 document.addEventListener('error', e => {
   const t = e.target;
@@ -645,11 +652,11 @@ const Src = {
   },
   // A card for a source's album or artist (the library's own when it has it).
   card(a) {
-    if (a.kind === 'artist') { const lib = this.libArtist(a); if (lib) return itArtist(lib); const ar = this.artist(a); return { k: 'artist', id: ar.id, title: ar.name, sub: 'Artist', cover: img(coverUrl(a.cover || ar.cover)), circle: true, ext: a.src }; }
+    if (a.kind === 'artist') { const lib = this.libArtist(a); if (lib) return itArtist(lib); const ar = this.artist(a); return { k: 'artist', id: ar.id, title: ar.name, sub: 'Artist', cover: img(coverUrl(a.cover || ar.cover, 384)), circle: true, ext: a.src }; }
     const lib = this.libAlbum(a);
     if (lib) return itAlbum(lib);
     const al = this.album(a);
-    return { k: 'album', id: al.id, title: al.title, sub: [a.type || 'Album', a.year, a.artist].filter(Boolean).join(' • '), cover: img(coverUrl(a.cover || al.cover)), ext: a.src };
+    return { k: 'album', id: al.id, title: al.title, sub: [a.type || 'Album', a.year, a.artist].filter(Boolean).join(' • '), cover: img(coverUrl(a.cover || al.cover, 384)), ext: a.src };
   },
   // A key of a source's album or artist page ("@<source>-album:<id>"), or null.
   key(k) { const m = SRC_KEY.exec(k || ''); return m && !m[3].startsWith('~') ? { src: m[1], kind: m[2], id: m[3] } : null; },
@@ -1688,6 +1695,8 @@ async function load(id, autoplay, seek = 0) {
   D.rel[D.i] = t.rel; D.level[D.i] = SM.level(t.rel); applyVolume();
   if (autoplay) play(); else D.a.load();
   saveState();
+  // The first play of an External song takes a few seconds while its source gets it ready: say so, if it does.
+  if (t.ext && autoplay) setTimeout(() => { if (seq === P.seq && !D.a.paused && D.a.readyState < 3) UI.toast(`Getting “${t.title}” ready…`); }, 2500);
 }
 function play() {
   if (P.pending) { const { id, t } = P.pending; load(id, true, t); return; }
@@ -2283,8 +2292,8 @@ function avatarHtml(cls = '') {
   const safe = /^(https?:|data:image\/|\/)/i.test(U.avatar || '');
   return `<span class="avatar ${cls}" data-i="${U.token ? init : ''}">${U.avatar && safe ? img(U.avatar) : U.token ? init : ic('person', 'md')}</span>`;
 }
-function itAlbum(al) { return { ext: al.ext, k: 'album', id: al.id, title: al.title, sub: `${al.type} • ${albumArtist(al)}`, cover: img(coverUrl(al.cover)), ck: 'album:' + al.key, ts: al.mtime, ids: al.trackIds }; }
-function itArtist(ar) { return { ext: ar.ext, k: 'artist', id: ar.id, title: ar.name, sub: 'Artist', cover: img(coverUrl(ar.cover)), circle: true, ck: 'artist:' + ar.key, ts: ar.mtime }; }
+function itAlbum(al) { return { ext: al.ext, k: 'album', id: al.id, title: al.title, sub: `${al.type} • ${albumArtist(al)}`, cover: img(coverUrl(al.cover, 384)), ck: 'album:' + al.key, ts: al.mtime, ids: al.trackIds }; }
+function itArtist(ar) { return { ext: ar.ext, k: 'artist', id: ar.id, title: ar.name, sub: 'Artist', cover: img(coverUrl(ar.cover, 384)), circle: true, ck: 'artist:' + ar.key, ts: ar.mtime }; }
 function itPlaylist(name) {
   const rels = U.playlists[name] || [];
   return { k: 'playlist', id: name, title: name, sub: `Playlist • ${U.name || 'You'} • ${count(rels.length, 'song')}`, cover: plCover(rels), ck: 'playlist:' + name, ts: 0 };
@@ -2315,7 +2324,7 @@ function itFromKey(k) {
   return null;
 }
 function searchItem(s) {
-  if (s.k === 'track') { const t = L.byRel.get(s.key); return t ? { k: 'track', id: t.id, title: t.title, sub: 'Song • ' + t.artist, cover: img(coverUrl(t.rel)) } : null; }
+  if (s.k === 'track') { const t = L.byRel.get(s.key); return t ? { k: 'track', id: t.id, title: t.title, sub: 'Song • ' + t.artist, cover: img(coverUrl(t.rel, 384)) } : null; }
   return itFromKey(s.k + ':' + s.key);
 }
 // Track ids behind any item, for "play", "add to queue" and drag-and-drop.
@@ -2347,7 +2356,7 @@ function plCover(rels) {
   for (const r of rels) {
     const t = L.byRel.get(r); if (!t) continue;
     const al = albumOf(t); if (seen.has(al.id)) continue;
-    seen.add(al.id); covers.push(coverUrl(al.cover));
+    seen.add(al.id); covers.push(coverUrl(al.cover, 192));
     if (covers.length === 4) break;
   }
   if (!covers.length) return `<div class="cover-glyph">${ic('note')}</div>`;

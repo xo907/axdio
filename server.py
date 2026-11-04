@@ -24,7 +24,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.15.9"
+AXDIO_VERSION = "2.16.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -567,7 +567,55 @@ def api_library_cache():
 def api_cover():
     token = request.args.get("token")
     rel_path = decode_rel_path(token) if token else request.args.get("path")
-    return cover_response(rel_path)
+    return cover_response(rel_path, request.args.get("s"))
+
+# Small copies of covers, for small places (song rows, cards): the embedded art is often 1000+ pixels and hundreds of KB,
+# and a row shows it at 48. `s` asks for one (96, 192 or 384 pixels); it's made once, by ffmpeg in the background, and
+# kept with the covers. Until it's ready, the full cover is sent, kept only briefly by browsers so they ask again.
+THUMB_SIZES = (96, 192, 384)
+THUMBS_DIR = COVERS_CACHE_DIR / "small"
+import collections
+_thumb_q = collections.OrderedDict()
+_thumb_cv = threading.Condition()
+_thumb_worker = [None]
+
+def _thumb_size(s):
+    try: n = int(s)
+    except (TypeError, ValueError): return None
+    return next((t for t in THUMB_SIZES if t >= n), None)         # larger than the largest: the full cover
+
+def _thumb_path(cover_file, size):
+    return THUMBS_DIR / f"{cover_file.stem}-{size}.jpg"
+
+def _want_thumb(cover_file, size):
+    with _thumb_cv:
+        _thumb_q.pop((cover_file, size), None)
+        _thumb_q[(cover_file, size)] = True
+        while len(_thumb_q) > 2000: _thumb_q.popitem(last=False)
+        if _thumb_worker[0] is None or not _thumb_worker[0].is_alive():
+            _thumb_worker[0] = threading.Thread(target=_make_thumbs, daemon=True, name="cover-thumbs")
+            _thumb_worker[0].start()
+        _thumb_cv.notify()
+
+def _make_thumbs():
+    while True:
+        with _thumb_cv:
+            if not _thumb_q: _thumb_cv.wait(60)
+            if not _thumb_q:
+                _thumb_worker[0] = None
+                return
+            (src, size), _ = _thumb_q.popitem(last=True)          # the latest asked for first (what's on screen)
+        out = _thumb_path(src, size)
+        tmp = out.with_name(out.stem + ".part.jpg")
+        try:
+            THUMBS_DIR.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-frames:v", "1",
+                            "-vf", f"scale=w='min({size},iw)':h='min({size},ih)':force_original_aspect_ratio=decrease:flags=lanczos",
+                            "-q:v", "4", str(tmp)], check=True, timeout=30, capture_output=True)
+            tmp.replace(out)
+        except Exception:
+            try: tmp.unlink(missing_ok=True)
+            except OSError: pass
 
 def cover_file_for(rel_path):
     """The cached cover image for a song: its own embedded art, else another song's from the same album or artist."""
@@ -587,12 +635,21 @@ def cover_file_for(rel_path):
                     if other_cov.exists(): return other_cov
     return None
 
-def cover_response(rel_path):
-    """Cover art for a song (see cover_file_for), or a placeholder."""
+def cover_response(rel_path, size=None):
+    """Cover art for a song (see cover_file_for), or a placeholder. With `size`, a small copy (see THUMB_SIZES)."""
     if FED_REMOTE_RE.match(rel_path or ""): return remote_cover(rel_path)
     if is_source_path(rel_path): return source_cover(rel_path)
     cover_file = cover_file_for(rel_path)
-    if cover_file: return send_file(cover_file, mimetype="image/jpeg", max_age=2592000)
+    if cover_file:
+        sz = _thumb_size(size) if size else None
+        if sz:
+            thumb = _thumb_path(cover_file, sz)
+            try: fresh = thumb.stat().st_mtime >= cover_file.stat().st_mtime
+            except OSError: fresh = False
+            if fresh: return send_file(thumb, mimetype="image/jpeg", max_age=2592000)
+            _want_thumb(cover_file, sz)
+            return send_file(cover_file, mimetype="image/jpeg", max_age=60)
+        return send_file(cover_file, mimetype="image/jpeg", max_age=2592000)
     return Response(DEFAULT_SVG_COVER, mimetype="image/svg+xml")
 
 # Open Synced & Plain Lyrics Provider
@@ -10159,8 +10216,13 @@ def api_source_art(sid):
     if err: return err
     key = (src["id"], request.args.get("u") or "")
     with _source_art_lock:
-        known, have = key in _source_art_urls, _source_art.get(key)
+        known = key in _source_art_urls
     if not known and not (key[1] and hmac.compare_digest(request.args.get("s") or "", _art_sig(src["id"], key[1]))): abort(404)
+    px = _thumb_size(request.args.get("px")) if request.args.get("px") else None
+    if px and re.search(r"=w\d+-h\d+", key[1]):                  # a smaller copy, for a row or a card
+        key = (key[0], re.sub(r"=w\d+-h\d+", f"=w{px}-h{px}", key[1]))
+    with _source_art_lock:
+        have = _source_art.get(key)
     disk = SOURCE_ART_DIR / (hashlib.md5(key[1].encode()).hexdigest() + ".img")
     if not have and disk.is_file():
         try: data = disk.read_bytes()

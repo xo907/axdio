@@ -224,7 +224,7 @@ const shuffleBtn = () => `<button class="ib${P.shuffle ? ' on' : ''}" data-act="
 const dlBtn = ctx => `<button class="ib dl-btn" data-act="dl-ctx" data-dlc="${ctx.rid}" aria-label="Download"></button>`;
 function paint(pg, rel) {
   if (!S.dynColor || !rel) return;
-  dominant(coverUrl(rel)).then(c => { if (c) pg.el.style.setProperty('--c', tone(c, .3, .25)); });
+  dominant(coverUrl(rel, 96)).then(c => { if (c) pg.el.style.setProperty('--c', tone(c, .3, .25)); });
 }
 function afterRender(pg) { $$('[data-dlc]', pg.el).forEach(updateDlButton); }
 
@@ -239,7 +239,7 @@ function shelf(title, items, opts = {}) {
 function trackRow(t, i, o = {}) {
   const liked = U.likedSet.has(t.rel);
   const off = !navigator.onLine && !Off.set.has(t.rel);
-  const lead = o.num ? `<div class="num"><span class="num-n">${i + 1}</span>${EQB}</div>` : o.noArt ? '' : `<div class="row-art">${img(coverUrl(t.rel))}${EQB}</div>`;
+  const lead = o.num ? `<div class="num"><span class="num-n">${i + 1}</span>${EQB}</div>` : o.noArt ? '' : `<div class="row-art">${img(coverUrl(t.rel, 96))}${EQB}</div>`;
   const tail = o.tail != null ? o.tail : t.ext ? srcRowTail(t)
     : `<button class="row-act${liked ? ' liked' : ''}" data-act="like" data-t="${t.id}" aria-label="${liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(liked ? 'heart-f' : 'heart', 'md')}</button><button class="row-act" data-act="more" data-t="${t.id}" aria-label="More options for ${esc(t.title)}">${ic('more-v', 'md')}</button>`;
   return `<div class="trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}">${o.drag ? `<div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}${lead}<div class="meta"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? '<span class="src-badge">External</span>' : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span>${esc(o.sub != null ? o.sub : t.artist)}</span></div></div>${tail}</div>`;
@@ -411,7 +411,7 @@ function searchResults(pg, res, f, q) {
   const top = res.top;
   if (top.k === 'artist') { const ar = L.artists[top.id]; h += `<div class="top-res circle" data-act="open" data-k="artist" data-id="${ar.id}"><div class="row-art">${img(coverUrl(ar.cover))}</div><div><div class="t">${esc(ar.name)}</div><div class="s">Artist${ar.ext ? '' : ' • ' + count(ar.trackIds.length, 'song')}</div></div></div>`; }
   else if (top.k === 'album') { const al = L.albums[top.id]; h += `<div class="top-res" data-act="open" data-k="album" data-id="${al.id}"><div class="row-art">${img(coverUrl(al.cover))}</div><div><div class="t">${esc(al.title)}</div><div class="s">${al.type} • ${esc(albumArtist(al))}</div></div></div>`; }
-  else { const t = L.tracks[top.id]; h += `<div class="top-res" data-act="open" data-k="track" data-id="${t.id}"><div class="row-art">${img(coverUrl(t.rel))}</div><div><div class="t">${esc(t.title)}</div><div class="s">Song • ${esc(t.artist)}</div></div></div>`; }
+  else { const t = L.tracks[top.id]; h += `<div class="top-res" data-act="open" data-k="track" data-id="${t.id}"><div class="row-art">${img(coverUrl(t.rel, 192))}</div><div><div class="t">${esc(t.title)}</div><div class="s">Song • ${esc(t.artist)}</div></div></div>`; }
   if (res.songs.length) h += `<div class="sec-h"><h2>Songs</h2>${res.songs.length > 5 ? '<button class="more" data-act="find-filter" data-f="songs">Show all</button>' : ''}</div>` + trackList(songsCtx, { limit: 5 });
   if (artistIt.length) h += `<div class="sec-h"><h2>Artists</h2>${artistIt.length > 4 ? '<button class="more" data-act="find-filter" data-f="artists">Show all</button>' : ''}</div>` + artistIt.slice(0, 4).map(it => rowHtml(it)).join('');
   if (albumIt.length) h += `<div class="sec-h"><h2>Albums</h2>${albumIt.length > 4 ? '<button class="more" data-act="find-filter" data-f="albums">Show all</button>' : ''}</div>` + albumIt.slice(0, 4).map(it => rowHtml(it, true)).join('');
@@ -1431,7 +1431,7 @@ function trackSheet(t, o = {}) {
   const liked = U.likedSet.has(t.rel), dl = Off.state(t.rel);
   const acts = (window.AX.Plugins ? window.AX.Plugins.trackActions([t.id]) : []).map(a => Object.assign(a, { icon: /^[a-z0-9-]+$/.test(a.icon) ? a.icon : 'spark' }));
   const al = albumOf(t), ar = artistOf(t);
-  const html = sheetHead(img(coverUrl(t.rel)), t.title, t.artist) + '<div class="sheet-body">'
+  const html = sheetHead(img(coverUrl(t.rel, 96)), t.title, t.artist) + '<div class="sheet-body">'
     + si('like', liked ? 'heart-f' : 'heart', liked ? 'Remove from Liked Songs' : 'Add to Liked Songs', { on: liked })
     + si('pl', 'pl-add', 'Add to playlist')
     + (o.plName || o.cplId ? si('pl-rm', 'minus-c', 'Remove from this playlist') : '')
@@ -1466,7 +1466,7 @@ function trackSheet(t, o = {}) {
 // A song from a source (not in the library yet): queue it, get it, or go to where it's from.
 function srcTrackSheet(t, o) {
   const al = albumOf(t), ar = artistOf(t), can = Src.canGet(t.ext) && !Src.wasAsked(t.item);
-  openSheet(sheetHead(img(coverUrl(t.rel)), t.title, `${t.artist} • External`) + '<div class="sheet-body">'
+  openSheet(sheetHead(img(coverUrl(t.rel, 96)), t.title, `${t.artist} • External`) + '<div class="sheet-body">'
     + (can ? si('get', 'dl', 'Get it into the library') : '')
     + si('queue', 'queue', 'Add to queue') + si('next', 'next', 'Play next')
     + si('album', 'album', 'View album') + si('artist', 'person', 'View artist')
@@ -1485,7 +1485,7 @@ function ctxSheet(k, id) {
   const ex = k === 'album' ? L.albums[+id] : k === 'artist' ? L.artists[+id] : null;
   if (ex && ex.ext) {
     const can = ex.item.id && Src.canGet(ex.ext) && !Src.wasAsked(ex.item);
-    openSheet(sheetHead(img(coverUrl(ex.cover)), ex.title || ex.name, 'External') + '<div class="sheet-body">'
+    openSheet(sheetHead(img(coverUrl(ex.cover, 96)), ex.title || ex.name, 'External') + '<div class="sheet-body">'
       + (can ? si('get', 'dl', k === 'artist' ? 'Get everything' : 'Get') : '') + si('open', k === 'artist' ? 'person' : 'album', 'Open') + '</div>', {
       get: (b, close) => { close(); Src.get(ex.item); },
       open: thenNav(() => openItem(k, id)),
@@ -1609,7 +1609,7 @@ function addSongsSheet(name) {
     add: b => { const id = +b.dataset.t; const n = addToPlaylist(name, [id]); b.innerHTML = ic('check-c', 'md'); b.classList.add('liked'); if (n) toast(`Added to ${name}`); haptic(10); },
   }, { tall: true });
   const input = sh.el.querySelector('input'), body = sh.el.querySelector('#as-body');
-  const row = id => { const t = L.tracks[id], has = U.playlists[name].includes(t.rel); return `<div class="trk" data-t="${id}"><div class="row-art">${img(coverUrl(t.rel))}</div><div class="meta"><div class="t">${esc(t.title)}</div><div class="s"><span>${esc(t.artist)}</span></div></div><button class="row-act${has ? ' liked' : ''}" data-sa="add" data-t="${id}" aria-label="Add">${ic(has ? 'check-c' : 'add', 'md')}</button></div>`; };
+  const row = id => { const t = L.tracks[id], has = U.playlists[name].includes(t.rel); return `<div class="trk" data-t="${id}"><div class="row-art">${img(coverUrl(t.rel, 96))}</div><div class="meta"><div class="t">${esc(t.title)}</div><div class="s"><span>${esc(t.artist)}</span></div></div><button class="row-act${has ? ' liked' : ''}" data-sa="add" data-t="${id}" aria-label="Add">${ic(has ? 'check-c' : 'add', 'md')}</button></div>`; };
   const draw = () => {
     const res = searchAll(input.value);
     let ids;
@@ -1936,7 +1936,7 @@ function renderCards() {
   const ar = artistOf(t);
   const up = (P.queue.length ? P.queue.slice(0, 3) : upcoming(3).map(u => u.id)).map(id => L.tracks[id]).filter(Boolean);
   el.fpCards.innerHTML = `<div class="fp-card lyr-card" data-act="open-lyrics"><div class="fp-card-h"><span>Lyrics</span><button data-act="open-lyrics">${ic('mic', 'sm')}Show lyrics</button></div><div class="lyr-peek"><div class="lyr-lines" id="lyr-peek"></div></div></div>`
-    + (up.length ? `<div class="fp-card next-card"><div class="fp-card-h"><span>Next in queue</span><button data-act="open-queue">Open queue</button></div><div style="padding:6px 0 8px">${up.map(u => `<div class="row" data-act="open-queue"><div class="row-art">${img(coverUrl(u.rel))}</div><div class="meta"><div class="t">${esc(u.title)}</div><div class="s"><span>${esc(u.artist)}</span></div></div></div>`).join('')}</div></div>` : '')
+    + (up.length ? `<div class="fp-card next-card"><div class="fp-card-h"><span>Next in queue</span><button data-act="open-queue">Open queue</button></div><div style="padding:6px 0 8px">${up.map(u => `<div class="row" data-act="open-queue"><div class="row-art">${img(coverUrl(u.rel, 96))}</div><div class="meta"><div class="t">${esc(u.title)}</div><div class="s"><span>${esc(u.artist)}</span></div></div></div>`).join('')}</div></div>` : '')
     + `<div class="fp-card about-card" data-act="open-cur-artist"><div class="about-img">${img(coverUrl(ar.cover))}<span>About the artist</span></div><div class="about-body"><div class="flex1"><b>${esc(ar.name)}</b><div class="muted" style="font-size:13px;margin-top:3px">${count(ar.trackIds.length, 'song')} • ${count(ar.albumIds.length, 'release')}</div></div><button class="pill-btn${U.follows.includes(ar.key) ? ' on' : ''}" data-act="follow" data-id="${ar.id}" data-follow="${ar.id}">${U.follows.includes(ar.key) ? 'Following' : 'Follow'}</button></div></div>`;
   renderLyricsPeek();
 }
@@ -1977,8 +1977,8 @@ function renderQueue() {
   const t = curTrack();
   el.qFrom.textContent = P.ctx ? `Playing from ${P.ctx.name}` : '';
   if (!t) { el.qBody.innerHTML = emptyHtml('queue', 'Your queue is empty', 'Play something to get started.'); return; }
-  const qrow = (id, idx, kind, removable) => { const x = L.tracks[id]; return `<div class="trk" data-q="${kind}" data-qi="${idx}" data-t="${id}"><div class="row-art">${img(coverUrl(x.rel))}</div><div class="meta"><div class="t">${esc(x.title)}</div><div class="s"><span class="dl-slot" data-dl="${id}">${dlBadge(x.rel)}</span><span>${esc(x.artist)}</span></div></div>${removable ? `<button class="row-act" data-act="q-remove" data-qi="${idx}" aria-label="Remove">${ic('minus-c', 'md')}</button><div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}</div>`; };
-  let h = `<div class="q-sec">Now playing</div><div class="trk playing" data-act="close-queue" data-t="${t.id}"><div class="row-art">${img(coverUrl(t.rel))}${EQB}</div><div class="meta"><div class="t">${esc(t.title)}</div><div class="s"><span>${esc(t.artist)}</span></div></div></div>`;
+  const qrow = (id, idx, kind, removable) => { const x = L.tracks[id]; return `<div class="trk" data-q="${kind}" data-qi="${idx}" data-t="${id}"><div class="row-art">${img(coverUrl(x.rel, 96))}</div><div class="meta"><div class="t">${esc(x.title)}</div><div class="s"><span class="dl-slot" data-dl="${id}">${dlBadge(x.rel)}</span><span>${esc(x.artist)}</span></div></div>${removable ? `<button class="row-act" data-act="q-remove" data-qi="${idx}" aria-label="Remove">${ic('minus-c', 'md')}</button><div class="drag-h" data-drag aria-label="Reorder">${ic('drag')}</div>` : ''}</div>`; };
+  let h = `<div class="q-sec">Now playing</div><div class="trk playing" data-act="close-queue" data-t="${t.id}"><div class="row-art">${img(coverUrl(t.rel, 96))}${EQB}</div><div class="meta"><div class="t">${esc(t.title)}</div><div class="s"><span>${esc(t.artist)}</span></div></div></div>`;
   if (P.queue.length) h += `<div class="q-sec"><span>Next in queue</span><button data-act="q-clear">Clear queue</button></div><div class="rows" id="q-user">${P.queue.map((id, i) => qrow(id, i, 'user', true)).join('')}</div>`;
   const up = upcoming(60);
   if (up.length) h += `<div class="q-sec"><span>Next from: ${esc(P.ctx.name)}</span></div><div class="rows">${up.map(u => qrow(u.id, u.pos, 'ctx', false)).join('')}</div>`;

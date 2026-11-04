@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.16.0
+
+- **Covers load much faster, and use far less data.** Song rows, cards and lists were sent every cover at the size it's embedded in the file (often 1000+ pixels and hundreds of KB, for a 48-pixel row). They now get small copies (96, 192 or 384 pixels, a few KB to a few tens of KB), made by the server in the background once and kept with the covers; the first time, the full cover is sent while the copy is made. Big places (an album's header, Now Playing) still show the full art. External artwork comes in smaller sizes for rows and cards, too, and pages take their colour from a small copy.
+- **A slow start says why.** When an External song takes more than a couple of seconds to start (the first time it's played), the player says it's getting it ready.
+
 ## 2.15.9
 
 - **External artwork shows after the server restarts.** Search results kept from before a restart (or an update) asked for artwork the server no longer knew it had given out, and got none. Artwork addresses now carry the server's signature, so they keep working.

@@ -39,7 +39,7 @@ const cssUrl = u => `url('${String(u).replace(/['"()\\\s]/g, c => '%' + c.charCo
 const chunked = (container, n, render, step = 60) => { const d = chunkRender(view, container, n, render, step); V.cleanup.push(d); return d; };
 function paint(rel, el = view) {
   if (!S.dynColor || !rel) return;
-  dominant(coverUrl(rel)).then(c => { if (c) el.style.setProperty('--c', tone(c, .32, .25)); });
+  dominant(coverUrl(rel, 96)).then(c => { if (c) el.style.setProperty('--c', tone(c, .32, .25)); });
 }
 const titleSize = t => t.length > 42 ? 's' : t.length > 26 ? 'm' : t.length > 14 ? 'l' : '';
 const credits = t => creditParts(t).map(p => p.sep || !p.artist ? esc(p.text) : `<a class="lnk" data-act="go" data-view="artist" data-id="${p.artist.id}">${esc(p.text.trim())}</a>`).join('');
@@ -283,9 +283,9 @@ VIEWS.search = (el, p) => {
   else {
     const top = res.top;
     let tc = '';
-    if (top.k === 'artist') { const ar = L.artists[top.id]; tc = `<div class="top-card circle" data-act="open" data-k="artist" data-id="${ar.id}" draggable="true"><div class="tc-art">${img(coverUrl(ar.cover))}</div><div class="tc-t">${esc(ar.name)}</div><div class="tc-s"><b>Artist</b>${ar.ext ? '' : count(ar.trackIds.length, 'song')}</div>${hoverPlay(itArtist(ar))}</div>`; }
-    else if (top.k === 'album') { const al = L.albums[top.id]; tc = `<div class="top-card" data-act="open" data-k="album" data-id="${al.id}" draggable="true"><div class="tc-art">${img(coverUrl(al.cover))}</div><div class="tc-t">${esc(al.title)}</div><div class="tc-s"><b>${al.type}</b>${esc(albumArtist(al))}</div>${hoverPlay(itAlbum(al))}</div>`; }
-    else { const t = L.tracks[top.id]; tc = `<div class="top-card" data-act="open" data-k="track" data-id="${t.id}"><div class="tc-art">${img(coverUrl(t.rel))}</div><div class="tc-t">${esc(t.title)}</div><div class="tc-s"><b>Song</b>${esc(t.artist)}</div><button class="hover-play" data-act="open" data-k="track" data-id="${t.id}" aria-label="Play">${ic('play')}</button></div>`; }
+    if (top.k === 'artist') { const ar = L.artists[top.id]; tc = `<div class="top-card circle" data-act="open" data-k="artist" data-id="${ar.id}" draggable="true"><div class="tc-art">${img(coverUrl(ar.cover, 192))}</div><div class="tc-t">${esc(ar.name)}</div><div class="tc-s"><b>Artist</b>${ar.ext ? '' : count(ar.trackIds.length, 'song')}</div>${hoverPlay(itArtist(ar))}</div>`; }
+    else if (top.k === 'album') { const al = L.albums[top.id]; tc = `<div class="top-card" data-act="open" data-k="album" data-id="${al.id}" draggable="true"><div class="tc-art">${img(coverUrl(al.cover, 192))}</div><div class="tc-t">${esc(al.title)}</div><div class="tc-s"><b>${al.type}</b>${esc(albumArtist(al))}</div>${hoverPlay(itAlbum(al))}</div>`; }
+    else { const t = L.tracks[top.id]; tc = `<div class="top-card" data-act="open" data-k="track" data-id="${t.id}"><div class="tc-art">${img(coverUrl(t.rel, 192))}</div><div class="tc-t">${esc(t.title)}</div><div class="tc-s"><b>Song</b>${esc(t.artist)}</div><button class="hover-play" data-act="open" data-k="track" data-id="${t.id}" aria-label="Play">${ic('play')}</button></div>`; }
     h += `<div class="res-top"><section><div class="sec-h"><h2>Top result</h2></div>${tc}</section><section><div class="sec-h"><h2>Songs</h2>${res.songs.length > 4 ? '<button class="more" data-act="search-filter" data-f="songs">Show all</button>' : ''}</div>${res.songs.length ? tableShell(songs, { limit: 4, noHead: true, noAlbum: true }) : '<p class="muted">No songs match.</p>'}</section></div>`;
     h += shelf('Artists', artists.slice(0, 12), { moreAttr: artists.length > 6 ? 'data-act="search-filter" data-f="artists"' : '' });
     h += shelf('Albums', albums.slice(0, 12), { moreAttr: albums.length > 6 ? 'data-act="search-filter" data-f="albums"' : '' });
@@ -747,7 +747,7 @@ function trRow(t, i, o = {}) {
   const liked = U.likedSet.has(t.rel) || Src.liked(t), off = !navigator.onLine && !Off.set.has(t.rel);
   return `<div class="tr trk${P.cur === t.id ? ' playing' : ''}${off ? ' off' : ''}" data-t="${t.id}" data-i="${i}" draggable="true">`
     + `<div class="c-num"><span class="n">${o.trackNo ? (t.no || i + 1) : i + 1}</span>${EQB}<button class="c-play" data-act="row-play" tabindex="-1" aria-label="Play ${esc(t.title)}">${ic(P.cur === t.id && isPlaying() ? 'pause' : 'play')}</button></div>`
-    + `<div class="c-title">${o.noArt ? '' : `<div class="art">${img(coverUrl(t.rel))}</div>`}<div class="flex1"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? '<span class="src-badge">External</span>' : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span class="who">${credits(t)}</span></div></div></div>`
+    + `<div class="c-title">${o.noArt ? '' : `<div class="art">${img(coverUrl(t.rel, 96))}</div>`}<div class="flex1"><div class="t">${esc(t.title)}</div><div class="s">${t.ext ? '<span class="src-badge">External</span>' : ''}<span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span class="who">${credits(t)}</span></div></div></div>`
     + (o.noAlbum ? '' : `<div class="c-album"><a class="lnk" data-act="go" data-view="album" data-id="${t.albumId}">${esc(albumOf(t).title)}</a></div>`)
     + `<div class="c-end">${o.by ? o.by(t) : ''}${o.add ? `<button class="row-add" data-act="pl-add-one" data-t="${t.id}" data-tip="Add to this playlist">${ic('add')}</button>` : ''}${Src.on() ? `<span class="get-slot">${t.ext ? srcRowGet(t) : ''}</span>` : ''}<button class="row-like${liked ? ' liked' : ''}" data-act="like" data-t="${t.id}" data-tip="${liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}">${ic(liked ? 'heart-f' : 'heart')}</button>${o.plays ? `<span class="plays">${U.plays.get(t.rel) ? nf(U.plays.get(t.rel)) : ''}</span>` : ''}<button class="row-more" data-act="row-more" data-tip="More options for ${esc(t.title)}">${ic('more-h')}</button></div></div>`;
 }
@@ -943,7 +943,7 @@ const ctxLabel = () => {
   const c = P.ctx; if (!c) return 'Now playing';
   return c.recent ? `<a class="lnk" data-act="go-ctx">${esc(c.name)}</a>` : esc(c.name);
 };
-const qrow = (t, kind, i) => `<div class="qrow${kind === 'now' ? ' now' : ''}" data-q="${kind}" data-qi="${i}" data-t="${t.id}"><div class="qa">${img(coverUrl(t.rel))}</div><div class="flex1"><div class="t">${esc(t.title)}</div><div class="s"><span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span class="ell">${esc(t.artist)}</span></div></div>${kind === 'user' ? `<button class="qx" data-act="q-remove" data-qi="${i}" data-tip="Remove from queue">${ic('close', 'sm')}</button><span data-drag aria-label="Drag to reorder">${ic('drag', 'sm')}</span>` : ''}</div>`;
+const qrow = (t, kind, i) => `<div class="qrow${kind === 'now' ? ' now' : ''}" data-q="${kind}" data-qi="${i}" data-t="${t.id}"><div class="qa">${img(coverUrl(t.rel, 96))}</div><div class="flex1"><div class="t">${esc(t.title)}</div><div class="s"><span class="dl-slot" data-dl="${t.id}">${dlBadge(t.rel)}</span><span class="ell">${esc(t.artist)}</span></div></div>${kind === 'user' ? `<button class="qx" data-act="q-remove" data-qi="${i}" data-tip="Remove from queue">${ic('close', 'sm')}</button><span data-drag aria-label="Drag to reorder">${ic('drag', 'sm')}</span>` : ''}</div>`;
 function renderNP(rp) {
   const t = curTrack();
   const head = `<div class="rp-h"><b>${ctxLabel()}</b>${t ? `<button class="icon-btn" data-act="more-cur" data-tip="More options">${ic('more-h', 'md')}</button>` : ''}<button class="icon-btn" data-act="close-panel" data-tip="Close">${ic('close', 'md')}</button></div>`;

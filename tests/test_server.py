@@ -2947,6 +2947,35 @@ class TestFilingByTags(Social):
         self.assertEqual(server.repair_refiling(), [])                    # nothing left to do
 
 
+class TestCoverThumbs(Base):
+    """Small copies of covers for rows and cards: made in the background, and sent once they're ready."""
+    def test_small_covers(self):
+        rel = self.rel("Opening")
+        big = TMP / "big-cover.jpg"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=900x900", "-frames:v", "1", "-q:v", "2", str(big)], check=True)
+        cover = server.COVERS_CACHE_DIR / f"{hashlib.md5(rel.encode()).hexdigest()}.jpg"
+        before = cover.read_bytes() if cover.exists() else None
+        cover.write_bytes(big.read_bytes())
+        try:
+            q = "/api/cover?path=" + urllib.parse.quote(rel)
+            full = self.c.get(q)
+            self.assertEqual(full.data, big.read_bytes()); full.close()
+            r = self.c.get(q + "&s=90")                                        # not made yet: the full cover, kept briefly
+            self.assertEqual(r.data, big.read_bytes()); self.assertIn("max-age=60", r.headers["Cache-Control"])
+            r.close()
+            for _ in range(100):
+                if server._thumb_path(cover, 96).exists(): break
+                time.sleep(0.1)
+            r = self.c.get(q + "&s=90")
+            self.assertLess(len(r.data), len(big.read_bytes()) / 4)          # a small copy (96 pixels)
+            self.assertIn("max-age=2592000", r.headers["Cache-Control"])
+            r.close()
+            r = self.c.get(q + "&s=5000"); self.assertEqual(r.data, big.read_bytes()); r.close()   # bigger than the copies: the full cover
+        finally:
+            if before is None: cover.unlink(missing_ok=True)
+            else: cover.write_bytes(before)
+
+
 class TestLibrarySources(Base):
     """A plugin's library source: off until an admin turns it on, there only while its plugin is loaded and says it's
     ready, and its songs play (and show their artwork) from it, without going into listening history."""
