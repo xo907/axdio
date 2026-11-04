@@ -724,7 +724,8 @@ const Src = {
     if (!k) return Promise.reject(new Error("This isn't available"));
     const hit = this.pages.get(key);
     if (hit) return hit;
-    const p = this.cachedApi(`/api/sources/${k.src}/${k.kind}/${encodeURIComponent(k.id)}`, 24 * 3600e3).catch(e => { this.pages.delete(key); throw e; });
+    const p = this.cachedApi(`/api/sources/${k.src}/${k.kind}/${encodeURIComponent(k.id)}`, 24 * 3600e3)
+      .then(d => { this.warm((d.songs || []).filter(x => !this.libSong(x)).slice(0, 2)); return d; }).catch(e => { this.pages.delete(key); throw e; });
     this.pages.set(key, p);
     return p;
   },
@@ -910,10 +911,13 @@ const Src = {
 // A song from a source is made ready to start as the pointer rests on it (or a finger touches it).
 let srcHover = 0;
 const srcPrime = e => {
-  const row = e.target.closest && e.target.closest('[data-t]');
-  const t = row && L.tracks[+row.dataset.t];
+  const row = e.target.closest && e.target.closest('[data-t], [data-k="album"], [data-k="artist"]');
+  if (!row) return;
   clearTimeout(srcHover);
-  if (t && t.ext) srcHover = setTimeout(() => Src.warm([t.item]), e.type === 'touchstart' ? 0 : 250);
+  const wait = e.type === 'touchstart' ? 0 : 200;
+  if (row.dataset.t != null) { const t = L.tracks[+row.dataset.t]; if (t && t.ext) srcHover = setTimeout(() => Src.warm([t.item]), wait); return; }
+  const o = row.dataset.k === 'album' ? L.albums[+row.dataset.id] : L.artists[+row.dataset.id];
+  if (o && o.ext && Src.key(o.key)) srcHover = setTimeout(() => Src.page(o.key).catch(() => {}), wait);
 };
 document.addEventListener('mouseover', srcPrime, { passive: true });
 document.addEventListener('touchstart', srcPrime, { passive: true });

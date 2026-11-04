@@ -971,3 +971,10 @@ span.mt-av { width: 28px; flex-shrink: 0; }
 .src-sk-row em:first-child { height: 13px; width: 45%; } .src-sk-row em:last-child { height: 11px; width: 28%; }
 @keyframes src-sweep { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Song rows: the Get slot is there in every row (empty for the library's songs), so the hearts line up */
+.tt { --cols: [index] 16px [first] minmax(160px, 6fr) [var1] minmax(120px, 4fr) [last] minmax(150px, 1fr); }
+.tt.no-album { --cols: [index] 16px [first] minmax(160px, 8fr) [last] minmax(150px, 1fr); }
+.c-end { gap: 8px; }
+.c-end .get-slot { flex: none; width: 46px; display: flex; justify-content: center; }
+.c-end .get-slot .row-get { padding: 0 9px; }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.15.7
+
+- **The hearts line up.** Every song row has the same place for Get (empty for the library's songs), so the hearts are in one column, External songs or not.
+- **Faster:** pointing at (or touching) an External album or artist reads its page ahead, so it opens at once; and an External album or artist page gets its first two songs ready to play as soon as it's open.
+
 ## 2.15.6
 
 - **Album and playlist links pasted into search are ready to play too.** Their first three songs are made all ready straight away, and the rest as they play.
