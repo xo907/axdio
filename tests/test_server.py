@@ -2337,7 +2337,8 @@ class TestTitleFixer(Social):
         rel = "NEROFIX/Stale/NERO - 2808.flac"
         self.song(rel, "2808", "NERO")
         stale = lambda **x: dict({"title": "NERO - 2808", "artist": "NERO", "album": "Singles", "has_cover": None,
-                                  "mtime": (MUSIC / rel).stat().st_mtime, "track_number": None}, **x)
+                                  "mtime": (MUSIC / rel).stat().st_mtime, "track_number": None,
+                                  "date": ""}, **x)                                # as entries are since 2.18
         # The fixer reads the file again when the library shows something else.
         with server.library_cache_lock: server.library_cache_data[rel] = stale()
         r = server.fix_track(rel, quick=True)
