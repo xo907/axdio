@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.20.0
+
+- **A queue on shared pages.** The queue button (beside the volume, or in the small player on phones, or Q) opens what's playing and everything after it, in the order it'll play: shuffled, the queue shows the shuffled order, not a surprise. Tap a song to jump to it. On a computer it opens over the right side; on a phone it's a sheet from the bottom.
+- **Search looks beyond the library when you press Enter.** Typing still searches your library at once; External music (from library sources such as the Downloader's) is asked for only when you press Enter (the Search key on phones), instead of after each pause in typing. That keeps the search service from being asked once per word and turning the server away. A line under the results says so, and clicking it searches too. Pasted links search on Enter as well.
+
 ## 2.19.1
 
 - **The left side of a shared page never scrolls.** On a computer everything on it always shows: the artwork takes the room that's left, and in a short window it sits beside the title with the player underneath. Open in Axdio and Copy link moved up beside the logo.

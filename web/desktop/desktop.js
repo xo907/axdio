@@ -270,11 +270,13 @@ VIEWS.search = (el, p) => {
   const res = Src.merge(searchAll(q), q, () => { if (V.route.view === 'search' && (V.route.params.q || '').trim() === q) render(view.scrollTop); });
   const chips = [['all', 'All'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
     .map(([k, l]) => `<button class="chip${SR.f === k ? ' on' : ''}" data-act="search-filter" data-f="${k}">${l}</button>`).join('');
-  let h = `<div class="content" style="padding-top:76px"><div class="chips" style="position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 0">${chips}</div>${Src.pending(q) && res.top ? Src.searching() : ''}`;
+  let h = `<div class="content" style="padding-top:76px"><div class="chips" style="position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 0">${chips}</div>${Src.pending(q) && res.top ? Src.searching() : res.top ? Src.hint(q) : ''}`;
   const songs = vctx('search', q, `Search: ${q}`, res.songs);
   const artists = res.artists.map(id => itArtist(L.artists[id])), albums = res.albums.map(id => itAlbum(L.albums[id]));
   const pls = res.playlists.map(itSearchPl).filter(Boolean);
-  const none = Src.pending(q) ? `<div class="src-searching"><div class="src-orb">${ic('search')}</div><h3>Searching for “${esc(q)}”</h3><p>Looking beyond your library…</p></div>` : `<div class="src-none">${emptyHtml('search', `No results found for “${q}”`, 'Please make sure your words are spelled correctly, or use fewer or different keywords.')}</div>`;
+  const none = Src.pending(q) ? `<div class="src-searching"><div class="src-orb">${ic('search')}</div><h3>Searching for “${esc(q)}”</h3><p>Looking beyond your library…</p></div>`
+    : Src.canLook(q) ? `<div class="src-none">${emptyHtml('search', `Nothing in your library for “${q}”`, 'Press Enter to look beyond your library.')}</div>`
+    : `<div class="src-none">${emptyHtml('search', `No results found for “${q}”`, 'Please make sure your words are spelled correctly, or use fewer or different keywords.')}</div>`;
   if (SR.f === 'songs') h += res.songs.length ? tableShell(songs, {}) : none;
   else if (SR.f === 'artists') h += artists.length ? `<div class="grid">${artists.map(cardHtml).join('')}</div>` : none;
   else if (SR.f === 'albums') h += albums.length ? `<div class="grid">${albums.map(cardHtml).join('')}</div>` : none;
@@ -2274,6 +2276,7 @@ const ACT = {
   'disc-chip': b => { V.artist.disc = b.dataset.f; render(view.scrollTop); },
   'discog-filter': b => { V.discog.f = b.dataset.f; render(view.scrollTop); },
   'search-filter': b => { SR.f = b.dataset.f; render(0); },
+  'src-look': () => { lookFurther(); },
   'forget-search': b => { forgetSearch(b.dataset.sk, b.dataset.skey); render(view.scrollTop); },
   'clear-searches': () => { clearSearches(); render(0); },
   'home-filter': b => { S.homeFilter = b.dataset.f; saveS(); render(0); },
@@ -2475,7 +2478,15 @@ qi.addEventListener('input', debounce(() => {
   if (V.route && V.route.view === 'search') { history.replaceState({ idx: NAV.idx, scroll: 0 }, '', ROUTES.search({ q: qi.value })); render(0); }
   else go('search', { q: qi.value });
 }, 140));
+// Enter looks beyond the library (the sources are asked only then); pressed again, it plays the top result.
+function lookFurther() {
+  if (!Src.enter(qi.value)) return false;
+  if (V.route && V.route.view === 'search') { history.replaceState({ idx: NAV.idx, scroll: 0 }, '', ROUTES.search({ q: qi.value })); render(view.scrollTop); }
+  else go('search', { q: qi.value });
+  return true;
+}
 qi.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && lookFurther()) { e.preventDefault(); return; }
   if (e.key === 'Enter') { const first = view.querySelector('.top-card, .tt .tr'); if (first) { e.preventDefault(); if (first.classList.contains('tr')) playRow(first); else first.click(); } }
   if (e.key === 'ArrowDown') { const first = view.querySelector('.tt'); if (first) { e.preventDefault(); qi.blur(); const r = first.querySelector('.tr'); if (r) SEL.only(first, +r.dataset.i); } }
 });

@@ -828,3 +828,9 @@ body.in-chat #nav, body.in-chat #mini { display: none !important; }
 .src-sk-row em:first-child { height: 13px; width: 45%; } .src-sk-row em:last-child { height: 11px; width: 28%; }
 @keyframes src-sweep { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* A search that hasn't looked beyond the library yet (the sources are asked on Enter) */
+.src-hint { display: flex; align-items: center; gap: 12px; margin: 4px 0 16px; padding: 12px 16px; border-radius: 12px; background: rgba(255,255,255,.05); border: 1px dashed rgba(255,255,255,.16); color: var(--text-2); font-size: 14px; cursor: pointer; transition: background .15s, border-color .15s; }
+.src-hint:hover { background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.3); }
+.src-hint b { color: #fff; }
+.src-hint-ic { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.08); flex-shrink: 0; }

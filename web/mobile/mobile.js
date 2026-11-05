@@ -381,7 +381,7 @@ VIEWS.find = pg => {
     if (!res) { renderRecentSearches(body); return; }
     chips.innerHTML = [['top', 'Top'], ['songs', 'Songs'], ['artists', 'Artists'], ['albums', 'Albums'], ['playlists', 'Playlists']]
       .map(([id, l]) => `<button class="chip${st.f === id ? ' on' : ''}" data-f="${id}">${l}</button>`).join('');
-    body.innerHTML = (Src.pending(st.q) && res.top ? Src.searching() : '') + searchResults(pg, res, st.f, st.q);
+    body.innerHTML = (Src.pending(st.q) && res.top ? Src.searching() : res.top ? Src.hint(st.q, true) : '') + searchResults(pg, res, st.f, st.q);
   };
   function renderRecentSearches(el) {
     const items = SEARCHES.map(s => [s, searchItem(s)]).filter(x => x[1]);
@@ -389,7 +389,10 @@ VIEWS.find = pg => {
     el.innerHTML = `<div class="recent-h"><h2>Recent searches</h2></div>${items.map(([s, it]) => `<div class="row${it.circle ? ' circle' : ''}" ${it.k === 'track' ? `data-act="open" data-k="track" data-id="${it.id}"` : attrs(it)}><div class="row-art">${it.cover}</div><div class="meta"><div class="t">${esc(it.title)}</div><div class="s"><span>${esc(it.sub)}</span></div></div><button class="row-act" data-act="forget-search" data-sk="${esc(s.k)}" data-skey="${esc(s.key)}" aria-label="Remove">${ic('close', 'md')}</button></div>`).join('')}<div class="sheet-foot"><button class="btn ghost" data-act="clear-searches">Clear recent searches</button></div>`;
   }
   input.addEventListener('input', debounce(run, 110));
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+  // The keyboard's Search key looks beyond the library: the sources are asked only then, not once per letter.
+  const look = () => { Src.enter(input.value); run(); };
+  pg.lookFurther = look;
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { look(); input.blur(); } });
   clear.addEventListener('click', e => { e.preventDefault(); input.value = ''; run(); input.focus(); });
   chips.addEventListener('click', e => { const b = e.target.closest('[data-f]'); if (b) { st.f = b.dataset.f; run(); pg.el.scrollTop = 0; } });
   body.addEventListener('touchstart', () => input.blur(), { passive: true });
@@ -401,7 +404,9 @@ function searchResults(pg, res, f, q) {
   const songsCtx = pageCtx(pg, 'search', q, `Search: ${q}`, res.songs);
   const artistIt = res.artists.map(id => itArtist(L.artists[id])), albumIt = res.albums.map(id => itAlbum(L.albums[id]));
   const plIt = res.playlists.map(itSearchPl).filter(Boolean);
-  const none = Src.pending(q) ? `<div class="src-searching"><div class="src-orb">${ic('search')}</div><h3>Searching for “${esc(q)}”</h3><p>Looking beyond your library…</p></div>` : `<div class="src-none">${emptyHtml('search', `No results for “${q}”`, 'Check the spelling, or try fewer or different keywords.')}</div>`;
+  const none = Src.pending(q) ? `<div class="src-searching"><div class="src-orb">${ic('search')}</div><h3>Searching for “${esc(q)}”</h3><p>Looking beyond your library…</p></div>`
+    : Src.canLook(q) ? `<div class="src-none" data-act="src-look">${emptyHtml('search', `Nothing in your library for “${q}”`, 'Tap Search to look beyond your library.')}</div>`
+    : `<div class="src-none">${emptyHtml('search', `No results for “${q}”`, 'Check the spelling, or try fewer or different keywords.')}</div>`;
   if (f === 'songs') return res.songs.length ? trackList(songsCtx) : none;
   if (f === 'artists') return artistIt.length ? artistIt.map(it => rowHtml(it)).join('') : none;
   if (f === 'albums') return albumIt.length ? albumIt.map(it => rowHtml(it, true)).join('') : none;
@@ -2071,6 +2076,7 @@ const ACT = {
   'find-filter': b => { const pg = curPage(); if (pg.view === 'find') { pg.state.f = b.dataset.f; pg.rerunSearch(); pg.el.scrollTop = 0; } },
   'forget-search': b => { forgetSearch(b.dataset.sk, b.dataset.skey); curPage().rerunSearch(); },
   'clear-searches': () => { clearSearches(); curPage().rerunSearch(); },
+  'src-look': () => { const pg = curPage(); if (pg && pg.lookFurther) pg.lookFurther(); },
   'new-playlist': () => {
     if (!collabOn() || !Social.friends().length) { createPlaylist([]); return; }
     openSheet(`<div class="sheet-title">Create</div><div class="sheet-body">${si('pl', 'note', 'Playlist', { note: 'Just for you' })}${si('cpl', 'people', 'Collaborative playlist', { note: 'With friends' })}</div>`, {

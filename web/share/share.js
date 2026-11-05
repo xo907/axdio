@@ -12,6 +12,7 @@
     const t = $('toast'); t.textContent = msg; t.classList.add('show');
     clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
   };
+  const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   const hex = h => { const n = parseInt(String(h || '#22c55e').slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
 
@@ -346,7 +347,9 @@
   const mainBtn = $('play'), miniBtn = $('mini-play'), prevBtn = $('prev'), nextBtn = $('next');
   const rows = [...document.querySelectorAll('.row[data-i]')];
   let idx = -1, dragging = false;
-  const hist = [], played = new Set();          // where Previous goes back to; what shuffle has played
+  // The queue: every song on the page in the order they'll play (shuffled once when shuffle is on, so the queue
+  // shows exactly what's coming), and where in it we are.
+  let order = tracks.map((_, i) => i), pos = -1;
   // A shared moment (?t=73): start there, and carry it into the app.
   const startAt = D.kind === 'track' ? Math.max(0, parseInt(new URLSearchParams(location.search).get('t') || '0', 10) || 0) : 0;
 
@@ -362,8 +365,10 @@
     body.classList.toggle('is-playing', on);
     V.playing = on;
     rows.forEach(r => { const me = +r.dataset.i === idx; r.classList.toggle('on', me); r.classList.toggle('playing', me && on); });
-    if (prevBtn) prevBtn.disabled = idx <= 0 && !hist.length && audio.currentTime < 3;
-    if (nextBtn) nextBtn.disabled = upNext(false) < 0;
+    const qNow = qBody && qBody.querySelector('.q-row.now');
+    if (qNow) qNow.classList.toggle('paused', !on);
+    if (prevBtn) prevBtn.disabled = pos <= 0 && audio.currentTime < 3;
+    if (nextBtn) nextBtn.disabled = !hasNext();
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = on ? 'playing' : 'paused';
   };
   const progress = () => {
@@ -408,32 +413,85 @@
     const p = audio.play();
     if (p && p.catch) p.catch(e => { if (e.name !== 'AbortError') { toast("This song couldn't be played."); paint(); } });
   }
-  function playAt(i, back) {
+  // A new order: the page's own, or shuffled with `first` (a song) leading; `avoid` doesn't lead (repeating a shuffle).
+  function makeOrder(first, avoid) {
+    const all = tracks.map((_, i) => i);
+    if (!shuffle) { order = all; pos = first >= 0 ? first : -1; return; }
+    const rest = all.filter(i => i !== first);
+    for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
+    if (avoid != null && rest.length > 1 && rest[0] === avoid) [rest[0], rest[1]] = [rest[1], rest[0]];
+    order = first >= 0 ? [first, ...rest] : rest; pos = first >= 0 ? 0 : -1;
+  }
+  // Play the queue's song at `p`.
+  function jump(p) {
+    if (p < 0 || p >= order.length) return;
+    pos = p;
+    const i = order[p];
+    if (i === idx) { audio.currentTime = 0; progress(); start(); } else { load(i); start(); }
+    drawQueue();
+  }
+  // A song on the page: shuffled, the queue is shuffled again from it; else it plays where it is in the page's order.
+  function playAt(i) {
     if (i < 0 || i >= tracks.length) return;
-    if (i !== idx) {
-      if (!back && idx >= 0) { hist.push(idx); if (hist.length > 200) hist.shift(); }
-      played.add(i); load(i); start(); return;
-    }
-    if (audio.paused) start(); else audio.pause();
+    if (i === idx) { if (audio.paused) start(); else audio.pause(); return; }
+    if (shuffle) { makeOrder(i); jump(0); } else jump(order.indexOf(i));
   }
-  const toggle = () => playAt(idx < 0 ? 0 : idx);
-  // What plays next: in order, or (shuffled) a song not played yet; at the end, from the top again with repeat on.
-  // Repeat one plays the same song again when it ends (Next still moves on).
-  function upNext(ended) {
-    if (ended && repeat === 2 && idx >= 0) return idx;
-    if (shuffle) {
-      let left = tracks.map((_, i) => i).filter(i => !played.has(i) && i !== idx);
-      if (!left.length && repeat === 1) { played.clear(); left = tracks.map((_, i) => i).filter(i => i !== idx); }
-      return left.length ? left[Math.floor(Math.random() * left.length)] : -1;
-    }
-    if (idx + 1 < tracks.length) return idx + 1;
-    return repeat === 1 && tracks.length ? 0 : -1;
-  }
-  const nextSong = () => { const i = upNext(false); if (i >= 0) playAt(i); };
-  const prevSong = () => {
-    if (audio.currentTime > 3 || (idx <= 0 && !hist.length)) { audio.currentTime = 0; progress(); return; }
-    playAt(hist.length ? hist.pop() : idx - 1, true);
+  const toggle = () => {
+    if (idx >= 0) { playAt(idx); return; }
+    // Play with shuffle on starts anywhere on an album or artist; a song's page starts with that song.
+    if (shuffle) makeOrder(D.kind === 'track' ? 0 : -1);
+    jump(0);
   };
+  const hasNext = () => pos + 1 < order.length || (repeat === 1 && order.length > 0);
+  // Next (or a song ending): the next in the queue; at the end, from the start again with repeat on (shuffled anew).
+  // Repeat one plays the same song again when it ends; Next still moves on.
+  function goNext(ended) {
+    if (ended && repeat === 2 && idx >= 0) { audio.currentTime = 0; start(); return true; }
+    if (pos + 1 < order.length) { jump(pos + 1); return true; }
+    if (repeat === 1 && order.length) { if (shuffle) makeOrder(-1, idx); jump(0); return true; }
+    return false;
+  }
+  const nextSong = () => goNext(false);
+  const prevSong = () => {
+    if (audio.currentTime > 3 || pos <= 0) { audio.currentTime = 0; progress(); return; }
+    jump(pos - 1);
+  };
+
+  // ---------- Queue ----------
+  const qPanel = $('queue'), qBody = $('q-body'), qScrim = $('q-scrim');
+  const qRow = (p, now) => {
+    const t = tracks[order[p]];
+    return `<button class="q-row${now ? ' now' : ''}" data-qp="${p}"><img src="${esc(t.c || D.cover || '')}" alt="" loading="lazy"><span class="q-tt"><b>${esc(t.t)}</b><small>${esc(t.a)}</small></span>`
+      + `${now ? '<span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' : ''}<span class="q-d">${fmt(t.d)}</span></button>`;
+  };
+  function drawQueue() {
+    if (!qPanel || !qPanel.classList.contains('open')) return;
+    const left = order.length - pos - 1;
+    let h = '<h3>Now playing</h3>' + (pos >= 0 ? qRow(pos, true) : '<p class="q-note">Nothing yet. Press play, or pick a song below.</p>');
+    h += `<h3>Next up${left > 0 ? ` <small>${left} ${left === 1 ? 'song' : 'songs'}</small>` : ''}</h3>`;
+    for (let p = pos + 1; p < Math.min(order.length, pos + 151); p++) h += qRow(p, false);
+    if (repeat === 2 && pos >= 0) h += '<p class="q-note">Repeating this song. Next still moves on.</p>';
+    else if (repeat === 1) h += `<p class="q-note">Then from the start again${shuffle ? ', shuffled' : ''}.</p>`;
+    else if (left <= 0) h += '<p class="q-note">That\'s everything on this page.</p>';
+    qBody.innerHTML = h;
+    $('q-sub').textContent = shuffle ? 'Shuffled' : '';
+    const now = qBody.querySelector('.q-row.now');
+    if (now) now.classList.toggle('paused', audio.paused);
+  }
+  function openQueue(on) {
+    if (!qPanel) return;
+    on = on == null ? !qPanel.classList.contains('open') : on;
+    qPanel.classList.toggle('open', on); qPanel.setAttribute('aria-hidden', String(!on));
+    if (qScrim) qScrim.classList.toggle('open', on);
+    document.querySelectorAll('[data-queue]').forEach(b => { b.classList.toggle('on', on); b.setAttribute('aria-expanded', String(on)); });
+    if (on) { drawQueue(); const now = qBody.querySelector('.q-row.now'); if (now) now.scrollIntoView({ block: 'nearest' }); }
+  }
+  document.querySelectorAll('[data-queue]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); openQueue(); }));
+  if (qPanel) {
+    $('q-close').addEventListener('click', () => openQueue(false));
+    qBody.addEventListener('click', e => { const r = e.target.closest('[data-qp]'); if (r) { const p = +r.dataset.qp; if (p === pos) toggle(); else jump(p); } });
+  }
+  if (qScrim) qScrim.addEventListener('click', () => openQueue(false));
 
   // Shuffle, repeat and volume, kept on this device.
   const store = { get(k, d) { try { const v = localStorage.getItem('axdio_share_' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -447,7 +505,8 @@
       repBtn.classList.toggle('on', repeat > 0); repBtn.classList.toggle('one', repeat === 2);
       repBtn.setAttribute('aria-label', ['Repeat', 'Repeat one', 'Stop repeating'][repeat]);
     }
-    if (nextBtn) nextBtn.disabled = upNext(false) < 0;
+    if (nextBtn) nextBtn.disabled = !hasNext();
+    drawQueue();
   }
   function applyVolume() {
     const v = muted ? 0 : volume;
@@ -464,7 +523,7 @@
     store.set('volume', volume); store.set('muted', muted); applyVolume();
   }
   const toggleMute = () => { muted = !muted; if (!muted && volume === 0) volume = .5; store.set('muted', muted); store.set('volume', volume); applyVolume(); };
-  const toggleShuffle = () => { shuffle = !shuffle; played.clear(); if (idx >= 0) played.add(idx); store.set('shuffle', shuffle); paintModes(); };
+  const toggleShuffle = () => { shuffle = !shuffle; makeOrder(idx); store.set('shuffle', shuffle); paintModes(); };
   const cycleRepeat = () => { repeat = (repeat + 1) % 3; store.set('repeat', repeat); paintModes(); };
   if (shufBtn) shufBtn.addEventListener('click', toggleShuffle);
   if (repBtn) repBtn.addEventListener('click', cycleRepeat);
@@ -523,12 +582,7 @@
   audio.addEventListener('timeupdate', progress);
   audio.addEventListener('durationchange', progress);
   // When the page's songs end, the similar ones play on after them.
-  audio.addEventListener('ended', () => {
-    const i = upNext(true);
-    if (i === idx) { audio.currentTime = 0; start(); }
-    else if (i >= 0) playAt(i);
-    else { audio.currentTime = 0; progress(); paint(); }
-  });
+  audio.addEventListener('ended', () => { if (!goNext(true)) { audio.currentTime = 0; progress(); paint(); } });
   audio.addEventListener('error', () => { if (audio.src) { toast("This song couldn't be played."); paint(); } });
 
   if ('mediaSession' in navigator) {
@@ -548,10 +602,12 @@
     else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && tag !== 'input') { e.preventDefault(); setVolume((muted ? 0 : volume) + (e.key === 'ArrowUp' ? .05 : -.05)); }
     else if (tag !== 'input' && !e.shiftKey) {
       const k = e.key.toLowerCase();
-      if (k === 'm') toggleMute(); else if (k === 's') toggleShuffle(); else if (k === 'r') cycleRepeat();
+      if (k === 'm') toggleMute(); else if (k === 's') toggleShuffle(); else if (k === 'r') cycleRepeat(); else if (k === 'q') openQueue();
+      else if (k === 'escape') openQueue(false);
       else if (k === 'n') nextSong(); else if (k === 'p') prevSong();
     }
   });
+  if (shuffle) makeOrder(-1);
   applyVolume(); paintModes();
   paint();
 })();

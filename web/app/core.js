@@ -680,19 +680,31 @@ const Src = {
     if (this.results.size > 30) this.results.delete(this.results.keys().next().value);
     return p;
   },
-  // Search results with the sources' songs, artists and albums mixed in, as if they were the library's. When the
-  // sources haven't answered for `q` yet, they're asked, and `redraw` is called once they have.
+  // The sources are asked about a search only when the listener presses Enter (typing searches the library alone),
+  // so a search service isn't asked once per letter and doesn't turn the server away. True if that starts a search.
+  entered: '',
+  enter(q) {
+    q = String(q || '').trim();
+    if (!this.on() || q.length < 2) return false;
+    const fresh = !this.got.has(q) && !this.results.has(q);
+    this.entered = q;
+    return fresh;
+  },
+  // Whether pressing Enter would look further for `q`, and the line that says so.
+  canLook(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && !this.got.has(q) && !this.results.has(q); },
+  hint(q, touch) {
+    if (!this.canLook(q)) return '';
+    return `<div class="src-hint" data-act="src-look"><span class="src-hint-ic">${ic('search', 'sm')}</span><span><b>${touch ? 'Tap Search' : 'Press Enter'}</b> to look beyond your library</span></div>`;
+  },
+  // Search results with the sources' songs, artists and albums mixed in, as if they were the library's. Once Enter
+  // asked the sources about `q`, `redraw` is called when they've answered.
   merge(res, q, redraw) {
     q = String(q || '').trim();
     if (!res || !this.on() || q.length < 2) return res;
     const d = this.got.get(q);
     if (!d) {
       if (this.results.has(q)) this.results.get(q).then(() => redraw(), () => redraw());
-      else {
-        this.want = q;
-        clearTimeout(this.wantTimer);
-        this.wantTimer = setTimeout(() => { if (this.want === q) this.search(q).then(() => redraw(), () => redraw()); }, 300);
-      }
+      else if (this.entered === q) this.search(q).then(() => redraw(), () => redraw());
       return res;
     }
     const fresh = [];
@@ -905,7 +917,7 @@ const Src = {
   refreshing: new Set(),
   // Whether the sources are still looking for `q`.
   searching() { return `<div class="src-banner" role="status"><span class="src-spin2"></span><div><b>Searching for more…</b><small>Finding songs, artists and albums beyond your library</small></div></div><div class="src-sk">${'<div class="src-sk-row"><i></i><span><em></em><em></em></span></div>'.repeat(3)}</div>`; },
-  pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && !this.got.has(q) && (this.results.has(q) || this.want === q); },
+  pending(q) { q = String(q || '').trim(); return this.on() && q.length >= 2 && !this.got.has(q) && this.results.has(q); },
   // A song all ready to play (saved by the server ahead of time): the next one up, a link searched for.
   preload(item) {
     if (!item || !item.src || this.preloaded.has(item.path)) return;
