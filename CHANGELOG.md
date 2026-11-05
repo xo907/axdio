@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.19.1
+
+- **The left side of a shared page never scrolls.** On a computer everything on it always shows: the artwork takes the room that's left, and in a short window it sits beside the title with the player underneath. Open in Axdio and Copy link moved up beside the logo.
+- **More controls on shared pages:** shuffle, repeat (all or one), and volume with mute, kept on that device. Keys: Space, ←/→ to seek, ↑/↓ for volume, M mute, S shuffle, R repeat, N and P next and previous. Phones and tablets use their own volume buttons.
+
 ## 2.19.0
 
 - **Shared pages, redone.** A shared song, album or artist opens a page that is exactly the window: on a computer the artwork on a stage on the left, with a visualizer around it that moves with the music (bars around the edges of an album's artwork, a ring around an artist's photo, sparks on the beat), and the music around it on the right; on a phone one column, with a small player once the controls scroll away. The backdrop takes the artwork's colours and drifts and breathes with the music. Nothing shows a scrollbar; everything still scrolls.

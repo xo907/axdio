@@ -109,7 +109,10 @@
       try {
         const ctx = new AC(), src = ctx.createMediaElementSource(audio);
         an = ctx.createAnalyser(); an.fftSize = 2048; an.smoothingTimeConstant = .72;
-        src.connect(an); an.connect(ctx.destination);
+        // The visualizer listens before the volume, so it moves the same however loud it's played.
+        const gain = ctx.createGain();
+        src.connect(an); an.connect(gain); gain.connect(ctx.destination);
+        V.gain = gain;
         bins = new Uint8Array(an.frequencyBinCount); sr = ctx.sampleRate;
         V.ctx = ctx;
       } catch (e) { fake = true; }
@@ -219,10 +222,51 @@
       document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
     }
     return {
-      attach, recolor: () => { recolor(); kick(); }, ctx: null,
+      attach, recolor: () => { recolor(); kick(); }, ctx: null, gain: null,
       set playing(v) { playing = v; if (v && V.ctx && V.ctx.state === 'suspended') V.ctx.resume(); kick(); },
     };
   })();
+
+  // ---------- The stage fits the window (wide screens) ----------
+  // Nothing on it scrolls. The artwork (with the room the visualizer around it takes, about 0.41 of its size above and
+  // below) gives way to the title and the player. When that would leave it small, the artwork and the title go side
+  // by side instead; whichever leaves the bigger artwork stays. A very short window also gets a smaller title.
+  const stage = $('stage'), wrap = $('art-wrap');
+  const wide = matchMedia('(min-width: 1000px)');
+  function shrinkToFit(start) {
+    if (start) wrap.style.setProperty('--aw', start + 'px');
+    for (let pass = 0; pass < 6; pass++) {
+      const over = stage.scrollHeight - stage.clientHeight;
+      if (over <= 0) return wrap.offsetWidth;
+      const aw = wrap.offsetWidth, next = Math.max(96, Math.floor(aw - over / 1.41) - 2);   // layout size: not the pop-in's scale
+      if (next >= aw) {
+        if (body.classList.contains('tight')) return aw;
+        body.classList.add('tight'); continue;
+      }
+      wrap.style.setProperty('--aw', next + 'px');
+    }
+    return wrap.offsetWidth;
+  }
+  function fitStage() {
+    if (!stage || !wrap) return;
+    wrap.style.removeProperty('--aw'); body.classList.remove('tight', 'side');
+    if (!wide.matches) return;
+    const col = shrinkToFit(0), colTight = body.classList.contains('tight');
+    if (col >= 220 && !colTight) return;
+    body.classList.remove('tight'); body.classList.add('side');
+    const side = shrinkToFit(Math.min(Math.round(stage.clientWidth * .36), 300));
+    if (side + 10 < col || (stage.scrollHeight > stage.clientHeight && col >= side)) {   // the column was better after all
+      body.classList.remove('side', 'tight'); wrap.style.removeProperty('--aw'); shrinkToFit(0);
+    }
+  }
+  let refit = () => {};
+  if (stage) {
+    let fitRaf = 0;
+    refit = () => { cancelAnimationFrame(fitRaf); fitRaf = requestAnimationFrame(fitStage); };
+    new ResizeObserver(refit).observe(stage);
+    wide.addEventListener('change', refit);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(refit);
+  }
 
   const artImg = $('art-img');
   if (artImg) { if (artImg.complete && artImg.naturalWidth) palette(artImg); else artImg.addEventListener('load', () => palette(artImg), { once: true }); }
@@ -302,6 +346,7 @@
   const mainBtn = $('play'), miniBtn = $('mini-play'), prevBtn = $('prev'), nextBtn = $('next');
   const rows = [...document.querySelectorAll('.row[data-i]')];
   let idx = -1, dragging = false;
+  const hist = [], played = new Set();          // where Previous goes back to; what shuffle has played
   // A shared moment (?t=73): start there, and carry it into the app.
   const startAt = D.kind === 'track' ? Math.max(0, parseInt(new URLSearchParams(location.search).get('t') || '0', 10) || 0) : 0;
 
@@ -317,8 +362,8 @@
     body.classList.toggle('is-playing', on);
     V.playing = on;
     rows.forEach(r => { const me = +r.dataset.i === idx; r.classList.toggle('on', me); r.classList.toggle('playing', me && on); });
-    if (prevBtn) prevBtn.disabled = idx <= 0 && audio.currentTime < 3;
-    if (nextBtn) nextBtn.disabled = idx >= tracks.length - 1;
+    if (prevBtn) prevBtn.disabled = idx <= 0 && !hist.length && audio.currentTime < 3;
+    if (nextBtn) nextBtn.disabled = upNext(false) < 0;
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = on ? 'playing' : 'paused';
   };
   const progress = () => {
@@ -358,22 +403,81 @@
   }
   function start() {
     V.attach(audio);
+    applyVolume();
     if (V.ctx && V.ctx.state === 'suspended') V.ctx.resume();
     const p = audio.play();
     if (p && p.catch) p.catch(e => { if (e.name !== 'AbortError') { toast("This song couldn't be played."); paint(); } });
   }
-  function playAt(i) {
+  function playAt(i, back) {
     if (i < 0 || i >= tracks.length) return;
-    if (i !== idx) { load(i); start(); return; }
+    if (i !== idx) {
+      if (!back && idx >= 0) { hist.push(idx); if (hist.length > 200) hist.shift(); }
+      played.add(i); load(i); start(); return;
+    }
     if (audio.paused) start(); else audio.pause();
   }
   const toggle = () => playAt(idx < 0 ? 0 : idx);
-  const nextSong = () => { if (idx + 1 < tracks.length) playAt(idx + 1); };
-  const prevSong = () => { if (audio.currentTime > 3 || idx <= 0) { audio.currentTime = 0; progress(); } else playAt(idx - 1); };
+  // What plays next: in order, or (shuffled) a song not played yet; at the end, from the top again with repeat on.
+  // Repeat one plays the same song again when it ends (Next still moves on).
+  function upNext(ended) {
+    if (ended && repeat === 2 && idx >= 0) return idx;
+    if (shuffle) {
+      let left = tracks.map((_, i) => i).filter(i => !played.has(i) && i !== idx);
+      if (!left.length && repeat === 1) { played.clear(); left = tracks.map((_, i) => i).filter(i => i !== idx); }
+      return left.length ? left[Math.floor(Math.random() * left.length)] : -1;
+    }
+    if (idx + 1 < tracks.length) return idx + 1;
+    return repeat === 1 && tracks.length ? 0 : -1;
+  }
+  const nextSong = () => { const i = upNext(false); if (i >= 0) playAt(i); };
+  const prevSong = () => {
+    if (audio.currentTime > 3 || (idx <= 0 && !hist.length)) { audio.currentTime = 0; progress(); return; }
+    playAt(hist.length ? hist.pop() : idx - 1, true);
+  };
+
+  // Shuffle, repeat and volume, kept on this device.
+  const store = { get(k, d) { try { const v = localStorage.getItem('axdio_share_' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+                  set(k, v) { try { localStorage.setItem('axdio_share_' + k, JSON.stringify(v)); } catch (e) { /* private mode */ } } };
+  let shuffle = !!store.get('shuffle', false), repeat = +store.get('repeat', 0) || 0;
+  let volume = Math.min(1, Math.max(0, +store.get('volume', 1))), muted = !!store.get('muted', false);
+  const shufBtn = $('shuffle'), repBtn = $('repeat'), muteBtn = $('mute'), volIn = $('vol'), volPct = $('vol-pct');
+  function paintModes() {
+    if (shufBtn) { shufBtn.classList.toggle('on', shuffle); shufBtn.setAttribute('aria-pressed', shuffle); }
+    if (repBtn) {
+      repBtn.classList.toggle('on', repeat > 0); repBtn.classList.toggle('one', repeat === 2);
+      repBtn.setAttribute('aria-label', ['Repeat', 'Repeat one', 'Stop repeating'][repeat]);
+    }
+    if (nextBtn) nextBtn.disabled = upNext(false) < 0;
+  }
+  function applyVolume() {
+    const v = muted ? 0 : volume;
+    if (V.gain) { V.gain.gain.value = v; audio.volume = 1; } else audio.volume = v;
+    if (volIn) { volIn.value = Math.round(v * 100); volIn.style.setProperty('--p', v * 100 + '%'); }
+    if (volPct) volPct.textContent = Math.round(v * 100);
+    if (muteBtn) {
+      muteBtn.querySelector('use').setAttribute('href', v === 0 ? '#i-vol-0' : v < .5 ? '#i-vol-1' : '#i-vol-2');
+      muteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+    }
+  }
+  function setVolume(v) {
+    volume = Math.min(1, Math.max(0, v)); muted = volume === 0 ? muted : false;
+    store.set('volume', volume); store.set('muted', muted); applyVolume();
+  }
+  const toggleMute = () => { muted = !muted; if (!muted && volume === 0) volume = .5; store.set('muted', muted); store.set('volume', volume); applyVolume(); };
+  const toggleShuffle = () => { shuffle = !shuffle; played.clear(); if (idx >= 0) played.add(idx); store.set('shuffle', shuffle); paintModes(); };
+  const cycleRepeat = () => { repeat = (repeat + 1) % 3; store.set('repeat', repeat); paintModes(); };
+  if (shufBtn) shufBtn.addEventListener('click', toggleShuffle);
+  if (repBtn) repBtn.addEventListener('click', cycleRepeat);
+  if (muteBtn) muteBtn.addEventListener('click', toggleMute);
+  if (volIn) {
+    volIn.addEventListener('input', () => setVolume(volIn.value / 100));
+    volIn.parentElement.addEventListener('wheel', e => { e.preventDefault(); setVolume((muted ? 0 : volume) + (e.deltaY < 0 ? .05 : -.05)); }, { passive: false });
+  }
   if (startAt) {
     document.querySelectorAll('a[href$="/open"]').forEach(a => { a.href += '?t=' + startAt; });
     const h = document.querySelector('h1');
     if (h) h.insertAdjacentHTML('afterend', `<p class="moment">▶ From ${fmt(startAt)}</p>`);
+    refit();
   }
 
   // The mini player shows on one-column pages once the controls have scrolled out of sight.
@@ -419,7 +523,12 @@
   audio.addEventListener('timeupdate', progress);
   audio.addEventListener('durationchange', progress);
   // When the page's songs end, the similar ones play on after them.
-  audio.addEventListener('ended', () => { if (idx + 1 < tracks.length) { load(idx + 1); start(); } else { audio.currentTime = 0; progress(); } });
+  audio.addEventListener('ended', () => {
+    const i = upNext(true);
+    if (i === idx) { audio.currentTime = 0; start(); }
+    else if (i >= 0) playAt(i);
+    else { audio.currentTime = 0; progress(); paint(); }
+  });
   audio.addEventListener('error', () => { if (audio.src) { toast("This song couldn't be played."); paint(); } });
 
   if ('mediaSession' in navigator) {
@@ -436,6 +545,13 @@
     else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && tag !== 'input' && idx >= 0) {
       audio.currentTime = Math.max(0, audio.currentTime + (e.key === 'ArrowRight' ? 5 : -5)); progress();
     }
+    else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && tag !== 'input') { e.preventDefault(); setVolume((muted ? 0 : volume) + (e.key === 'ArrowUp' ? .05 : -.05)); }
+    else if (tag !== 'input' && !e.shiftKey) {
+      const k = e.key.toLowerCase();
+      if (k === 'm') toggleMute(); else if (k === 's') toggleShuffle(); else if (k === 'r') cycleRepeat();
+      else if (k === 'n') nextSong(); else if (k === 'p') prevSong();
+    }
   });
+  applyVolume(); paintModes();
   paint();
 })();
