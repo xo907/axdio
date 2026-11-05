@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.19.0
+
+- **Shared pages, redone.** A shared song, album or artist opens a page that is exactly the window: on a computer the artwork on a stage on the left, with a visualizer around it that moves with the music (bars around the edges of an album's artwork, a ring around an artist's photo, sparks on the beat), and the music around it on the right; on a phone one column, with a small player once the controls scroll away. The backdrop takes the artwork's colours and drifts and breathes with the music. Nothing shows a scrollbar; everything still scrolls.
+- **More on each page.** A song's page shows its album, track number, release date, length, quality (FLAC, lossless or not) and plays on this server; an album's the same for the album, with how popular each song is here; an artist's page their numbers (songs, releases, plays, years active, counting up), Popular, the whole discography with Albums / Singles & EPs filters, and the songs they're featured on.
+- **Similar music.** Every shared page has similar songs (they play on after the page's own, so a shared song carries on like a radio), more by the artist and the artists fans also like. Similar artists come from featured credits, what listeners here play together, and shared compilations.
+- **External music can be shared.** Links to External songs, albums and artists work like the library's (Copy link in the menus, and Share a moment). Whoever opens one can listen on the page, also people who can't use External music in the player. Admins can turn that off: **Features → Share External music**.
+- The player bar no longer overlaps itself in narrow windows: the least-used buttons (sing along, listening party, miniplayer, now playing view, devices, the volume slider) step aside as the window narrows.
+
 ## 2.18.0
 
 - **Albums show when they came out, not when they were added.** An album's page, discographies and album lists show its release year (from the songs' date tags), and the foot of an album's page the whole release date. "Recently added" still sorts by when songs came into the library. Songs are read once more on the first scan after updating, to get their dates.

@@ -269,6 +269,14 @@ api.source("far", "Far Away", search=search, stream=stream, cover=cover, album=a
   it, `warm` is used.
 - `warm(id)` gets a song ready to start without waiting. The player asks for it for the first few search results and
   for the next song in the queue, at most 3 at a time.
+- `song(id)` returns `{"song": song}`: one song, for a shared link to it (Axdio 2.19). Without it, links to the
+  source's songs don't open (its albums and artists still do).
+- `public()` says whether the source can play for people who open a shared link to its music, whoever they are:
+  `True`, or `(False, "why not")`. Without it, `ready()` is asked for them.
+
+Listeners share the source's songs, albums and artists like the library's. Whoever opens a shared link sees its
+page and can play it there, also when `ready()` wouldn't let them use the source in the player (an admin can turn
+that off: **Share External music**). Similar songs on the page come from `radio`.
 
 Items are dicts. Ids are 1 to 120 letters, digits, `_`, `.`, `:`, `=` or `-`. The fields the player uses are:
 - song: `id`, `title`, `artists` (a list of names), `artist_id`, `album`, `album_id`, `duration` (seconds), `track`,

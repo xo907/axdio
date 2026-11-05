@@ -2266,9 +2266,11 @@ function shareId(kind, ref) {
   for (let i = 0; i < 11; i++) { out = B62[Number(h % N)] + out; h /= N; }
   return out;
 }
-const trackLink = t => '/track/' + shareId('t', t.rel);
-const albumLink = al => '/album/' + shareId('a', al.key);
-const artistLink = ar => '/artist/' + shareId('r', ar.key);
+// External music has links the same way; the server is told it was shared (the link's id is a hash: it couldn't tell).
+const extShared = (o, kind) => { const it = o && o.ext && o.item; if (it && it.id) api(`/api/sources/${o.ext}/share`, { kind, id: it.id }).catch(() => {}); };
+const trackLink = t => { extShared(t, 'song'); return '/track/' + shareId('t', t.rel); };
+const albumLink = al => { extShared(al, 'album'); return '/album/' + shareId('a', al.key); };
+const artistLink = ar => { extShared(ar, 'artist'); return '/artist/' + shareId('r', ar.key); };
 
 async function share(title, text, path) {
   if (!feat('sharing')) { UI.toast('Sharing is turned off on this server'); return; }

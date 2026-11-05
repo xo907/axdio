@@ -1289,7 +1289,9 @@ const menuIcon = name => (typeof name === 'string' && /^[a-z0-9-]+$/.test(name) 
 function itemMenu(k, id) {
   const o = k === 'album' ? L.albums[+id] : k === 'artist' ? L.artists[+id] : null;
   if (o && o.ext) return [{ label: 'Open', icon: k === 'artist' ? 'person' : 'album', act: () => openItem(k, id) },
-    o.item.id && Src.canGet(o.ext) && !Src.wasAsked(o.item) ? { label: k === 'artist' ? 'Get everything' : 'Get', icon: 'dl', act: () => Src.get(o.item) } : null];
+    o.item.id && Src.canGet(o.ext) && !Src.wasAsked(o.item) ? { label: k === 'artist' ? 'Get everything' : 'Get', icon: 'dl', act: () => Src.get(o.item) } : null,
+    o.item.id ? (k === 'artist' ? { feat: 'sharing', label: 'Copy artist link', icon: 'copy', act: () => share(o.name, o.name, artistLink(o)) }
+      : { feat: 'sharing', label: 'Copy album link', icon: 'copy', act: () => share(o.title, `${o.title} by ${albumArtist(o)}`, albumLink(o)) }) : null];
   const ids = itemIds(k, id), ctx = itemCtx(k, id);
   const head = [ctx ? { label: 'Play', icon: 'play', act: () => playCtx(ctx, -1) } : null, ids.length ? { label: 'Add to queue', icon: 'queue', act: () => addToQueue(ids) } : null, ids.length ? { label: 'Add to playlist', icon: 'pl-add', sub: () => playlistSub(ids) } : null];
   if (k === 'album') {

@@ -13,6 +13,7 @@ from pathlib import Path
 from datetime import datetime
 from functools import wraps
 from collections import Counter
+import zlib
 
 from flask import Flask, render_template, request, jsonify, Response, send_file, abort, redirect, session, url_for
 
@@ -24,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.18.0"
+AXDIO_VERSION = "2.19.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -3972,6 +3973,8 @@ ADMIN_SCHEMA = [
         {"key": "feature_connect", "type": "bool", "label": "Connect", "default": True, "help": "See other devices and move playback between them."},
         {"key": "feature_sharing", "type": "bool", "label": "Sharing", "default": True,
          "help": "Listeners can copy links to songs, albums and artists. A link shows the title, artist and artwork in chat apps like Discord, and opens a page where anyone can listen (on a private server, after signing in)."},
+        {"key": "share_external", "type": "bool", "label": "Share External music", "default": True,
+         "help": "Listeners can share links to External songs, albums and artists (from library sources such as the Downloader's) too. They play for whoever opens the link, also for people who can't use External music in the player themselves."},
         {"key": "share_previews", "type": "bool", "label": "Link previews on a private server", "default": True,
          "help": "On a private server, shared links still show the title, artist and artwork to anyone who has the link. Turn off to keep everything about a shared link behind sign-in."},
         {"key": "feature_avatars", "type": "bool", "label": "Profile photos", "default": True, "help": "Listeners can upload a profile photo. You can remove anyone's photo under Accounts & access."},
@@ -4296,6 +4299,9 @@ def db():
         _db_conn.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
         # Social: collaborative playlists, conversations (JSON rows) and end-to-end encrypted messages.
         _db_conn.execute("CREATE TABLE IF NOT EXISTS shared_playlists (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated REAL)")
+        # External songs, albums and artists people shared links to: a link's id is a hash, so this says what it is.
+        _db_conn.execute("CREATE TABLE IF NOT EXISTS ext_shares (id TEXT PRIMARY KEY, kind TEXT NOT NULL, src TEXT NOT NULL, item TEXT NOT NULL, "
+                         "who TEXT NOT NULL DEFAULT '', added REAL NOT NULL)")
         # Rewind's listening log, and Smart transitions' measurements of each song.
         _db_conn.execute("CREATE TABLE IF NOT EXISTS plays (user TEXT NOT NULL, ts REAL NOT NULL, rel TEXT NOT NULL, secs REAL NOT NULL, "
                          "n INTEGER NOT NULL DEFAULT 1, b INTEGER NOT NULL DEFAULT 0)")
@@ -6569,6 +6575,10 @@ def _cover_rel(tracks):
         if t.get("has_cover"): return t["rel_path"]
     return tracks[0]["rel_path"] if tracks else ""
 
+def _min_date(tracks):
+    ds = [str(t.get("date")) for t in tracks if t.get("date")]
+    return min(ds) if ds else ""
+
 def share_item(kind, sid):
     """What a shared link points to, as the share page and previews need it; None if it's not in the library."""
     idx = share_index()
@@ -6577,14 +6587,16 @@ def share_item(kind, sid):
     link = lambda k, ref: f"/{k}/{share_id(SHARE_REFS[k], ref)}"
     if kind == "track":
         t, al = e["t"], idx["albums"].get(e["album"])
-        n = len(_album_tracks(al)) if al else 1
+        at = _album_tracks(al) if al else [t]
+        n = len(at)
         album = _ALBUM_SUFFIX.sub("", al["name"]) if al else ""
         artist = t.get("display_artist") or _artist_name(idx, e["artist"])
         return {"kind": kind, "title": t.get("title") or Path(t["rel_path"]).stem, "artist": artist,
                 "artist_url": link("artist", e["artist"]), "album": album, "album_url": link("album", e["album"]) if al else "",
                 "label": "Song", "cover_rel": t["rel_path"] if t.get("has_cover") else _cover_rel(al["tracks"] if al else [t]),
                 "tracks": [t], "duration": t.get("duration") or 0, "single": n <= 1 or album.lower() == str(t.get("title") or "").lower(),
-                "app": "/?" + urllib.parse.urlencode({"play": t["rel_path"]})}
+                "akey": e["artist"], "album_key": e["album"] if al else "", "no": _track_no(t), "of": n,
+                "date": str(t.get("date") or "") or _min_date(at), "app": "/?" + urllib.parse.urlencode({"play": t["rel_path"]})}
     if kind == "album":
         tracks = _album_tracks(e)
         if not tracks: return None
@@ -6592,17 +6604,14 @@ def share_item(kind, sid):
         return {"kind": kind, "title": _ALBUM_SUFFIX.sub("", e["name"]), "label": _album_kind(e, len(tracks)),
                 "artist": "Various Artists" if comp else _artist_name(idx, e["artist"]),
                 "artist_url": "" if comp else link("artist", e["artist"]), "cover_rel": _cover_rel(tracks), "tracks": tracks,
-                "duration": sum(t.get("duration") or 0 for t in tracks),
-                "app": "/?" + urllib.parse.urlencode({"album": e["key"]})}
+                "duration": sum(t.get("duration") or 0 for t in tracks), "akey": e["artist"], "album_key": e["key"],
+                "date": _min_date(tracks), "app": "/?" + urllib.parse.urlencode({"album": e["key"]})}
     albums = []
     for key in e["albums"]:
         al = idx["albums"].get(key)
         if not al: continue
-        at = _album_tracks(al)
-        albums.append({"title": _ALBUM_SUFFIX.sub("", al["name"]), "url": link("album", key), "label": _album_kind(al, len(at)),
-                       "n": len(at), "tracks": at, "cover_rel": _cover_rel(at), "has_cover": any(t.get("has_cover") for t in at),
-                       "mtime": max((t.get("mtime") or 0) for t in at)})
-    albums.sort(key=lambda a: -a["mtime"])
+        albums.append(_album_card(idx, key))
+    albums.sort(key=lambda a: (a["date"] or "0", a["mtime"]), reverse=True)     # newest release first, undated last
     best = max(albums, key=lambda a: (a["has_cover"], a["n"]), default=None)
     # Popular: the most played songs, topped up with the first song of each release, newest first.
     plays = global_plays()
@@ -6617,7 +6626,177 @@ def share_item(kind, sid):
         if t["rel_path"] not in seen: tracks.append(t); seen.add(t["rel_path"])
     return {"kind": kind, "title": _artist_name(idx, e["key"]), "label": "Artist", "artist": "", "artist_url": "",
             "cover_rel": best["cover_rel"] if best else _cover_rel(e["tracks"]), "tracks": tracks, "albums": albums,
-            "songs": len(e["tracks"]), "app": "/?" + urllib.parse.urlencode({"artist": e["key"]})}
+            "songs": len(e["tracks"]), "akey": e["key"], "date": "", "app": "/?" + urllib.parse.urlencode({"artist": e["key"]})}
+
+def _album_card(idx, key):
+    al = idx["albums"][key]
+    at = _album_tracks(al)
+    date = _min_date(at)
+    label = _album_kind(al, len(at))
+    return {"key": key, "title": _ALBUM_SUFFIX.sub("", al["name"]), "url": f"/album/{share_id('a', key)}", "label": label,
+            "type": "album" if label in ("Album", "Compilation") else "single", "n": len(at), "tracks": at,
+            "cover_rel": _cover_rel(at), "has_cover": any(t.get("has_cover") for t in at), "date": date, "year": date[:4],
+            "mtime": max((t.get("mtime") or 0) for t in at) if at else 0}
+
+# --- Similar music, for share pages ---
+# Artists are related by featured credits (3), a listener having both among their most played (2) and sharing a
+# compilation (1). Worked out again when the library changes, and as plays come in (every 10 minutes).
+_SPLIT_CREDIT = re.compile(r"\s*(?:,|;|/|&|\+|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\bx\b|\bvs\.?)\s*", re.I)
+_REL = {"key": None}
+_rel_lock = threading.Lock()
+
+def share_relations():
+    idx = share_index()
+    plays = global_plays()
+    key = (idx["version"], _plays_cache["t"])
+    with _rel_lock:
+        if _REL["key"] == key: return _REL
+        arts = idx["artists"]
+        rel, feat, by_rel = {}, {}, {}
+        for akey, ar in arts.items():
+            for t in ar["tracks"]: by_rel[t["rel_path"]] = akey
+        def bump(a, b, w):
+            if a == b: return
+            rel.setdefault(a, Counter())[b] += w
+            rel.setdefault(b, Counter())[a] += w
+        for akey, ar in arts.items():
+            for t in ar["tracks"]:
+                credit = str(t.get("display_artist") or "")
+                if credit.lower() == akey: continue
+                for part in _SPLIT_CREDIT.split(credit):
+                    p = part.strip().lower()
+                    if p and p != akey and p in arts:
+                        bump(akey, p, 3)
+                        feat.setdefault(p, []).append(t)
+        for al in idx["albums"].values():
+            if not al["comp"]: continue
+            who = sorted({by_rel.get(t["rel_path"]) for t in al["tracks"]} - {None})
+            if 2 <= len(who) <= 40:
+                for i in range(len(who)):
+                    for j in range(i + 1, len(who)): bump(who[i], who[j], 1)
+        with users_lock: hists = [list(rec.get("history", [])) for rec in users_data.values()]
+        for h in hists:
+            c = Counter()
+            for x in h:
+                a = by_rel.get(x.get("rel_path"))
+                if a: c[a] += x.get("count", 1)
+            top = [a for a, _ in c.most_common(25)]
+            for i in range(len(top)):
+                for j in range(i + 1, len(top)): bump(top[i], top[j], 2)
+        score = Counter()
+        for r, n in plays.items():
+            a = by_rel.get(r)
+            if a: score[a] += n
+        _REL.update(key=key, rel=rel, feat=feat, by_rel=by_rel, top=[a for a, _ in score.most_common(200)])
+        return _REL
+
+def similar_artists(akey, n=10):
+    """The artists most like this one, topped up with what's popular here, then a steady pick of the rest."""
+    idx, R = share_index(), share_relations()
+    out = [a for a, _ in (R["rel"].get(akey) or Counter()).most_common() if a in idx["artists"]][:n]
+    if len(out) < n:
+        rest = sorted(idx["artists"], key=lambda a: zlib.crc32(f"{akey}\0{a}".encode()))
+        for a in R["top"] + rest:
+            if len(out) >= n: break
+            if a != akey and a not in out: out.append(a)
+    return out
+
+def similar_songs(akey, exclude, n=10):
+    """Songs like this artist's: the most played of the related artists' songs, a few from each in turn."""
+    idx, plays = share_index(), global_plays()
+    lists = [iter(sorted(idx["artists"][a]["tracks"], key=lambda t: (-plays.get(t["rel_path"], 0), zlib.crc32(f"{akey}\0{t['rel_path']}".encode()))))
+             for a in similar_artists(akey, 12)]
+    out, seen = [], set()
+    for _ in range(4):
+        for it in lists:
+            if len(out) >= n: return out
+            for t in it:
+                k = (_share_norm(t.get("title")), _share_norm(t.get("display_artist") or t.get("artist")))
+                if t["rel_path"] in exclude or k in seen: continue
+                seen.add(k); out.append(t)
+                break
+    return out
+
+_MONTHS = "January February March April May June July August September October November December".split()
+def _nice_date(d):
+    m = re.match(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?", d or "")
+    if not m: return ""
+    y, mo, da = m.groups()
+    if mo and 1 <= int(mo) <= 12: return (f"{int(da)} " if da and int(da) else "") + f"{_MONTHS[int(mo) - 1]} {y}"
+    return y
+
+_LOSSLESS = {".flac", ".wav", ".aiff", ".aif", ".alac", ".ape", ".wv"}
+def _format(tracks):
+    ext = Counter(Path(t["rel_path"]).suffix.lower() for t in tracks).most_common(1)
+    if not ext: return ""
+    ext = ext[0][0]
+    return ext.lstrip(".").upper() + (" · Lossless" if ext in _LOSSLESS else "")
+
+def share_extras(kind, item, can_play, cover_url):
+    """Everything around the item on its share page: its songs and the similar ones (playable on the page), details,
+    more by the artist, the artists fans also like and, for an artist, the songs they're featured on."""
+    idx, plays, R = share_index(), global_plays(), share_relations()
+    akey = item.get("akey") or ""
+    songs = []
+    tid = lambda t: share_id("t", t["rel_path"])
+    def rows(ts, own_art=True):
+        top = max((plays.get(t["rel_path"], 0) for t in ts), default=0)
+        out = []
+        for t in ts:
+            songs.append({"t": t.get("title") or Path(t["rel_path"]).stem, "a": t.get("display_artist") or t.get("artist") or "",
+                          "d": t.get("duration") or 0, "c": f"/track/{tid(t)}/cover.jpg" if own_art else cover_url, "u": f"/track/{tid(t)}",
+                          "src": "/api/stream_path?" + urllib.parse.urlencode({"path": t["rel_path"]}) if can_play else ""})
+            p = plays.get(t["rel_path"], 0)
+            out.append(dict(songs[-1], i=len(songs) - 1, dur=_mmss(t.get("duration")), plays=p, pop=round(p / top, 3) if top else 0))
+        return out
+    ar = idx["artists"].get(akey)
+    main = rows(item["tracks"], kind == "artist")
+    mine = {t["rel_path"] for t in (ar["tracks"] if ar else item["tracks"])}
+    similar = rows(similar_songs(akey, mine, 10 if kind == "track" else 8))
+    fans = [{"name": _artist_name(idx, a), "url": f"/artist/{share_id('r', a)}", "n": len(idx["artists"][a]["tracks"])}
+            for a in similar_artists(akey, 10)]
+    more = []
+    if kind != "artist" and ar:
+        more = [_album_card(idx, k) for k in ar["albums"] if k != item.get("album_key") and k in idx["albums"]]
+        more.sort(key=lambda a: (a["date"] or "0", a["mtime"]), reverse=True)
+        more = more[:14]
+    total_plays = sum(plays.get(t["rel_path"], 0) for t in (ar["tracks"] if kind == "artist" and ar else item["tracks"]))
+    facts, stats, appears = [], [], []
+    fmt = _format(item["tracks"] if kind != "artist" else (ar["tracks"] if ar else []))
+    if kind == "track":
+        if item["album_url"] and not item["single"]: facts.append(("disc", "Album", item["album"], item["album_url"]))
+        if item["no"] and item["of"] > 1: facts.append(("hash", "Track", f"{item['no']} of {item['of']}", ""))
+        if item["date"]: facts.append(("cal", "Released", _nice_date(item["date"]), ""))
+        if item["duration"]: facts.append(("clock", "Length", _mmss(item["duration"]), ""))
+        if fmt: facts.append(("wave", "Quality", fmt, ""))
+        if total_plays: facts.append(("flame", "Plays here", f"{total_plays:,}", ""))
+    elif kind == "album":
+        if item["date"]: facts.append(("cal", "Released", _nice_date(item["date"]), ""))
+        facts.append(("note", "Songs", f"{len(item['tracks'])}", ""))
+        if item["duration"]: facts.append(("clock", "Length", _long_duration(item["duration"]), ""))
+        if fmt: facts.append(("wave", "Quality", fmt, ""))
+        if total_plays: facts.append(("flame", "Plays here", f"{total_plays:,}", ""))
+    else:
+        years = sorted(a["year"] for a in item["albums"] if a["year"])
+        stats = [(item["songs"], "Songs"), (len(item["albums"]), "Releases")] + ([(total_plays, "Plays here")] if total_plays else [])
+        if years: stats.append((years[0] if years[0] == years[-1] else f"{years[0]}–{years[-1]}", "Active"))
+        seen = set()
+        for t in R["feat"].get(akey) or []:
+            if t["rel_path"] in seen: continue
+            seen.add(t["rel_path"])
+            appears.append({"t": t.get("title") or Path(t["rel_path"]).stem, "a": t.get("display_artist") or t.get("artist") or "",
+                            "url": f"/track/{tid(t)}", "c": f"/track/{tid(t)}/cover.jpg"})
+            if len(appears) >= 12: break
+    credits = []
+    if kind == "track":
+        for part in _SPLIT_CREDIT.split(item["artist"]):
+            p = part.strip()
+            if p: credits.append((p, f"/artist/{share_id('r', p.lower())}" if p.lower() in idx["artists"] else ""))
+    return {"songs": songs, "main": main, "similar": similar, "fans": fans, "more": more, "facts": facts, "stats": stats,
+            "appears": appears, "credits": credits, "year": (item.get("date") or "")[:4], "released": _nice_date(item.get("date")),
+            "has_plays": any(r["plays"] for r in main), "akey_name": _artist_name(idx, akey) if akey else "",
+            "akey_url": f"/artist/{share_id('r', akey)}" if akey in idx["artists"] else "",
+            "disc_types": sorted({a["type"] for a in item.get("albums") or []})}
 
 SHARE_REFS = {"track": "t", "album": "a", "artist": "r"}
 
@@ -6702,7 +6881,7 @@ def _share_visible():
 
 def _share_lookup(kind, sid):
     if not cfg().get("feature_sharing", True) or not _SHARE_PAGE.fullmatch(f"/{kind}/{sid}"): return None
-    return share_item(kind, sid)
+    return share_item(kind, sid) or ext_share_item(kind, sid)
 
 def _share_missing():
     c = cfg()
@@ -6718,6 +6897,201 @@ def _share_site(c):
     return {"title": str(c.get("site_title") or "Axdio"), "accent": accent, "on_accent": "#000" if lum > .55 else "#fff",
             "logo": logo if re.match(r"(https?:)?/", logo) else ""}
 
+# --- Shared External music ---
+# External songs, albums and artists (a library source's, "@<source>/<id>", "@<source>-album:<id>",
+# "@<source>-artist:<id>") have share links like the library's: the same hash of the same key, which the player
+# works out itself. The player tells the server when a listener shares one (POST /api/sources/<id>/share), and a
+# shared page tells it about the External music it links to, so a link's id can be looked up. Who opens a link can
+# play it (unless the admin turned "Share External music" off), also without being allowed External music themselves.
+EXT_KINDS = {"track": ("t", "song"), "album": ("a", "album"), "artist": ("r", "artist")}
+
+def ext_ref(kind, src_id, item):
+    return f"@{src_id}/{item}" if kind == "track" else f"@{src_id}-{EXT_KINDS[kind][1]}:{item}"
+
+def ext_link(kind, src_id, item):
+    return f"/{kind}/{share_id(EXT_KINDS[kind][0], ext_ref(kind, src_id, item))}"
+
+def ext_remember(items, who=""):
+    """Remember External items as shared: [(kind, source id, item id)]."""
+    rows, now = [], time.time()
+    for kind, src_id, item in items:
+        if kind in EXT_KINDS and SOURCE_ID_RE.fullmatch(src_id or "") and SOURCE_ITEM_RE.fullmatch(str(item or "")):
+            rows.append((share_id(EXT_KINDS[kind][0], ext_ref(kind, src_id, item)), kind, src_id, str(item), who, now))
+    if not rows: return
+    try:
+        with _db_lock: db().executemany("INSERT OR IGNORE INTO ext_shares (id, kind, src, item, who, added) VALUES (?, ?, ?, ?, ?, ?)", rows)
+    except Exception as ex: print(f"[WARN] Couldn't remember shared External music: {ex}")
+
+def source_shareable(src):
+    """Whether a source's shared links play for whoever opens them."""
+    if not src or not cfg().get("share_external", True) or not cfg().get(source_setting(src["id"]), True): return False
+    fn = src.get("public") or src.get("ready")
+    if not fn: return True
+    try: r = fn()
+    except Exception: return False
+    return bool(r if isinstance(r, bool) else (r and r[0]))
+
+def _play_sig(src_id, item):
+    return hmac.new(str(app.secret_key).encode(), f"play\n{src_id}\n{item}".encode(), hashlib.sha256).hexdigest()[:24]
+
+@app.route("/api/sources/<sid>/share", methods=["POST"])
+def api_source_share(sid):
+    """A listener shares an External song, album or artist ({"kind": "song" | "album" | "artist", "id"}): its link works from now on."""
+    if not cfg().get("feature_sharing", True) or not cfg().get("share_external", True):
+        return jsonify({"error": "Sharing External music is turned off on this server."}), 403
+    src, err = _source_or_error(sid)
+    if err: return err
+    d = request.get_json(silent=True) or {}
+    kind = {"song": "track", "album": "album", "artist": "artist"}.get(d.get("kind"))
+    item = str(d.get("id") or "")
+    if not kind or not SOURCE_ITEM_RE.fullmatch(item): return jsonify({"error": "That can't be shared."}), 400
+    ext_remember([(kind, src["id"], item)], get_current_user() or "")
+    return jsonify({"url": base_url() + ext_link(kind, src["id"], item)})
+
+@app.route("/api/sources/<sid>/shared/<item>")
+def api_source_shared_stream(sid, item):
+    """The audio of an External song on a shared page (signed by the server for that page)."""
+    src = LIBRARY_SOURCES.get(sid or "")
+    if not src or not SOURCE_ITEM_RE.fullmatch(item) or not hmac.compare_digest(request.args.get("s") or "", _play_sig(sid, item)): abort(404)
+    if cfg().get("require_login") and not get_current_user(): abort(403)
+    if not source_shareable(src): return jsonify({"error": f"{src['name']} isn't available right now."}), 403
+    try: return src["stream"](item)
+    except Exception as ex:
+        _plugin_note(src["pid"], f"source stream (shared): {ex}")
+        return jsonify({"error": "Couldn't play it."}), 502
+
+def _ext_art_file(url):
+    """A source's artwork (an https address it gave) as a file, for link previews and the page's colours."""
+    if not isinstance(url, str) or not re.match(r"https://[^/\s]+/\S+$", url): return None
+    disk = SOURCE_ART_DIR / (hashlib.md5(url.encode()).hexdigest() + ".img")
+    if disk.is_file(): return disk
+    data = fetch_bytes(url, timeout=10, limit=4 * 1024 * 1024)
+    if not data: return None
+    try:
+        SOURCE_ART_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = disk.with_suffix(".part")
+        tmp.write_bytes(data)
+        os.replace(tmp, disk)
+        return disk
+    except OSError: return None
+
+def _ext_songs(src, raw):
+    return [x for x in (raw if isinstance(raw, list) else []) if isinstance(x, dict) and SOURCE_ITEM_RE.fullmatch(str(x.get("id") or ""))]
+
+def ext_share_item(kind, sid):
+    """A shared External song, album or artist, as share pages need it (asked of its source, kept an hour); None if
+    nobody shared it, or its source can't play for whoever opens it."""
+    if kind not in EXT_KINDS or not cfg().get("share_external", True): return None
+    try:
+        with _db_lock: row = db().execute("SELECT src, item FROM ext_shares WHERE id = ? AND kind = ?", (sid, kind)).fetchone()
+    except Exception: return None
+    if not row: return None
+    src, item = LIBRARY_SOURCES.get(row[0]), row[1]
+    if not source_shareable(src): return None
+    sname = lambda x: ", ".join(str(a) for a in (x.get("artists") or []) if a) or str(x.get("artist") or "")
+    out = {"kind": kind, "ext": src["id"], "src": src, "item": item, "album": "", "album_url": "", "artist_url": "", "single": True,
+           "date": "", "akey": "", "album_key": ""}
+    if kind == "track":
+        fn = src.get("song")
+        if not fn: return None
+        d, err = _source_call(src, fn, item, ttl=3600)
+        t = (d.get("song") if isinstance(d, dict) and isinstance(d.get("song"), dict) else d) if d else None
+        if not isinstance(t, dict) or not t.get("title"): return None
+        t = dict(t, id=item)
+        album_id, artist_id = str(t.get("album_id") or ""), str(t.get("artist_id") or "")
+        out.update(title=str(t["title"]), artist=sname(t) or "Unknown Artist", label="Song", tracks=[t], duration=t.get("duration") or 0,
+                   album=str(t.get("album") or ""), single=not (t.get("album") and album_id and src.get("album")),
+                   album_url=ext_link("album", src["id"], album_id) if album_id and SOURCE_ITEM_RE.fullmatch(album_id) and src.get("album") else "",
+                   artist_url=ext_link("artist", src["id"], artist_id) if artist_id and SOURCE_ITEM_RE.fullmatch(artist_id) and src.get("artist") else "",
+                   cover_raw=t.get("cover") or "", artist_id=artist_id, album_id=album_id, seed=item,
+                   app="/?" + urllib.parse.urlencode({"album": f"@{src['id']}-album:{album_id}"} if album_id else {"search": f"{t['title']} {sname(t)}"}))
+        if out["single"]: out["album"] = ""
+        return out
+    if not src.get(kind): return None
+    d, err = _source_call(src, src[kind], item, ttl=3600)
+    if not isinstance(d, dict) or not isinstance(d.get(kind), dict): return None
+    info, songs = d[kind], _ext_songs(src, d.get("songs"))
+    if kind == "album":
+        if not songs: return None
+        artist_id = str(info.get("artist_id") or "")
+        out.update(title=str(info.get("title") or ""), artist=str(info.get("artist") or "") or sname(songs[0]), label=str(info.get("type") or "Album"),
+                   artist_url=ext_link("artist", src["id"], artist_id) if artist_id and SOURCE_ITEM_RE.fullmatch(artist_id) and src.get("artist") else "",
+                   tracks=songs, duration=sum(x.get("duration") or 0 for x in songs), date=str(info.get("year") or ""), cover_raw=info.get("cover") or "",
+                   artist_id=artist_id, seed=songs[0]["id"], app="/?" + urllib.parse.urlencode({"album": f"@{src['id']}-album:{item}"}))
+        return out
+    releases = []
+    for k, label in (("albums", "Album"), ("singles", "Single")):
+        for a in d.get(k) or []:
+            if not isinstance(a, dict) or not SOURCE_ITEM_RE.fullmatch(str(a.get("id") or "")): continue
+            releases.append({"id": str(a["id"]), "title": str(a.get("title") or ""), "url": ext_link("album", src["id"], a["id"]),
+                             "label": str(a.get("type") or label), "type": "album" if k == "albums" else "single", "year": str(a.get("year") or "")[:4],
+                             "cover_raw": a.get("cover") or ""})
+    out.update(title=str(info.get("name") or ""), artist="", label="Artist", tracks=songs[:10], albums=releases, songs=len(songs),
+               cover_raw=info.get("cover") or "", seed=songs[0]["id"] if songs else "", artist_id=item,
+               listeners=str(info.get("listeners") or ""), about=str(info.get("description") or "")[:1200],
+               app="/?" + urllib.parse.urlencode({"artist": f"@{src['id']}-artist:{item}"}))
+    if not out["title"]: return None
+    return out
+
+def ext_share_extras(kind, item, can_play, cover_url):
+    """share_extras() for a shared External song, album or artist: its songs, and similar ones (the source's radio)."""
+    src, sid_ = item["src"], item["ext"]
+    sname = lambda x: ", ".join(str(a) for a in (x.get("artists") or []) if a) or str(x.get("artist") or "")
+    art = lambda u: (_source_item(src, "song", {"id": "x", "cover": u}) or {}).get("cover") or "" if u else ""
+    songs, remember = [], []
+    def rows(ts, own_art=True):
+        out = []
+        for t in ts:
+            iid = str(t["id"])
+            songs.append({"t": str(t.get("title") or ""), "a": sname(t), "d": t.get("duration") or 0, "c": art(t.get("cover")) if own_art else cover_url,
+                          "u": ext_link("track", sid_, iid),
+                          "src": f"/api/sources/{sid_}/shared/{iid}?s={_play_sig(sid_, iid)}" if can_play else ""})
+            remember.append(("track", sid_, iid))
+            out.append(dict(songs[-1], i=len(songs) - 1, dur=_mmss(t.get("duration")), plays=0, pop=0))
+        return out
+    main = rows(item["tracks"], kind != "album")
+    similar = []
+    if src.get("radio") and item.get("seed"):
+        d, _ = _source_call(src, src["radio"], item["seed"], ttl=3600)
+        have = {str(t["id"]) for t in item["tracks"]}
+        pool = [t for t in _ext_songs(src, (d or {}).get("songs") if isinstance(d, dict) else d) if str(t["id"]) not in have]
+        similar = rows(pool[:10 if kind == "track" else 8])
+    # Fans also like: the artists of the similar songs (with one of their songs' artwork).
+    fans, seen = [], {str(item.get("artist_id") or "")}
+    if src.get("artist"):
+        for t in [x for x in (similar and pool) or []]:
+            aid = str(t.get("artist_id") or "")
+            if not aid or aid in seen or not SOURCE_ITEM_RE.fullmatch(aid): continue
+            seen.add(aid)
+            fans.append({"name": (t.get("artists") or [t.get("artist") or ""])[0], "url": ext_link("artist", sid_, aid), "n": 0, "c": art(t.get("cover"))})
+            remember.append(("artist", sid_, aid))
+            if len(fans) >= 10: break
+    facts, stats = [], []
+    if kind == "track":
+        if item["album_url"]: facts.append(("disc", "Album", item["album"], item["album_url"])); remember.append(("album", sid_, item["album_id"]))
+        if item["duration"]: facts.append(("clock", "Length", _mmss(item["duration"]), ""))
+        facts.append(("wave", "From", "External", ""))
+    elif kind == "album":
+        if item["date"]: facts.append(("cal", "Released", item["date"], ""))
+        facts.append(("note", "Songs", f"{len(item['tracks'])}", ""))
+        if item["duration"]: facts.append(("clock", "Length", _long_duration(item["duration"]), ""))
+        facts.append(("wave", "From", "External", ""))
+    else:
+        years = sorted(a["year"] for a in item["albums"] if a["year"])
+        stats = [(len(item["albums"]), "Releases")]
+        if item.get("listeners"): stats.append((item["listeners"].replace(" monthly listeners", ""), "Monthly listeners"))
+        if years: stats.append((years[0] if years[0] == years[-1] else f"{years[0]}–{years[-1]}", "Active"))
+        for a in item["albums"]:
+            a["c"] = art(a.pop("cover_raw", ""))
+            remember.append(("album", sid_, a["id"]))
+    if item.get("artist_url") and item.get("artist_id"): remember.append(("artist", sid_, item["artist_id"]))
+    ext_remember(remember, "page")
+    credits = [(p.strip(), item["artist_url"] if i == 0 else "") for i, p in enumerate(item["artist"].split(", ")) if p.strip()] if kind == "track" else []
+    return {"songs": songs, "main": main, "similar": similar, "fans": fans, "more": [], "facts": facts, "stats": stats, "appears": [],
+            "credits": credits, "year": (item.get("date") or "")[:4], "released": item.get("date") or "", "has_plays": False,
+            "akey_name": item["artist"], "akey_url": item.get("artist_url") or "", "about": item.get("about") or "",
+            "disc_types": sorted({a["type"] for a in item.get("albums") or []})}
+
 @app.route("/<any(track, album, artist):kind>/<sid>")
 def share_page(kind, sid):
     item = _share_lookup(kind, sid)
@@ -6728,7 +7102,7 @@ def share_page(kind, sid):
     base = base_url()
     url = f"{base}/{kind}/{sid}"
     can_play = not c.get("require_login") or bool(get_current_user())
-    cover = cover_file_for(item["cover_rel"])
+    cover = _share_cover_file(item)
     color = (cover_color(cover) if cover else None) or site["accent"]
     ver = hashlib.md5(f"{cover.name}:{cover.stat().st_mtime_ns}".encode()).hexdigest()[:10] if cover else ""
     n = int(color[1:], 16)
@@ -6748,6 +7122,9 @@ def share_page(kind, sid):
         page_title = f"{title} | {site['title']}"
         og_type, noun = "profile", "artist"
         meta = [m for m in (_count(item["songs"], "song"), _count(len(item["albums"]), "release")) if m]
+        if item.get("ext"):
+            meta = [m for m in (item.get("listeners") or "", _count(len(item["albums"]), "release")) if m]
+            desc = "Artist · " + " · ".join(meta)
     music = []
     if kind == "track":
         if item["duration"]: music.append(("music:duration", str(int(round(item["duration"])))))
@@ -6756,35 +7133,39 @@ def share_page(kind, sid):
     elif kind == "album":
         if item["artist_url"]: music.append(("music:musician", base + item["artist_url"]))
         music.append(("music:song_count", str(len(item["tracks"]))))
-    stream = lambda t: "/api/stream_path?" + urllib.parse.urlencode({"path": t["rel_path"]}) if can_play else ""
     cover_url = f"/{kind}/{sid}/cover.jpg?v={ver}" if cover else ""
-    # Songs on an artist page each show their own artwork; an album's songs share the album's.
-    tcover = (lambda t: f"/track/{share_id('t', t['rel_path'])}/cover.jpg") if kind == "artist" else (lambda t: cover_url)
-    data = {"kind": kind, "canPlay": can_play, "title": title, "artist": artist, "cover": cover_url,
-            "tracks": [{"t": t.get("title") or Path(t["rel_path"]).stem, "a": t.get("display_artist") or t.get("artist") or "",
-                        "d": t.get("duration") or 0, "src": stream(t), "c": tcover(t)} for t in item["tracks"]]}
+    # The item's songs, the similar ones and everything else around it. Songs on an artist page (and similar songs)
+    # each show their own artwork; an album's songs share the album's.
+    page = (ext_share_extras if item.get("ext") else share_extras)(kind, item, can_play, cover_url)
+    data = {"kind": kind, "canPlay": can_play, "title": title, "artist": artist, "cover": cover_url, "color": color,
+            "accent": site["accent"], "main": len(page["main"]), "tracks": page.pop("songs")}
     resp = Response(render_template(
         "share.html", missing=False, kind=kind, item=item, site=site, url=url, desc=desc, page_title=page_title, og_type=og_type,
         noun=noun, meta=meta, music=music, color=color, tint=f"{n >> 16}, {(n >> 8) & 255}, {n & 255}", can_play=can_play,
-        signed_in=bool(get_current_user()), cover=data["cover"], card=f"{base}/{kind}/{sid}/card.jpg?v={ver}" if cover else "",
-        image_alt=f"{title} by {artist}" if artist else title, open_url=f"/{kind}/{sid}/open", data=data,
+        signed_in=bool(get_current_user()), cover=cover_url, card=f"{base}/{kind}/{sid}/card.jpg?v={ver}" if cover else "",
+        image_alt=f"{title} by {artist}" if artist else title, open_url=f"/{kind}/{sid}/open", data=data, page=page,
         indexable=bool(c.get("allow_indexing")), mmss=_mmss, share_id=share_id, version=AXDIO_VERSION))
     resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+def _share_cover_file(item):
+    return _ext_art_file(item.get("cover_raw")) if item.get("ext") else cover_file_for(item["cover_rel"])
 
 @app.route("/<any(track, album, artist):kind>/<sid>/cover.jpg")
 def share_cover(kind, sid):
     item = _share_lookup(kind, sid)
     if not item or not _share_visible(): abort(404)
-    cover = cover_file_for(item["cover_rel"])
+    cover = _share_cover_file(item)
     if not cover: return Response(DEFAULT_SVG_COVER, mimetype="image/svg+xml")
-    return send_file(cover, mimetype="image/jpeg", max_age=86400)
+    with open(cover, "rb") as f: head = f.read(12)
+    mime = "image/png" if head[:4] == b"\x89PNG" else "image/webp" if head[8:12] == b"WEBP" else "image/jpeg"
+    return send_file(cover, mimetype=mime, max_age=86400)
 
 @app.route("/<any(track, album, artist):kind>/<sid>/card.jpg")
 def share_card_image(kind, sid):
     item = _share_lookup(kind, sid)
     if not item or not _share_visible(): abort(404)
-    cover = cover_file_for(item["cover_rel"])
+    cover = _share_cover_file(item)
     if not cover: abort(404)
     card = share_card(cover, "circle" if kind == "artist" else "square")
     if card:
@@ -10145,7 +10526,7 @@ SOURCE_ART_DIR = COVERS_CACHE_DIR / "sources"   # sources' artwork, kept on disk
 def _source_call(src, fn, *a, ttl=0):
     """(what a source's function gave, None), or (None, what went wrong, the way the player can show it). With `ttl`,
     an answer from the last `ttl` seconds is given again without asking the source (for every listener)."""
-    key = (src["id"], getattr(fn, "__name__", "call"), a)
+    key = (src["id"], getattr(fn, "__name__", "call"), id(fn), a)     # id: two unnamed functions aren't one
     if ttl:
         with _source_art_lock: hit = _source_cache.get(key)
         if hit and time.time() - hit[0] < ttl: return hit[1], None
@@ -10233,11 +10614,16 @@ def api_source_get(sid):
 @app.route("/api/sources/<sid>/art")
 def api_source_art(sid):
     src, err = _source_or_error(sid)
-    if err: return err
+    signed = lambda s: bool(request.args.get("u")) and hmac.compare_digest(request.args.get("s") or "", _art_sig(s["id"], request.args["u"]))
+    if err:
+        # Someone opening a shared External link sees its artwork (signed by the server for its page).
+        shared = LIBRARY_SOURCES.get(sid or "")
+        if not (shared and _share_visible() and source_shareable(shared) and signed(shared)): return err
+        src = shared
     key = (src["id"], request.args.get("u") or "")
     with _source_art_lock:
         known = key in _source_art_urls
-    if not known and not (key[1] and hmac.compare_digest(request.args.get("s") or "", _art_sig(src["id"], key[1]))): abort(404)
+    if not known and not signed(src): abort(404)
     px = _thumb_size(request.args.get("px")) if request.args.get("px") else None
     if px and re.search(r"=w\d+-h\d+", key[1]):                  # a smaller copy, for a row or a card
         key = (key[0], re.sub(r"=w\d+-h\d+", f"=w{px}-h{px}", key[1]))
@@ -10502,11 +10888,13 @@ class PluginAPI:
         except RuntimeError: return False
 
     # Library sources
-    def source(self, source_id, name, search, stream, cover=None, album=None, artist=None, get=None, warm=None, ready=None, radio=None, preload=None):
+    def source(self, source_id, name, search, stream, cover=None, album=None, artist=None, get=None, warm=None, ready=None, radio=None, preload=None,
+               song=None, public=None):
         """Music from somewhere else in the library's search, artist and album pages, played straight from there
         (PLUGINS.md, "Library sources"). `source_id` is a short lowercase name; the source's songs have paths
         "@<source_id>/<id>". An admin turns it on under Library; `ready()` says whether it can be used now, by whoever
-        is asking: True, or (False, why)."""
+        is asking: True, or (False, why). `song(id)` describes one song (for shared links to it); `public()` says whether
+        the source can play for people who open a shared link (whoever they are), else `ready()` is asked."""
         sid = str(source_id or "")
         if not SOURCE_ID_RE.fullmatch(sid) or FED_REMOTE_RE.match(f"@{sid}/x"):
             raise ValueError("A source's id is 2 to 16 lowercase letters and digits, starting with a letter.")
@@ -10514,7 +10902,8 @@ class PluginAPI:
         other = LIBRARY_SOURCES.get(sid)
         if other and other["pid"] != self.pid: raise ValueError(f"The {plugin_name(other['pid'])} plugin has a source called {sid} already.")
         LIBRARY_SOURCES[sid] = {"pid": self.pid, "id": sid, "name": str(name or sid)[:60], "search": search, "stream": stream, "cover": cover,
-                                "album": album, "artist": artist, "get": get, "warm": warm, "ready": ready, "radio": radio, "preload": preload}
+                                "album": album, "artist": artist, "get": get, "warm": warm, "ready": ready, "radio": radio, "preload": preload,
+                                "song": song, "public": public}
         _add_source_setting(LIBRARY_SOURCES[sid])
 
     # The library

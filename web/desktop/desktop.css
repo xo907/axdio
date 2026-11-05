@@ -978,3 +978,21 @@ span.mt-av { width: 28px; flex-shrink: 0; }
 .c-end { gap: 8px; }
 .c-end .get-slot { flex: none; width: 46px; display: flex; justify-content: center; }
 .c-end .get-slot .row-get { padding: 0 9px; }
+
+/* Player bar on narrower windows: the side columns can shrink to nothing (instead of spilling over the controls), and
+   the least-used buttons step aside as the window narrows, so nothing ever overlaps. */
+#bar { grid-template-columns: minmax(0, 3fr) minmax(300px, 4fr) minmax(0, 3fr); max-width: calc(100vw - 16px); min-width: 0; }
+.pb-right { overflow: hidden; padding: 2px 0; }
+.pb-left { overflow: hidden; }
+@media (max-width: 1440px) { #btn-karaoke, #btn-party { display: none; } }
+@media (max-width: 1200px) { #btn-pip, #btn-np { display: none; } #bar .vol { width: auto; } #bar .vol .range { width: 70px; } }
+@media (max-width: 900px) {
+  #btn-dev, #bar .vol .range, #bar .pb-left [data-act="moment"] { display: none; }
+  #bar { gap: 4px; }
+  .pb-left { gap: 10px; }
+}
+@media (max-width: 720px) {
+  #bar .pb-ctrl [data-shuf], #bar .pb-ctrl [data-rep], #bar .pb-like { display: none; }
+  .pb-ctrl { gap: 10px; }
+  #bar { grid-template-columns: minmax(0, 1fr) minmax(220px, 1.4fr) auto; }
+}

@@ -3025,6 +3025,58 @@ class TestLibrarySources(Base):
         server._plugin_unregister("srcplug")
         self.settings(library_source_far=False)
 
+    def test_shared_links(self):
+        """External songs, albums and artists can be shared: their links work once someone shares one, and play for
+        whoever opens them, also people the source wouldn't play for in the player."""
+        public = [None]
+        song = {"id": "abcdefghijk", "title": "Far Song", "artists": ["Far Artist"], "artist_id": "UCfar", "album": "Far Album", "album_id": "MPREfar", "duration": 200}
+        api = server.PluginAPI("srcplug", {"name": "Source Plugin"})
+        api.source("far", "Far Away", search=lambda q: {}, stream=lambda i: server.Response(b"audio of " + i.encode(), mimetype="audio/mp4"),
+                   album=lambda i: {"album": {"title": "Far Album", "artist": "Far Artist", "artist_id": "UCfar", "year": "2020"}, "songs": [song]},
+                   artist=lambda i: {"artist": {"name": "Far Artist", "listeners": "1.2M monthly listeners"}, "songs": [song],
+                                     "albums": [{"id": "MPREfar", "title": "Far Album", "year": "2020"}], "singles": []},
+                   ready=lambda: (True, "") if self.ready[0] else (False, "Only admins."), song=lambda i: {"song": dict(song, id=i)},
+                   radio=lambda i: {"songs": [dict(song, id="lmnopqrstuv", title="Like It", artists=["Near Artist"], artist_id="UCnear")]},
+                   public=lambda: public[0] if public[0] is not None else (True, ""))
+        self.settings(library_source_far=True)
+        orig = server.fetch_bytes
+        server.fetch_bytes = lambda url, **k: None
+        try:
+            tid = server.share_id("t", "@far/abcdefghijk")
+            self.assertEqual(self.c.get(f"/track/{tid}").status_code, 404)                 # nobody shared it yet
+            r = self.c.post("/api/sources/far/share", json={"kind": "song", "id": "abcdefghijk"})
+            self.assertTrue(r.get_json()["url"].endswith(f"/track/{tid}"), r.get_json())
+            self.assertEqual(self.c.post("/api/sources/far/share", json={"kind": "song", "id": "../x"}).status_code, 400)
+            anon = server.app.test_client()
+            html = anon.get(f"/track/{tid}").get_data(as_text=True)
+            self.assertIn("Far Song", html)
+            self.assertIn("Like It", html)                                                  # similar songs, from its radio
+            m = re.search(r'/api/sources/far/shared/abcdefghijk\?s=(\w+)', html)
+            self.assertTrue(m)
+            self.assertEqual(anon.get(m.group(0)).data, b"audio of abcdefghijk")
+            self.assertEqual(anon.get("/api/sources/far/shared/abcdefghijk?s=nope").status_code, 404)
+            # The pages it links to work too: its album, its artist, the similar song's.
+            for path, text in ((f"/album/{server.share_id('a', '@far-album:MPREfar')}", "Far Album"),
+                               (f"/artist/{server.share_id('r', '@far-artist:UCfar')}", "1.2M"),
+                               (f"/track/{server.share_id('t', '@far/lmnopqrstuv')}", "/api/sources/far/shared/lmnopqrstuv?s=")):
+                r = anon.get(path)
+                self.assertEqual(r.status_code, 200, path)
+                self.assertIn(text, r.get_data(as_text=True))
+            # Listeners who can't use the source in the player can still open it (public() says)...
+            self.ready[0] = False
+            self.assertEqual(anon.get(f"/track/{tid}").status_code, 200)
+            self.assertEqual(self.c.post("/api/sources/far/share", json={"kind": "song", "id": "abcdefghijk"}).status_code, 403)
+            # ...unless the source is off for everyone, or the admin turned sharing External music off.
+            public[0] = (False, "Off.")
+            self.assertEqual(anon.get(f"/track/{tid}").status_code, 404)
+            public[0] = None
+            self.settings(share_external=False)
+            self.assertEqual(anon.get(f"/track/{tid}").status_code, 404)
+            self.assertEqual(anon.get(m.group(0)).status_code, 403)
+        finally:
+            server.fetch_bytes = orig
+            self.settings(share_external=True)
+
     def test_a_source(self):
         a = self.admin()
         # Its setting is under Library, on unless an admin turns it off.

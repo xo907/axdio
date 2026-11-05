@@ -6,7 +6,7 @@
 {% if missing %}
 <title>Link not available · {{ site.title }}</title>
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="theme-color" content="#07070a">
 {% else %}
 <title>{{ page_title }}</title>
 <meta name="description" content="{{ desc }}">
@@ -38,109 +38,194 @@
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/web/fonts/fonts.css">
 <link rel="stylesheet" href="/web/share/share.css?v={{ version }}">
-<style>:root{--accent:{{ site.accent }};--on-accent:{{ site.on_accent }};--tint:{{ tint or '40, 40, 40' }}}</style>
+<style>:root{--accent:{{ site.accent }};--on-accent:{{ site.on_accent }};--tint:{{ tint or '40, 40, 40' }};--c1:{{ color or site.accent }};--c2:{{ site.accent }};--c3:{{ color or site.accent }}}</style>
 </head>
 <body class="k-{{ kind or 'missing' }}">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.05 3.606l13.49 7.788a.7.7 0 0 1 0 1.212L7.05 20.394A.7.7 0 0 1 6 19.788V4.212a.7.7 0 0 1 1.05-.606z"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><rect x="5.5" y="3.5" width="4.5" height="17" rx="1.2"/><rect x="14" y="3.5" width="4.5" height="17" rx="1.2"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M5 4.5h2.2v15H5zM20 5.6v12.8a.6.6 0 0 1-.93.5L9.6 12.5a.6.6 0 0 1 0-1L19.07 5.1a.6.6 0 0 1 .93.5z"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M16.8 4.5H19v15h-2.2zM4 5.6v12.8a.6.6 0 0 0 .93.5l9.47-6.4a.6.6 0 0 0 0-1L4.93 5.1a.6.6 0 0 0-.93.5z"/></symbol>
   <symbol id="i-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9V6zm3 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></symbol>
   <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42L17.59 5H14V3zM5 5h6v2H5v12h12v-6h2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.6 13.4a1 1 0 0 1 0-1.4l3.4-3.4a1 1 0 1 1 1.4 1.4L12 13.4a1 1 0 0 1-1.4 0zM8.5 19a4.5 4.5 0 0 1-3.2-7.7l2.1-2.1a1 1 0 1 1 1.4 1.4l-2.1 2.1a2.5 2.5 0 0 0 3.5 3.5l2.1-2.1a1 1 0 0 1 1.4 1.4l-2.1 2.1A4.5 4.5 0 0 1 8.5 19zm8.1-5.4a1 1 0 0 1-.7-1.7l2.1-2.1a2.5 2.5 0 0 0-3.5-3.5l-2.1 2.1a1 1 0 1 1-1.4-1.4l2.1-2.1a4.5 4.5 0 0 1 6.4 6.4l-2.1 2.1a1 1 0 0 1-.8.3z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></symbol>
+  <symbol id="i-disc" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 6.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm0 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M9.5 3l-1 5H5v2h3.1l-.8 4H4v2h2.9l-1 5h2l1-5h4l-1 5h2l1-5H18v-2h-3.1l.8-4H19V8h-2.9l1-5h-2l-1 5h-4l1-5h-2zm.6 7h4l-.8 4h-4l.8-4z"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><path d="M7 2h2v2h6V2h2v2h2a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2V2zM5 9v10h14V9H5z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zm-1 3h2v4.6l3.2 3.2-1.4 1.4L11 12.4V7z"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 10h2v4H3zm4-4h2v12H7zm4-3h2v18h-2zm4 5h2v8h-2zm4 2h2v4h-2z"/></symbol>
+  <symbol id="i-flame" viewBox="0 0 24 24"><path d="M13.5 1.5s.7 2.6.7 4.7c0 2-1.3 3.6-3.3 3.6S7.6 8.2 7.6 6.2l.03-.36A9.5 9.5 0 0 0 5.5 12a6.5 6.5 0 0 0 13 0c0-4.6-2.2-8.6-5-10.5zM11.8 19c-1.6 0-2.9-1.3-2.9-2.9 0-1.5 1-2.6 2.6-2.9 1.6-.3 3.3-1.1 4.2-2.4.4 1.2.6 2.5.6 3.9A4.4 4.4 0 0 1 11.8 19z"/></symbol>
+  <symbol id="i-cl" viewBox="0 0 24 24"><path d="M15.4 7.4L14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></symbol>
+  <symbol id="i-cr" viewBox="0 0 24 24"><path d="M8.6 16.6L10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></symbol>
 </svg>
-<div class="bg" aria-hidden="true">{% if cover %}<img src="{{ cover }}" alt="">{% endif %}</div>
-
-<header class="top">
-  <a class="brand" href="/"><span class="mark">{% if site.logo %}<img src="{{ site.logo }}" alt="">{% else %}<svg><use href="#i-note"/></svg>{% endif %}</span><span class="name">{{ site.title }}</span></a>
-  {% if not missing %}<a class="pill ghost" href="{{ open_url }}">{% if can_play %}Open in {{ site.title }}{% else %}Sign in{% endif %}</a>{% endif %}
-</header>
+<div class="bg" id="bg" aria-hidden="true">
+  {% if cover %}<img class="bg-art" src="{{ cover }}" alt="">{% endif %}
+  <div class="blobs"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+  <i class="shade"></i><i class="grain"></i>
+</div>
 
 {% if missing %}
-<main class="wrap gone">
+<main class="gone">
+  <a class="brand" href="/"><span class="mark">{% if site.logo %}<img src="{{ site.logo }}" alt="">{% else %}<svg><use href="#i-note"/></svg>{% endif %}</span><span class="name">{{ site.title }}</span></a>
   <div class="gone-art"><svg><use href="#i-note"/></svg></div>
   <h1>This link isn't available</h1>
   <p>The song may have been removed from {{ site.title }}, or sharing has been turned off.</p>
   <a class="pill solid" href="/">Go to {{ site.title }}</a>
 </main>
 {% else %}
-<main class="wrap">
-  <section class="hero">
-    <div class="art{% if kind == 'artist' %} round{% endif %}">{% if cover %}<img src="{{ cover }}" alt="{{ image_alt }}">{% else %}<svg><use href="#i-note"/></svg>{% endif %}</div>
-    <div class="info">
-      <div class="kind">{{ item.label }}</div>
-      {% set tl = item.title|length %}<h1{% if tl > 40 %} class="xl"{% elif tl > 22 %} class="l"{% endif %}>{{ item.title }}</h1>
-      {% if kind == 'track' %}
-      <div class="who-line">{% if item.artist_url %}<a href="{{ item.artist_url }}">{{ item.artist }}</a>{% else %}{{ item.artist }}{% endif %}</div>
-      {% if meta %}<div class="by">{% for m in meta %}{% if loop.index0 == 0 and item.album_url and not item.single %}<a href="{{ item.album_url }}">{{ m }}</a>{% else %}<span>{{ m }}</span>{% endif %}{% endfor %}</div>{% endif %}
-      {% else %}
-      <div class="by">
-        {% if item.artist %}{% if item.artist_url %}<a class="who" href="{{ item.artist_url }}">{{ item.artist }}</a>{% else %}<span class="who">{{ item.artist }}</span>{% endif %}{% endif %}
-        {% for m in meta %}<span>{{ m }}</span>{% endfor %}
+{% macro rows(list, art=True, meter=False) -%}
+<ol class="list{% if art %} with-art{% endif %}{% if meter %} with-meter{% endif %}">
+  {% for t in list %}
+  <li class="row{% if not can_play %} static{% endif %}" data-i="{{ t.i }}" style="--d:{{ loop.index0 }}"{% if can_play %} tabindex="0" role="button" aria-label="Play {{ t.t }}"{% endif %}>
+    <span class="n"><span class="num">{{ loop.index }}</span><span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span><svg class="pi"><use href="#i-play"/></svg></span>
+    {% if art %}<img class="ta" src="{{ t.c }}" alt="" loading="lazy">{% endif %}
+    <span class="tt"><span class="t">{{ t.t }}</span>{% if t.a and t.a|lower != (item.artist or item.title)|lower %}<span class="a">{{ t.a }}</span>{% endif %}</span>
+    {% if meter %}<span class="meter" title="{{ '{:,}'.format(t.plays) }} plays here" aria-hidden="true"><i style="--p:{{ t.pop }}"></i></span>{% endif %}
+    <span class="d">{{ t.dur }}</span>
+    <a class="go" href="{{ t.u }}" aria-label="Go to {{ t.t }}" title="Go to song"><svg><use href="#i-cr"/></svg></a>
+  </li>
+  {% endfor %}
+</ol>
+{%- endmacro %}
+{% macro rail(title, items, kind='album', sub='') -%}
+<section class="sec" style="--s:{{ sub or 0 }}">
+  <div class="sec-h"><h2>{{ title }}</h2><span class="rail-nav"><button class="rail-b" data-dir="-1" aria-label="Scroll back"><svg><use href="#i-cl"/></svg></button><button class="rail-b" data-dir="1" aria-label="Scroll on"><svg><use href="#i-cr"/></svg></button></span></div>
+  <div class="rail{% if kind == 'artist' %} people{% endif %}">
+    {% for a in items %}
+    {% if kind == 'artist' %}
+    <a class="card person" href="{{ a.url }}"><span class="art round"><img src="{{ a.c or (a.url ~ '/cover.jpg') }}" alt="" loading="lazy"></span><span class="t">{{ a.name }}</span><span class="s">{% if a.n %}{{ a.n }} {{ 'song' if a.n == 1 else 'songs' }}{% else %}Artist{% endif %}</span></a>
+    {% elif kind == 'song' %}
+    <a class="card" href="{{ a.url }}"><span class="art"><img src="{{ a.c }}" alt="" loading="lazy"></span><span class="t">{{ a.t }}</span><span class="s">{{ a.a }}</span></a>
+    {% else %}
+    <a class="card" href="{{ a.url }}" data-type="{{ a.type }}"><span class="art"><img src="{{ a.c or (a.url ~ '/cover.jpg') }}" alt="" loading="lazy"></span><span class="t">{{ a.title }}</span><span class="s">{% if a.year %}{{ a.year }} · {% endif %}{{ a.label }}</span></a>
+    {% endif %}
+    {% endfor %}
+  </div>
+</section>
+{%- endmacro %}
+<div class="app" id="app">
+  <aside class="stage" id="stage">
+    <header class="top">
+      <a class="brand" href="/"><span class="mark">{% if site.logo %}<img src="{{ site.logo }}" alt="">{% else %}<svg><use href="#i-note"/></svg>{% endif %}</span><span class="name">{{ site.title }}</span></a>
+      <span class="live" id="live" aria-hidden="true"><i></i>Now playing</span>
+    </header>
+    <div class="stage-body">
+      <div class="art-wrap" id="art-wrap">
+        <canvas class="viz" id="viz" aria-hidden="true"></canvas>
+        <div class="art{% if kind == 'artist' %} round{% endif %}" id="art">{% if cover %}<img id="art-img" src="{{ cover }}" alt="{{ image_alt }}">{% else %}<svg><use href="#i-note"/></svg>{% endif %}<span class="sheen" aria-hidden="true"></span></div>
+      </div>
+      <div class="info">
+        <div class="kind"><span>{{ item.label }}</span>{% if page.year %}<span>{{ page.year }}</span>{% endif %}</div>
+        {% set tl = item.title|length %}<h1{% if tl > 40 %} class="xl"{% elif tl > 22 %} class="l"{% endif %}>{{ item.title }}</h1>
+        {% if kind == 'track' %}
+        <div class="who-line">{% for name, link in page.credits %}{% if link %}<a href="{{ link }}">{{ name }}</a>{% else %}<span>{{ name }}</span>{% endif %}{% if not loop.last %}<span class="sep">, </span>{% endif %}{% endfor %}</div>
+        {% if meta %}<div class="by">{% for m in meta %}{% if loop.index0 == 0 and item.album_url and not item.single %}<a href="{{ item.album_url }}">{{ m }}</a>{% else %}<span>{{ m }}</span>{% endif %}{% endfor %}</div>{% endif %}
+        {% else %}
+        <div class="by">
+          {% if item.artist %}{% if item.artist_url %}<a class="who" href="{{ item.artist_url }}">{{ item.artist }}</a>{% else %}<span class="who">{{ item.artist }}</span>{% endif %}{% endif %}
+          {% for m in meta %}<span>{{ m }}</span>{% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% if can_play and data.tracks %}
+      <div class="deck" id="deck">
+        <div class="np" id="np"><span class="np-eq" aria-hidden="true"><i></i><i></i><i></i></span><span class="np-t" id="np-t"></span></div>
+        <div class="seek" id="seekbox"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek"><span id="dur">{{ mmss(data.tracks[0].d) or '0:00' }}</span></div>
+        <div class="ctl">
+          <button class="ctl-b" id="prev" aria-label="Previous"><svg><use href="#i-prev"/></svg></button>
+          <button class="play" id="play" aria-label="Play"><span class="ring" aria-hidden="true"></span><svg><use href="#i-play"/></svg></button>
+          <button class="ctl-b" id="next" aria-label="Next"><svg><use href="#i-next"/></svg></button>
+        </div>
+      </div>
+      {% elif not can_play %}
+      <div class="locked">
+        <span class="lk"><svg><use href="#i-lock"/></svg></span>
+        <div class="flex1"><b>{{ site.title }} is private</b><span>Sign in to listen to this {{ noun }}.</span></div>
       </div>
       {% endif %}
+      <div class="links">
+        <a class="pill solid" href="{{ open_url }}"><svg><use href="#i-open"/></svg>{% if can_play %}Open in {{ site.title }}{% else %}Sign in{% endif %}</a>
+        <button class="pill ghost" id="copy"><svg><use href="#i-link"/></svg><span>Copy link</span></button>
+      </div>
     </div>
-  </section>
+  </aside>
 
-  {% if can_play and data.tracks %}
-  {% if kind == 'track' %}
-  <div class="player">
-    <div class="seek" id="seekbox"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek"><span id="dur">{{ mmss(item.duration) or '0:00' }}</span></div>
-    <button class="play" id="play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
-  </div>
-  {% else %}
-  <div class="actions">
-    <button class="play" id="play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
-  </div>
-  {% endif %}
-  {% elif not can_play %}
-  <div class="locked">
-    <span class="lk"><svg><use href="#i-lock"/></svg></span>
-    <div class="flex1"><b>{{ site.title }} is private</b><span>Sign in to listen to this {{ noun }}.</span></div>
-    <a class="pill solid" href="{{ open_url }}">Sign in</a>
-  </div>
-  {% endif %}
+  <main class="content" id="content">
+    {% if kind == 'artist' and page.stats %}
+    <section class="sec stats" style="--s:0">
+      {% for v, label in page.stats %}<div class="stat"><b{% if v is number %} data-n="{{ v }}"{% endif %}>{{ '{:,}'.format(v) if v is number else v }}</b><span>{{ label }}</span></div>{% endfor %}
+    </section>
+    {% endif %}
 
-  {% if kind != 'track' %}
-  <section class="sec">
-    {% if kind == 'artist' %}<h2>Popular</h2>{% endif %}
-    <ol class="list{% if kind == 'artist' %} with-art{% endif %}">
-      {% for t in data.tracks %}
-      <li class="row{% if not can_play %} static{% endif %}" data-i="{{ loop.index0 }}"{% if can_play %} tabindex="0" role="button" aria-label="Play {{ t.t }}"{% endif %}>
-        <span class="n"><span class="num">{{ loop.index }}</span><span class="eq" aria-hidden="true"><i></i><i></i><i></i></span><svg class="pi"><use href="#i-play"/></svg></span>
-        {% if kind == 'artist' %}<img class="ta" src="{{ t.c }}" alt="" loading="lazy">{% endif %}
-        <span class="tt"><span class="t">{{ t.t }}</span>{% if t.a and t.a|lower != (item.artist or item.title)|lower %}<span class="a">{{ t.a }}</span>{% endif %}</span>
-        <span class="d">{{ mmss(t.d) }}</span>
-      </li>
-      {% endfor %}
-    </ol>
-  </section>
-  {% endif %}
+    {% if page.facts %}
+    <section class="sec" style="--s:0">
+      <h2>{% if kind == 'track' %}About this song{% else %}About this {{ item.label|lower }}{% endif %}</h2>
+      <div class="facts">
+        {% for icon, label, value, link in page.facts %}
+        {% if link %}<a class="fact" href="{{ link }}">{% else %}<div class="fact">{% endif %}
+          <span class="fi"><svg><use href="#i-{{ icon }}"/></svg></span><span class="fl">{{ label }}</span><b{% if label == 'Plays here' %} data-n="{{ value|replace(',', '') }}"{% endif %}>{{ value }}</b>
+        {% if link %}</a>{% else %}</div>{% endif %}
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
 
-  {% if kind == 'artist' and item.albums %}
-  <section class="sec">
-    <h2>Discography</h2>
-    <div class="grid">
-      {% for a in item.albums[:12] %}
-      <a class="card" href="{{ a.url }}"><span class="art"><img src="{{ a.url }}/cover.jpg" alt="" loading="lazy"></span><span class="t">{{ a.title }}</span><span class="s">{{ a.label }} · {{ a.n }} {{ 'song' if a.n == 1 else 'songs' }}</span></a>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
-</main>
+    {% if page.about %}
+    <section class="sec" style="--s:0"><h2>About</h2><p class="about" id="about">{{ page.about }}</p></section>
+    {% endif %}
 
-{% if can_play and kind != 'track' %}
-<div class="bar" id="bar" aria-label="Now playing">
-  <img id="bar-art" alt="">
-  <div class="meta"><div class="t" id="bar-t"></div><div class="a" id="bar-a"></div></div>
-  <div class="seek" id="seekbox"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek"><span id="dur">0:00</span></div>
-  <button class="play sm" id="bar-play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
+    {% if kind != 'track' %}
+    <section class="sec" style="--s:1">
+      <div class="sec-h"><h2>{% if kind == 'artist' %}Popular{% else %}Songs{% endif %}</h2>{% if kind == 'album' and page.released %}<span class="sec-note">{{ page.released }}</span>{% endif %}</div>
+      {{ rows(page.main, art=(kind == 'artist'), meter=page.has_plays) }}
+    </section>
+    {% endif %}
+
+    {% if page.similar %}
+    <section class="sec" style="--s:2">
+      <div class="sec-h"><h2>{% if kind == 'track' %}Up next: similar songs{% else %}Similar songs{% endif %}</h2>{% if can_play %}<span class="sec-note">Plays on from here</span>{% endif %}</div>
+      {{ rows(page.similar) }}
+    </section>
+    {% endif %}
+
+    {% if kind == 'artist' and item.albums %}
+    <section class="sec" style="--s:3">
+      <div class="sec-h"><h2>Discography</h2>
+        {% if page.disc_types|length > 1 %}<div class="chips" id="chips" role="tablist"><button class="chip on" data-f="all" role="tab" aria-selected="true">All</button><button class="chip" data-f="album" role="tab" aria-selected="false">Albums</button><button class="chip" data-f="single" role="tab" aria-selected="false">Singles &amp; EPs</button></div>{% endif %}
+      </div>
+      <div class="grid" id="disc">
+        {% for a in item.albums[:48] %}
+        <a class="card" href="{{ a.url }}" data-type="{{ a.type }}" style="--d:{{ loop.index0 }}"><span class="art"><img src="{{ a.c or (a.url ~ '/cover.jpg') }}" alt="" loading="lazy"></span><span class="t">{{ a.title }}</span><span class="s">{% if a.year %}{{ a.year }} · {% endif %}{{ a.label }}</span></a>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    {% if page.more %}{{ rail('More by ' ~ page.akey_name, page.more, 'album', 3) }}{% endif %}
+    {% if page.appears %}{{ rail('Appears on', page.appears, 'song', 4) }}{% endif %}
+    {% if page.fans %}{{ rail('Fans also like', page.fans, 'artist', 5) }}{% endif %}
+
+    {% if kind == 'album' and page.released %}
+    <p class="small-print">{{ page.released }}{% if item.artist %}<br>© {{ item.artist }}{% endif %}</p>
+    {% endif %}
+    <footer class="foot"><span>{{ site.title }}</span><a href="https://xo.st" target="_blank" rel="noopener">Created by xo.st</a></footer>
+  </main>
+</div>
+
+{% if can_play and data.tracks %}
+<div class="mini" id="mini" aria-label="Now playing">
+  <span class="mini-p" id="mini-p" aria-hidden="true"></span>
+  <img id="mini-art" alt="">
+  <div class="meta"><div class="t" id="mini-t"></div><div class="a" id="mini-a"></div></div>
+  <canvas class="mini-viz" id="mini-viz" aria-hidden="true"></canvas>
+  <button class="play sm" id="mini-play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
 </div>
 {% endif %}
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script id="share-data" type="application/json">{{ data|tojson }}</script>
 <script src="/web/share/share.js?v={{ version }}" defer></script>
 {% endif %}
-
-<footer class="foot"><span>{{ site.title }}</span><a href="https://xo.st" target="_blank" rel="noopener">Created by xo.st</a></footer>
 </body>
 </html>

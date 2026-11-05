@@ -2384,9 +2384,11 @@ function handleDeepLink() {
     return;
   }
   const al = album ? L.albumByKey.get(album) : null, ar = artist ? L.artistByKey.get(artist.toLowerCase()) : null;
-  if (!al && !ar) return;
+  // External albums and artists (from a shared link) open their page from the source.
+  const ext = !al && !ar && [album, artist].find(k => k && Src.key(k));
+  if (!al && !ar && !ext) return;
   // Deep links render as a page without a history entry (browsers ignore entries pushed before a tap).
-  const pg = mkPage(al ? 'album' : 'artist', { key: al ? al.key : ar.key }, 'home');
+  const pg = mkPage(ext ? (ext === album ? 'album' : 'artist') : al ? 'album' : 'artist', { key: ext || (al ? al.key : ar.key) }, 'home');
   hidePage(curPage());
   T.stacks.home.push(pg);
   showPage(pg, 'fade');
