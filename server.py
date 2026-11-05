@@ -25,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.20.0"
+AXDIO_VERSION = "2.20.1"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -8478,8 +8478,16 @@ def fed_forget_library(rid):
     _fed_libs.pop(rid, None)
     (FED_DIR / f"{rid}.json").unlink(missing_ok=True)
 
+_fed_sync_locks = {}
+_fed_sync_guard = threading.Lock()
+
 def fed_sync(rid, force=False):
-    """Refresh one shared library. Returns the connection."""
+    """Refresh one shared library. Returns the connection. One sync of a library at a time: the background sync and
+    an admin's (or a new connection's) could otherwise write its file at once, and one of them would fail."""
+    with _fed_sync_guard: lock = _fed_sync_locks.setdefault(rid, threading.Lock())
+    with lock: return _fed_sync(rid, force)
+
+def _fed_sync(rid, force=False):
     rem = fed_remote(rid)
     if not rem or rem.get("status") == "revoked": return rem
     hello = fed_call(rem, "/api/federation/hello")
@@ -8499,7 +8507,7 @@ def fed_sync(rid, force=False):
         if lib.get("_status") is not None or not isinstance(lib.get("tracks"), dict):
             return _fed_set(rid, status="error", error=lib.get("error") or "Couldn't download the library.", checked=time.time())
         FED_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = FED_DIR / f"{rid}.tmp"
+        tmp = FED_DIR / f"{rid}.{secrets.token_hex(4)}.tmp"
         tmp.write_text(json.dumps({"name": lib.get("name"), "version": lib.get("version"), "tracks": lib["tracks"]}))
         os.replace(tmp, FED_DIR / f"{rid}.json")
         _fed_libs[rid] = {"name": lib.get("name"), "version": lib.get("version"), "tracks": lib["tracks"]}

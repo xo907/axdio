@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.20.1
+
+- **Shared libraries sync one at a time.** When the background sync of a library another server shares with this one ran at the same moment as one started by hand (or by connecting), one of them could fail writing the library's file, and the connection showed an error. Each library now syncs once at a time.
+
 ## 2.20.0
 
 - **A queue on shared pages.** The queue button (beside the volume, or in the small player on phones, or Q) opens what's playing and everything after it, in the order it'll play: shuffled, the queue shows the shuffled order, not a surprise. Tap a song to jump to it. On a computer it opens over the right side; on a phone it's a sheet from the bottom.
