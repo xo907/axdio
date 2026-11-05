@@ -12,7 +12,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="/favicon.ico">
   <link rel="stylesheet" href="/web/fonts/fonts.css">
-  <link rel="stylesheet" href="/web/desktop/desktop.css?v=2.2.0">
+  <link rel="stylesheet" href="/web/desktop/desktop.css?v=2.2.1">
   <style id="axdio-custom-css"></style>
 </head>
 <body>
@@ -103,7 +103,7 @@
         <button class="pb-play" data-act="toggle" aria-label="Play"><span class="spin"></span><svg class="i" data-pp><use href="#i-play"/></svg></button>
         <button class="icon-btn" data-act="next" aria-label="Next"><svg class="i"><use href="#i-next"/></svg></button>
         <button class="icon-btn" data-rep data-act="repeat" aria-label="Repeat"><svg class="i"><use href="#i-repeat"/></svg><span class="rep1">1</span></button>
-        <div class="fs-side"><button class="icon-btn pb-like" data-act="like-cur" aria-label="Add to Liked Songs"><svg class="i"><use href="#i-heart"/></svg></button></div>
+        <div class="fs-side"><button class="icon-btn pb-like" data-act="like-cur" aria-label="Add to Liked Songs"><svg class="i"><use href="#i-heart"/></svg></button><div class="vol fs-vol" id="fs-vol-wrap"><button class="icon-btn" id="fs-mute" data-act="mute" aria-label="Mute"><svg class="i"><use href="#i-volume"/></svg></button><input type="range" class="range" id="fs-vol" min="0" max="100" value="100" aria-label="Volume"><span class="fs-vol-pct" id="fs-vol-pct">100</span></div></div>
       </div>
     </div>
   </div>
@@ -153,6 +153,6 @@
   <script src="/web/app/karaoke.js?v=1.0.0"></script>
   <script src="/web/app/moments.js?v=1.0.0"></script>
   <script src="/web/app/plugins.js?v=1.0.0"></script>
-  <script src="/web/desktop/desktop.js?v=2.2.0"></script>
+  <script src="/web/desktop/desktop.js?v=2.2.1"></script>
 </body>
 </html>

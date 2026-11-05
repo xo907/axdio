@@ -1022,14 +1022,23 @@ function bindRange(r) {
   r.addEventListener('change', () => { const dur = (P.pending ? P.dur : audio.duration) || 0; seek(r.value / 1000 * dur); scrubbing = false; onProgress(true); });
 }
 bindRange(pb.range); bindRange(byId('fs-range'));
+// The player bar and the full-screen view each have a volume rocker; both mirror S.volume.
+const vols = [[pb.vol, pb.mute, byId('vol-wrap')], [byId('fs-vol'), byId('fs-mute'), byId('fs-vol-wrap')]];
 function onVolume() {
   const v = S.muted ? 0 : S.volume;
-  pb.vol.value = Math.round(v * 100); pb.vol.style.setProperty('--pct', v * 100 + '%');
-  setUse(pb.mute, v === 0 ? 'vol-0' : v < .34 ? 'vol-1' : v < .67 ? 'vol-2' : 'volume');
+  vols.forEach(([r, m]) => {
+    r.value = Math.round(v * 100); r.style.setProperty('--pct', v * 100 + '%');
+    setUse(m, v === 0 ? 'vol-0' : v < .34 ? 'vol-1' : v < .67 ? 'vol-2' : 'volume');
+    m.setAttribute('aria-label', S.muted ? 'Unmute' : 'Mute');
+  });
   pb.mute.dataset.tip = S.muted ? 'Unmute' : 'Mute';
+  byId('fs-vol-pct').textContent = Math.round(v * 100);
 }
-pb.vol.addEventListener('input', () => setVolume(pb.vol.value / 100));
-byId('vol-wrap').addEventListener('wheel', e => { e.preventDefault(); setVolume((S.muted ? 0 : S.volume) + (e.deltaY < 0 ? .05 : -.05)); }, { passive: false });
+const nudgeVolume = d => setVolume((S.muted ? 0 : S.volume) + d);
+vols.forEach(([r, , wrap]) => {
+  r.addEventListener('input', () => setVolume(r.value / 100));
+  wrap.addEventListener('wheel', e => { e.preventDefault(); nudgeVolume(e.deltaY < 0 ? .05 : -.05); }, { passive: false });
+});
 function onRemote(name) {
   document.body.classList.add('remote');
   byId('remote-strip').innerHTML = `${ic('devices', 'sm')}Playing on ${esc(name)}`;
@@ -1059,20 +1068,41 @@ function notify(t) {
   try { new Notification(t.title, { body: `${t.artist} — ${albumOf(t).title}`, icon: coverUrl(t.rel), tag: 'axdio-now', silent: true }); } catch (e) { /* not allowed here */ }
 }
 
-const FS = { open: false, lyr: false, scene: null, idle: 0, clock: 0, lock: null };
+// The overlay (FS.open) opens and closes at once, but the browser's full-screen mode follows asynchronously.
+// FS.req is set while we are entering or leaving browser full screen, so a late `fullscreenchange` from an
+// earlier exit can't close the view that was just opened (that made the button need several clicks).
+const FS = { open: false, lyr: false, scene: null, idle: 0, clock: 0, lock: null, req: null };
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+// Runs `step` now if nothing is in flight (inside the click, as Safari requires), otherwise after the running one.
+function fsQueue(step) {
+  const run = () => { try { return Promise.race([step(), new Promise(r => setTimeout(r, 2500))]); } catch (e) { return Promise.reject(e); } };
+  const req = FS.req = (FS.req ? FS.req.then(run) : run()).catch(() => {}).finally(() => { if (FS.req === req) FS.req = null; });
+}
+function fsEnter() {
+  const de = document.documentElement, go = de.requestFullscreen || de.webkitRequestFullscreen;
+  if (go && (!fsEl() || FS.req)) fsQueue(() => (FS.open && !fsEl() ? go.call(de, { navigationUI: 'hide' }) : null));
+}
+function fsLeave() {
+  const exit = document.exitFullscreen || document.webkitExitFullscreen;
+  if (exit && (fsEl() || FS.req)) fsQueue(() => (!FS.open && fsEl() ? exit.call(document) : null));
+}
 function openFs() {
   if (!curTrack()) { toast('Play something first'); return; }
-  FS.open = true; byId('fs').classList.add('open'); byId('fs').setAttribute('aria-hidden', 'false'); renderFs();
-  if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
-  fsViz(); fsWake(); fsTick(); FS.clock = setInterval(fsTick, 1000);
+  if (FS.open) { fsEnter(); return; }
+  FS.open = true; fsEnter();   // ask first, while the click still counts as a user gesture
+  byId('fs').classList.add('open'); byId('fs').setAttribute('aria-hidden', 'false'); renderFs(); onVolume();
+  fsViz(); fsWake(); fsTick(); clearInterval(FS.clock); FS.clock = setInterval(fsTick, 1000);
 }
 function closeFs() {
+  if (!FS.open) return;
   FS.open = false; byId('fs').classList.remove('open', 'idle'); byId('fs').setAttribute('aria-hidden', 'true');
-  if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  fsLeave();
   if (FS.scene) FS.scene.stop();
   clearInterval(FS.clock); clearTimeout(FS.idle);
   if (FS.lock) { FS.lock.release().catch(() => {}); FS.lock = null; }
 }
+// Leaving browser full screen another way (Esc, F11, the browser's own button) closes the view too.
+function onFsChange() { if (!fsEl() && FS.open && !FS.req) closeFs(); }
 // Visuals painted from the cover and driven by the music (web/app/immersive.js).
 function fsViz() {
   const Vis = window.AX.Vis, fs = byId('fs');
@@ -1098,7 +1128,8 @@ function fsTick() {
 }
 ['mousemove', 'mousedown', 'wheel', 'keydown', 'touchstart'].forEach(ev => byId('fs').addEventListener(ev, () => { if (FS.open) fsWake(); }, { passive: true }));
 document.addEventListener('visibilitychange', () => { if (FS.open && !document.hidden) { FS.lock = null; fsWake(); } });
-document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && FS.open) closeFs(); });
+document.addEventListener('fullscreenchange', onFsChange);
+document.addEventListener('webkitfullscreenchange', onFsChange);
 function renderFs() {
   if (!FS.open) return;
   const t = curTrack(); if (!t) return;
@@ -2427,6 +2458,8 @@ document.addEventListener('keydown', e => {
   else if (e.altKey && e.code === 'KeyL') { e.preventDefault(); ACT.lyrics(); }
   else if (e.altKey && e.code === 'KeyF') { e.preventDefault(); ACT.fullscreen(); }
   else if (e.altKey && e.code === 'KeyV' && FS.open) { e.preventDefault(); ACT['fs-viz'](); }
+  else if (FS.open && !mod && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); fsWake(); nudgeVolume(e.key === 'ArrowUp' ? .05 : -.05); }
+  else if (FS.open && !mod && !e.altKey && e.key.toLowerCase() === 'm') { e.preventDefault(); fsWake(); toggleMute(); }
   else if (e.altKey && e.code === 'KeyN') { e.preventDefault(); createPlaylistDlg(); }
   else if (e.key === '?') { e.preventDefault(); shortcutsDialog(); }
   else if (SEL.tt) tableKeys(e);

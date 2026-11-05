@@ -642,7 +642,13 @@ body.remote .remote-strip { display: flex; }
 .fs-ctrl .icon-btn.on { color: var(--accent); }
 .fs-ctrl .pb-play { width: 64px; height: 64px; }
 .fs-ctrl .pb-play .i { width: 32px; height: 32px; }
-.fs-side { position: absolute; right: 0; display: flex; gap: 8px; }
+.fs-side { position: absolute; right: 0; display: flex; align-items: center; gap: 8px; }
+.fs-vol { width: auto; gap: 6px; padding-left: 6px; }
+.fs-ctrl .fs-vol .icon-btn { width: 40px; height: 40px; }
+.fs-ctrl .fs-vol .icon-btn .i { width: 22px; height: 22px; }
+.fs-vol .range { width: 140px; flex: none; }
+.fs-vol .range::-webkit-slider-thumb { opacity: 1; }
+.fs-vol-pct { width: 3ch; font-size: 12px; font-weight: 700; color: rgba(255,255,255,.65); font-variant-numeric: tabular-nums; text-align: right; }
 /* Visuals and ambient mode */
 #fs-viz-btn.on { color: var(--accent); }
 #fs.viz .fs-bg { opacity: 0; transition: opacity .8s; }
@@ -683,6 +689,7 @@ body.is-offline #offline { transform: translate(-50%, 0); }
   #shell .side-list::-webkit-scrollbar { display: none; }
   #shell .li { justify-content: center; padding: 6px 4px; min-height: 0; }
   .vol { width: auto; } .vol .range { display: none; }
+  .fs-vol .range { display: block; width: 90px; } .fs-vol-pct { display: none; }
   .hero { flex-direction: column; align-items: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -996,3 +1003,11 @@ span.mt-av { width: 28px; flex-shrink: 0; }
   .pb-ctrl { gap: 10px; }
   #bar { grid-template-columns: minmax(0, 1fr) minmax(220px, 1.4fr) auto; }
 }
+
+/* Full screen on narrower windows: the controls close up and the volume slider shortens so the like button and
+   volume never sit over them; on the narrowest only the volume button stays (the wheel over it still turns it). */
+@media (max-width: 1100px) {
+  .fs-ctrl { gap: 16px; }
+  .fs-vol .range { width: 90px; } .fs-vol-pct { display: none; }
+}
+@media (max-width: 780px) { .fs-vol .range { display: none; } }

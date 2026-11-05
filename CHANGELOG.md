@@ -6,6 +6,7 @@
 - **More on each page.** A song's page shows its album, track number, release date, length, quality (FLAC, lossless or not) and plays on this server; an album's the same for the album, with how popular each song is here; an artist's page their numbers (songs, releases, plays, years active, counting up), Popular, the whole discography with Albums / Singles & EPs filters, and the songs they're featured on.
 - **Similar music.** Every shared page has similar songs (they play on after the page's own, so a shared song carries on like a radio), more by the artist and the artists fans also like. Similar artists come from featured credits, what listeners here play together, and shared compilations.
 - **External music can be shared.** Links to External songs, albums and artists work like the library's (Copy link in the menus, and Share a moment). Whoever opens one can listen on the page, also people who can't use External music in the player. Admins can turn that off: **Features → Share External music**.
+- **Volume in full screen.** The full-screen view has its own volume control (with the level in percent), kept in step with the player bar's. Full screen also opens and closes on the first click, and leaving it another way (Esc, F11, the browser's button) closes the view.
 - The player bar no longer overlaps itself in narrow windows: the least-used buttons (sing along, listening party, miniplayer, now playing view, devices, the volume slider) step aside as the window narrows.
 
 ## 2.18.0
