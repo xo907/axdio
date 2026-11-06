@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.22.1
+
+- **Liked External songs stay liked when they play.** Starting an External song you liked showed its heart (in its row and the player bar) as not liked, though it stayed in Liked Songs; liking it again then actually removed it. The hearts, the now-playing panel, the miniplayer and the rows on phones now count likes of songs that aren't in the library yet.
+
 ## 2.22.0
 
 Made for **Axdio for Windows 1.1** (released alongside it), and fine without it.

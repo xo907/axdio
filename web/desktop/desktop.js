@@ -23,7 +23,7 @@ const {
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, stageTrack,
   SL, setSleep, sleepLabel, trackChanged, LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink,
   avatarHtml, libItems, itAlbum, itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds, itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort,
-  Src, relYear, relDate, DESKTOP, WINDOWS_APP_URL,
+  Src, isLiked, relYear, relDate, DESKTOP, WINDOWS_APP_URL,
 } = window.AX;
 
 /* ======================================================================
@@ -965,7 +965,7 @@ function renderNP(rp) {
   const t = curTrack();
   const head = `<div class="rp-h"><b>${ctxLabel()}</b>${t ? `<button class="icon-btn" data-act="more-cur" data-tip="More options">${ic('more-h', 'md')}</button>` : ''}<button class="icon-btn" data-act="close-panel" data-tip="Close">${ic('close', 'md')}</button></div>`;
   if (!t) { rp.innerHTML = head + `<div class="rp-body">${emptyHtml('note', 'Nothing playing', 'Pick something to play and it shows up here.')}</div>`; return; }
-  const al = albumOf(t), ar = artistOf(t), liked = U.likedSet.has(t.rel), following = U.follows.includes(ar.key);
+  const al = albumOf(t), ar = artistOf(t), liked = isLiked(t), following = U.follows.includes(ar.key);
   const upId = P.queue.length ? P.queue[0] : (upcoming(1)[0] || {}).id;
   const up = upId != null ? L.tracks[upId] : null;
   rp.innerHTML = head + `<div class="rp-body">`
@@ -1207,7 +1207,7 @@ function renderPip() {
   d.getElementById('pip-t').textContent = t ? t.title : 'Nothing playing';
   d.getElementById('pip-a').textContent = t ? t.artist : '';
   setUse(d.getElementById('pip-pp'), isPlaying() ? 'pause' : 'play');
-  const lk = d.getElementById('pip-like'), on = !!(t && U.likedSet.has(t.rel));
+  const lk = d.getElementById('pip-like'), on = isLiked(t);
   lk.classList.toggle('liked', on); setUse(lk, on ? 'heart-f' : 'heart');
 }
 

@@ -31,7 +31,7 @@ const {
   setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
   LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink, setOnline, avatarHtml, itAlbum,
   itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds,
-  itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort, Src, relYear, relDate,
+  itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort, Src, isLiked, relYear, relDate,
 } = window.AX;
 
 /* ======================================================================
@@ -237,7 +237,7 @@ function shelf(title, items, opts = {}) {
   return `<div class="sec-h"><div>${opts.kicker ? `<div class="kicker">${esc(opts.kicker)}</div>` : ''}<h2>${esc(title)}</h2></div>${opts.more ? `<button class="more" ${opts.more}>Show all</button>` : ''}</div><div class="shelf${opts.big ? ' big' : ''}">${items.map(cardHtml).join('')}</div>`;
 }
 function trackRow(t, i, o = {}) {
-  const liked = U.likedSet.has(t.rel);
+  const liked = isLiked(t);
   const off = !navigator.onLine && !Off.set.has(t.rel);
   const lead = o.num ? `<div class="num"><span class="num-n">${i + 1}</span>${EQB}</div>` : o.noArt ? '' : `<div class="row-art">${img(coverUrl(t.rel, 96))}${EQB}</div>`;
   const tail = o.tail != null ? o.tail : t.ext ? srcRowTail(t)

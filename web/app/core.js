@@ -2035,9 +2035,11 @@ function trackChanged() {
   updatePlayButtons(); updateModes();
   UI.track(t);
 }
+// Liked: in Liked Songs, or (a source's song not in the library yet) liked to go in there once it is.
+const isLiked = t => !!t && (U.likedSet.has(t.rel) || Src.liked(t));
 function refreshLike(id) {
   const t = L.tracks[id]; if (!t) return;
-  const on = U.likedSet.has(t.rel);
+  const on = isLiked(t);
   const label = on ? 'Remove from Liked Songs' : 'Add to Liked Songs';
   const set = b => { b.classList.toggle('liked', on); setUse(b, on ? 'heart-f' : 'heart'); b.setAttribute('aria-label', label); if (b.dataset.tip != null) b.dataset.tip = label; };
   $$(`[data-act="like"][data-t="${id}"]`).forEach(set);
@@ -2731,7 +2733,7 @@ window.AX = {
   byId, $$, esc, norm, clamp, fmt, nf, count, ic, EQB, debounce, uniq, now, setUse, collator, haptic, hashStr, rng, shuffled, pick, dayKey, weekKey, monthYear,
   LS, K, S, saveS, saveSSoon, AUDIO_CACHE, META_CACHE, streamUrl, playUrl, QUALITIES, streamQuality, setQuality, onCellular, SITE, feat, featOn, CREDIT, minPassword, pendingInvite, authGate,
   PH, coverUrl, img, tone, hexRgb, dominant, applyAccent, ACCENTS, setAccent, setThemeColor,
-  L, Src, refreshLibrary, relYear, relDate, sortName, DESKTOP, WINDOWS_APP_URL, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
+  L, Src, isLiked, refreshLibrary, relYear, relDate, sortName, DESKTOP, WINDOWS_APP_URL, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
   U, api, signIn, signOut, finishSignIn, takeDiscordNote, discordSignIn, discordLink, discordUnlink, discordFinish, discordButton, presenceInfo, presenceSetup, presenceOff, updateProfile, pickImage, squarePhoto, uploadAvatar, removeAvatar, changePassword, listSessions, revokeSession, exportMyData, deleteAccount, subsonicInfo, subsonicPassword, scrobbleInfo, connectListenBrainz, disconnectScrobbler, cacheUser, recordPlay, toggleLike, setLikedMany, toggleFollow, toggleSaveAlbum,
   addToPlaylist, removeFromPlaylist, reorderPlaylist, plCreate, plRename, plDelete, pushLibrary, pushPrefs, Collab,
   RECENTS, touchRecent, recentTs, SEARCHES, rememberSearch, forgetSearch, clearSearches,
