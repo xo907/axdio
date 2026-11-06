@@ -1,7 +1,7 @@
 {
   "name": "axdio-desktop",
   "productName": "Axdio",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Axdio for Windows: your Axdio server's player as a desktop app",
   "author": "xo.st",
   "license": "MIT",
@@ -40,14 +40,25 @@
       "artifactName": "Axdio-Setup-${version}.${ext}",
       "shortcutName": "Axdio",
       "createDesktopShortcut": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": true
     },
     "portable": {
       "artifactName": "Axdio-${version}-portable.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://github.com/xo907/axdio/releases/download/windows-latest",
+        "channel": "latest"
+      }
+    ]
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/xo907/axdio"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }

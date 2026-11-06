@@ -1,7 +1,8 @@
 name: Windows app
 
-# Push a tag like windows-v1.0.0 to build Axdio for Windows (an installer and a portable app) and publish them as a
+# Push a tag like windows-v1.1.0 to build Axdio for Windows (an installer and a portable app) and publish them as a
 # GitHub release. The tag's version must be the one in windows/package.json. Run by hand, it builds without releasing.
+# Each release also goes to the "windows-latest" release, where installed copies look for updates (latest.yml).
 on:
   push:
     tags: ["windows-v*"]
@@ -39,12 +40,21 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
+      - name: The update information is there
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          grep -q "^version: $v$" dist/latest.yml || { echo "dist/latest.yml isn't for $v"; cat dist/latest.yml; exit 1; }
+          ls dist/Axdio-Setup-$v.exe dist/Axdio-Setup-$v.exe.blockmap dist/Axdio-$v-portable.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: axdio-windows
           path: |
             windows/dist/Axdio-Setup-*.exe
+            windows/dist/Axdio-Setup-*.exe.blockmap
             windows/dist/Axdio-*-portable.exe
+            windows/dist/latest.yml
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/')
@@ -53,16 +63,40 @@ jobs:
           name: Axdio for Windows ${{ github.ref_name }}
           files: |
             windows/dist/Axdio-Setup-*.exe
+            windows/dist/Axdio-Setup-*.exe.blockmap
             windows/dist/Axdio-*-portable.exe
+            windows/dist/latest.yml
           body: |
             **Axdio for Windows**: your Axdio server's player as a Windows app.
 
-            - **Axdio-Setup-*.exe** installs it for your user (no admin rights needed) with Start menu and desktop shortcuts.
-            - **Axdio-*-portable.exe** runs without installing.
+            - **Axdio-Setup-*.exe** installs it for your user (no admin rights needed) with Start menu and desktop shortcuts. It updates itself from then on.
+            - **Axdio-*-portable.exe** runs without installing (update it by downloading a new one).
 
             On first launch, enter your server's address (the one you open the player at in a browser). Media keys and
-            the Windows media flyout work, play/pause/next are under the taskbar thumbnail and in the tray, and it keeps
+            the Windows media flyout work, play/pause/next are under the taskbar thumbnail, in the jump list and in the
+            tray, there's a mini player that stays on top (Ctrl+Shift+M), Discord status is built in, and it keeps
             playing in the tray when the window is closed. It works with any Axdio server, and gets new player features
             when the server updates.
 
             The app isn't code-signed yet, so Windows SmartScreen warns the first time: **More info → Run anyway**.
+
+      # Where installed copies look for updates. The installers of earlier versions go; their block maps stay, so an
+      # update downloads only what changed.
+      - name: Update the windows-latest release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          gh release view windows-latest >/dev/null 2>&1 || gh release create windows-latest --prerelease --target "$GITHUB_SHA" \
+            --title "Axdio for Windows (latest)" \
+            --notes "The newest Axdio for Windows, where installed copies look for updates. Download **Axdio-Setup-<version>.exe** to install it."
+          gh release upload windows-latest "dist/Axdio-Setup-$v.exe" "dist/Axdio-Setup-$v.exe.blockmap" "dist/Axdio-$v-portable.exe" dist/latest.yml --clobber
+          for a in $(gh release view windows-latest --json assets -q '.assets[].name'); do
+            case "$a" in
+              "Axdio-Setup-$v.exe"|"Axdio-$v-portable.exe"|latest.yml|*.blockmap) ;;
+              *.exe) gh release delete-asset windows-latest "$a" -y ;;
+            esac
+          done
+          gh release view windows-latest --json assets -q '.assets[].name'

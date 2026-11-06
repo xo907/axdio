@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' http: https: data:">
+<title>Axdio mini player</title>
+<style>
+  @font-face { font-family: 'Plus Jakarta Sans'; src: url('../assets/fonts/plus-jakarta-sans-latin.woff2') format('woff2'); font-weight: 200 800; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #121214; color: #fff; user-select: none;
+    font: 13px/1.35 'Plus Jakarta Sans', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  body { -webkit-app-region: drag; }
+  button, .bar { -webkit-app-region: no-drag; }
+  .bg { position: fixed; inset: -30px; background: #121214 center/cover no-repeat; filter: blur(28px) saturate(1.5) brightness(.55); transform: scale(1.1); transition: background-image .4s; }
+  .bg::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(10,10,12,.35), rgba(10,10,12,.7)); }
+  .wrap { position: relative; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 14px; align-items: center; height: 100%; padding: 12px 12px 12px 12px; }
+  .art { width: 88px; height: 88px; border-radius: 10px; background: #2a2a2e center/cover no-repeat; box-shadow: 0 8px 22px rgba(0,0,0,.45); position: relative; overflow: hidden; }
+  .art.empty { display: grid; place-items: center; }
+  .art.empty::before { content: ""; width: 34px; height: 34px; background: rgba(255,255,255,.35); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z'/%3E%3C/svg%3E") center/contain no-repeat; }
+  .meta { min-width: 0; display: flex; flex-direction: column; height: 100%; justify-content: space-between; padding: 2px 0 0; }
+  .top { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+  .tt { flex: 1; min-width: 0; padding-right: 2px; }
+  .t { font-weight: 800; font-size: 14px; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .a { color: rgba(255,255,255,.7); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .win { display: flex; gap: 2px; margin: -4px -4px 0 0; }
+  .win button { width: 26px; height: 26px; border-radius: 7px; color: rgba(255,255,255,.75); }
+  .win button:hover { background: rgba(255,255,255,.12); color: #fff; }
+  .win svg { width: 15px; height: 15px; }
+  .bar { position: relative; height: 14px; display: flex; align-items: center; cursor: pointer; }
+  .bar i { position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: rgba(255,255,255,.22); }
+  .bar b { position: absolute; left: 0; height: 3px; border-radius: 2px; background: #fff; width: 0; }
+  .bar:hover b { background: #1ed760; }
+  .ctl { display: flex; align-items: center; gap: 4px; }
+  button { background: none; border: 0; color: #fff; display: grid; place-items: center; cursor: pointer; transition: transform .12s, background .12s, color .12s; }
+  button:active { transform: scale(.92); }
+  .ctl .b { width: 32px; height: 32px; border-radius: 50%; color: rgba(255,255,255,.85); }
+  .ctl .b:hover { color: #fff; background: rgba(255,255,255,.1); }
+  .ctl svg { width: 20px; height: 20px; fill: currentColor; }
+  .ctl .pp { width: 34px; height: 34px; border-radius: 50%; background: #fff; color: #000; margin: 0 2px; }
+  .ctl .pp:hover { transform: scale(1.06); }
+  .ctl .pp svg { width: 17px; height: 17px; }
+  .ctl .like.on { color: #1ed760; }
+  .time { margin-left: auto; font-size: 11px; color: rgba(255,255,255,.6); font-variant-numeric: tabular-nums; }
+  svg { fill: currentColor; }
+</style>
+</head>
+<body>
+<div class="bg" id="bg"></div>
+<div class="wrap">
+  <div class="art empty" id="art"></div>
+  <div class="meta">
+    <div class="top">
+      <div class="tt"><div class="t" id="t">Nothing playing</div><div class="a" id="a">Axdio</div></div>
+      <div class="win">
+        <button id="expand" title="Open Axdio (Esc)" aria-label="Open Axdio"><svg viewBox="0 0 24 24"><path d="M14 3h7v7h-2V6.41l-6.29 6.3-1.42-1.42L17.59 5H14V3zM5 5h5v2H5v12h12v-5h2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg></button>
+        <button id="close" title="Close the mini player" aria-label="Close the mini player"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+      </div>
+    </div>
+    <div class="bar" id="bar" title="Seek"><i></i><b id="prog"></b></div>
+    <div class="ctl">
+      <button class="b like" id="like" title="Like" aria-label="Like"><svg viewBox="0 0 24 24"><path id="likep" d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg></button>
+      <button class="b" id="prev" title="Previous" aria-label="Previous"><svg viewBox="0 0 24 24"><path d="M5 4.5h2.2v15H5zM20 5.6v12.8a.6.6 0 0 1-.93.5L9.6 12.5a.6.6 0 0 1 0-1L19.07 5.1a.6.6 0 0 1 .93.5z"/></svg></button>
+      <button class="pp" id="pp" title="Play" aria-label="Play"><svg viewBox="0 0 24 24"><path id="ppp" d="M7.05 3.606l13.49 7.788a.7.7 0 0 1 0 1.212L7.05 20.394A.7.7 0 0 1 6 19.788V4.212a.7.7 0 0 1 1.05-.606z"/></svg></button>
+      <button class="b" id="next" title="Next" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M16.8 4.5H19v15h-2.2zM4 5.6v12.8a.6.6 0 0 0 .93.5l9.47-6.4a.6.6 0 0 0 0-1L4.93 5.1a.6.6 0 0 0-.93.5z"/></svg></button>
+      <span class="time" id="time"></span>
+    </div>
+  </div>
+</div>
+<script>
+  const $ = id => document.getElementById(id);
+  const PLAY = 'M7.05 3.606l13.49 7.788a.7.7 0 0 1 0 1.212L7.05 20.394A.7.7 0 0 1 6 19.788V4.212a.7.7 0 0 1 1.05-.606z';
+  const PAUSE = 'M5.5 3.5h4.5v17H5.5zM14 3.5h4.5v17H14z';
+  const HEART = $('likep').getAttribute('d');
+  const HEART_ON = 'M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z';
+  const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  let now = { playing: false, pos: 0, dur: 0 }, at = performance.now(), art = '';
+  const D = window.axdioDesktop;
+
+  function paint(n) {
+    now = n; at = performance.now();
+    $('t').textContent = n.hasTrack ? (n.title || 'Playing') : 'Nothing playing';
+    $('a').textContent = n.hasTrack ? (n.artist || '') : 'Press play in Axdio';
+    document.title = n.hasTrack ? `${n.title} · ${n.artist}` : 'Axdio mini player';
+    $('ppp').setAttribute('d', n.playing ? PAUSE : PLAY);
+    $('pp').title = n.playing ? 'Pause' : 'Play';
+    $('like').classList.toggle('on', !!n.liked);
+    $('likep').setAttribute('d', n.liked ? HEART_ON : HEART);
+    $('like').style.visibility = n.hasTrack && n.liked != null ? '' : 'hidden';
+    if ((n.art || '') !== art) {
+      art = n.art || '';
+      $('art').style.backgroundImage = art ? `url("${art.replace(/"/g, '%22')}")` : '';
+      $('art').classList.toggle('empty', !art);
+      $('bg').style.backgroundImage = art ? `url("${art.replace(/"/g, '%22')}")` : '';
+    }
+  }
+  // The progress moves smoothly between the updates from the player.
+  function frame() {
+    const pos = now.playing ? now.pos + (performance.now() - at) / 1000 : now.pos;
+    const p = now.dur > 0 ? Math.min(1, pos / now.dur) : 0;
+    $('prog').style.width = (p * 100).toFixed(2) + '%';
+    $('time').textContent = now.dur > 0 ? `${fmt(pos)} / ${fmt(now.dur)}` : '';
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  D.onNow(paint);
+  D.now().then(paint);
+  const cmd = c => D.cmd(c);
+  $('pp').addEventListener('click', () => cmd('toggle'));
+  $('next').addEventListener('click', () => cmd('next'));
+  $('prev').addEventListener('click', () => cmd('prev'));
+  $('like').addEventListener('click', () => cmd('like'));
+  $('expand').addEventListener('click', () => cmd('expand'));
+  $('close').addEventListener('click', () => cmd('close-mini'));
+  $('bar').addEventListener('click', e => {
+    if (!(now.dur > 0)) return;
+    const r = $('bar').getBoundingClientRect();
+    const sec = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * now.dur;
+    now.pos = sec; at = performance.now();
+    cmd('seek:' + sec.toFixed(1));
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === ' ' || e.key === 'MediaPlayPause') { e.preventDefault(); cmd('toggle'); }
+    else if (e.key === 'ArrowRight' && e.ctrlKey) cmd('next');
+    else if (e.key === 'ArrowLeft' && e.ctrlKey) cmd('prev');
+    else if (e.key === 'Escape') cmd('expand');
+  });
+</script>
+</body>
+</html>
