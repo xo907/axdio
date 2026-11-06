@@ -11,3 +11,7 @@ docker-compose.yml
 
 __pycache__/
 *.pyc
+
+# The Windows app's dependencies and builds
+windows/node_modules/
+windows/dist/

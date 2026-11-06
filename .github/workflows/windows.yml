@@ -1,0 +1,68 @@
+name: Windows app
+
+# Push a tag like windows-v1.0.0 to build Axdio for Windows (an installer and a portable app) and publish them as a
+# GitHub release. The tag's version must be the one in windows/package.json. Run by hand, it builds without releasing.
+on:
+  push:
+    tags: ["windows-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+
+      - name: Tag matches the app's version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "$v" = "${GITHUB_REF_NAME#windows-v}" ] || { echo "windows/package.json is $v, the tag is ${GITHUB_REF_NAME}"; exit 1; }
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axdio-windows
+          path: |
+            windows/dist/Axdio-Setup-*.exe
+            windows/dist/Axdio-*-portable.exe
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Axdio for Windows ${{ github.ref_name }}
+          files: |
+            windows/dist/Axdio-Setup-*.exe
+            windows/dist/Axdio-*-portable.exe
+          body: |
+            **Axdio for Windows**: your Axdio server's player as a Windows app.
+
+            - **Axdio-Setup-*.exe** installs it for your user (no admin rights needed) with Start menu and desktop shortcuts.
+            - **Axdio-*-portable.exe** runs without installing.
+
+            On first launch, enter your server's address (the one you open the player at in a browser). Media keys and
+            the Windows media flyout work, play/pause/next are under the taskbar thumbnail and in the tray, and it keeps
+            playing in the tray when the window is closed. It works with any Axdio server, and gets new player features
+            when the server updates.
+
+            The app isn't code-signed yet, so Windows SmartScreen warns the first time: **More info → Run anyway**.

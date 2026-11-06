@@ -98,6 +98,14 @@ cd axdio
 docker compose up -d --build
 ```
 
+## Windows app
+
+**Axdio for Windows** is your server's player as a desktop app: download `Axdio-Setup-<version>.exe` (or the portable
+`.exe`) from the [releases](https://github.com/xo907/axdio/releases) marked *Axdio for Windows*, run it, and enter your
+server's address. Media keys and the Windows media flyout work, play/pause/next sit under the taskbar thumbnail and in
+the tray, and it keeps playing in the tray when the window is closed. It runs the server's own player, so it works with
+any Axdio server and picks up new features when the server updates. Its source is in [`windows/`](windows/).
+
 ## Configuration
 
 Almost everything is set in the admin panel. The container reads these environment variables:

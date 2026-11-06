@@ -1,0 +1,53 @@
+{
+  "name": "axdio-desktop",
+  "productName": "Axdio",
+  "version": "1.0.0",
+  "description": "Axdio for Windows: your Axdio server's player as a desktop app",
+  "author": "xo.st",
+  "license": "MIT",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "icons": "node scripts/icons.js",
+    "start": "electron .",
+    "dist": "node scripts/icons.js && electron-builder --win nsis portable --x64 --publish never"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.xo.axdio.desktop",
+    "productName": "Axdio",
+    "copyright": "xo.st",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "artifactName": "Axdio-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Axdio-Setup-${version}.${ext}",
+      "shortcutName": "Axdio",
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "Axdio-${version}-portable.${ext}"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xo907/axdio"
+  }
+}

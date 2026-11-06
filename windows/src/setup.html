@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'">
+<title>Axdio</title>
+<link rel="stylesheet" href="page.css">
+</head>
+<body>
+<div class="drag"></div>
+<div class="bg"><i></i><i></i><i></i></div>
+<main class="card">
+  <img class="logo" src="../assets/icon.png" alt="">
+  <h1 id="h">Welcome to Axdio</h1>
+  <p id="sub">Enter the address of your Axdio server. It's the address you open the player at in a browser.</p>
+  <form id="f">
+    <input id="addr" placeholder="music.example.com" autocomplete="off" spellcheck="false" autofocus aria-label="Server address">
+    <div class="err" id="err" role="alert"></div>
+    <button class="solid" id="go" type="submit">Connect</button>
+  </form>
+</main>
+<div class="foot" id="foot">Axdio for Windows</div>
+<script>
+  const $ = id => document.getElementById(id);
+  const q = new URLSearchParams(location.search);
+  if (q.get('server')) {
+    $('addr').value = q.get('server');
+    $('h').textContent = 'Change server';
+    $('sub').textContent = 'Connect to another Axdio server. Your downloads and settings stay with the server they came from.';
+  }
+  window.axdioDesktop.info().then(i => { $('foot').textContent = `Axdio for Windows ${i.version}`; });
+  $('f').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('go');
+    $('err').textContent = '';
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Connecting…';
+    const r = await window.axdioDesktop.connect($('addr').value).catch(() => ({ ok: false, error: 'Something went wrong. Try again.' }));
+    if (!r.ok) { $('err').textContent = r.error; btn.disabled = false; btn.textContent = 'Connect'; $('addr').focus(); }
+  });
+</script>
+</body>
+</html>

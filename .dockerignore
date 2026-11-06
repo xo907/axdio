@@ -5,3 +5,4 @@ backups/
 .git/
 __pycache__/
 *.pyc
+windows/
