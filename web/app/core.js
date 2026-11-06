@@ -1645,15 +1645,16 @@ function warmLocal(ids) {
   WARM.t = setTimeout(() => { const rels = WARM.q.splice(0, 12); if (navigator.onLine) api('/api/library/warm', { rels }).catch(() => {}); }, 500);
 }
 const curTrack = () => (P.cur != null ? L.tracks[P.cur] : null);
+const curTime = () => (P.pending ? P.pending.t : audio.currentTime || 0);
 const ctxPlaying = ctx => !!(ctx && P.ctx && P.ctx.key === ctx.key);
-const isPlaying = () => !audio.paused && !P.pending;
+const isPlaying = () => (Remote.on ? Remote.playing() : !audio.paused && !P.pending);
 
 function applyVolume() {
   const base = S.muted ? 0 : clamp(+S.volume || 0, 0, 1);
   D.els.forEach((el, i) => { el.volume = clamp(base * D.fade[i] * SL.fade * (D.level[i] || 1), 0, 1); });
 }
-function setVolume(v) { S.volume = clamp(v, 0, 1); if (S.volume > 0) S.muted = false; applyVolume(); saveSSoon(); UI.volume(); }
-function toggleMute() { S.muted = !S.muted; if (!S.muted && S.volume < .02) S.volume = .5; applyVolume(); saveSSoon(); UI.volume(); }
+function setVolume(v) { if (Remote.on) { Remote.setVolume(v); return; } S.volume = clamp(v, 0, 1); if (S.volume > 0) S.muted = false; applyVolume(); saveSSoon(); UI.volume(); }
+function toggleMute() { if (Remote.on) { Remote.cmd('mute', { on: !mutedNow() }); return; } S.muted = !S.muted; if (!S.muted && S.volume < .02) S.volume = .5; applyVolume(); saveSSoon(); UI.volume(); }
 
 function buildOrder(len, start) {
   const idx = Array.from({ length: len }, (_, i) => i);
@@ -1664,6 +1665,7 @@ function buildOrder(len, start) {
 function playCtx(ctx, start = -1, opts = {}) {
   if (!ctx || !ctx.ids.length) { UI.toast('Nothing to play here yet'); return; }
   if (PartyHook.h && PartyHook.h.playCtx(ctx, start)) return;
+  if (Remote.on && Remote.playCtx(ctx, start, opts)) return;
   if (opts.shuffle != null && opts.shuffle !== P.shuffle) setShuffle(opts.shuffle, true);
   P.ctx = { type: ctx.type, ref: ctx.ref, name: ctx.name, ids: ctx.ids.slice(), key: ctx.key, recent: ctx.recent };
   const o = buildOrder(ctx.ids.length, start < 0 && !P.shuffle ? 0 : start);
@@ -1699,6 +1701,8 @@ function setDeckSrc(i, r) {
 }
 async function load(id, autoplay, seek = 0) {
   const t = L.tracks[id]; if (!t) return;
+  Remote.leave();                                  // playing here: no longer showing another device
+  if (autoplay) Remote.hold = Date.now() + 5000;
   const seq = ++P.seq;
   const prepared = D.ready && D.ready.id === id && !seek ? D.ready.deck : -1;
   P.cur = id; P.pending = null; P.listened = 0; P.lastT = 0; P.counted = false; P.scrobbled = false; P.startedAt = Math.floor(Date.now() / 1000); P.seekTo = seek > 0 ? seek : 0; P.dur = 0;
@@ -1735,6 +1739,7 @@ async function load(id, autoplay, seek = 0) {
   if (t.ext && autoplay) setTimeout(() => { if (seq === P.seq && !D.a.paused && D.a.readyState < 3) UI.toast(`Getting “${t.title}” ready…`); }, 2500);
 }
 function play() {
+  if (Remote.on) { Remote.cmd('play'); return; }
   if (P.pending) { const { id, t } = P.pending; load(id, true, t); return; }
   if (P.cur == null) { shuffleAll(); return; }
   if (FX.needed()) FX.ensure();
@@ -1745,8 +1750,8 @@ function play() {
     else if (err.name !== 'AbortError') console.warn('play()', err);
   });
 }
-function pause() { endCrossfade(true); D.a.pause(); }
-function togglePlay() { haptic(); if (PartyHook.h && PartyHook.h.toggle()) return; if (audio.paused || P.pending) play(); else pause(); }
+function pause() { if (Remote.on) { if (Remote.playing()) Remote.cmd('pause'); return; } endCrossfade(true); D.a.pause(); }
+function togglePlay() { haptic(); if (PartyHook.h && PartyHook.h.toggle()) return; if (Remote.on) { Remote.cmd(Remote.playing() ? 'pause' : 'play'); return; } if (audio.paused || P.pending) play(); else pause(); }
 function shuffleAll() {
   if (!L.tracks.length) return;
   playCtx(makeCtx('library', 'all', 'Your Library', L.tracks.filter(t => !t.ext).map(t => t.id)), -1, { shuffle: true });
@@ -1754,6 +1759,7 @@ function shuffleAll() {
 }
 function next(auto = false, fromError = false) {
   if (PartyHook.h) { PartyHook.h.next(auto, fromError); return; }
+  if (Remote.on) { if (!auto) Remote.cmd('next'); return; }
   if (auto && !fromError && P.repeat === 2) { audio.currentTime = SM.startAt((curTrack() || {}).rel); play(); return; }
   if (P.queue.length) { P.fromQueue = true; load(P.queue.shift(), true); UI.queue(); return; }
   if (!P.ctx) return;
@@ -1771,6 +1777,7 @@ function next(auto = false, fromError = false) {
 function prev() {
   haptic();
   if (PartyHook.h) { PartyHook.h.prev(); return; }
+  if (Remote.on) { Remote.cmd('prev'); return; }
   if (audio.currentTime > 3 || !P.ctx) { audio.currentTime = 0; return; }
   if (P.fromQueue) { P.fromQueue = false; load(P.ctx.ids[P.order[P.pos]], true); UI.queue(); return; }
   if (P.pos > 0) P.pos--;
@@ -1791,6 +1798,7 @@ function startAutoplay() {
   UI.queue();
 }
 function setShuffle(on, silent) {
+  if (Remote.on) { const v = !Remote.st.shuffle; Remote.cmd('shuffle', { on: v }); if (!silent) UI.toast(v ? 'Shuffle on' : 'Shuffle off'); return; }
   P.shuffle = on; S.shuffle = on; saveS();
   if (P.ctx) {
     const cur = P.order[P.pos], idx = P.ctx.ids.map((_, i) => i);
@@ -1801,6 +1809,7 @@ function setShuffle(on, silent) {
   updateModes(); UI.queue(); saveState();
 }
 function cycleRepeat() {
+  if (Remote.on) { const m = ((Remote.st.repeat | 0) + 1) % 3; Remote.cmd('repeat', { mode: m }); UI.toast(['Repeat off', 'Repeating this list', 'Repeating this song'][m]); return; }
   P.repeat = (P.repeat + 1) % 3; S.repeat = P.repeat; saveS();
   haptic(); UI.toast(['Repeat off', 'Repeating this list', 'Repeating this song'][P.repeat]);
   updateModes(); saveState();
@@ -1833,6 +1842,7 @@ function queueMove(from, to) { const [m] = P.queue.splice(from, 1); P.queue.spli
 function queueClear() { P.queue = []; UI.queue(); saveState(); UI.toast('Queue cleared'); }
 function seek(sec) {
   if (PartyHook.h && PartyHook.h.seek(sec)) return;
+  if (Remote.on) { Remote.cmd('seek', { pos: Math.max(0, +sec || 0) }); return; }
   if (P.pending) { P.pending.t = sec; UI.progress(true); return; }
   endCrossfade(true);
   if (isFinite(audio.duration)) audio.currentTime = clamp(sec, 0, audio.duration);
@@ -2055,8 +2065,9 @@ function updatePlayButtons() {
   UI.playState(playing);
 }
 function updateModes() {
-  $$('[data-shuf]').forEach(b => b.classList.toggle('on', P.shuffle));
-  $$('[data-rep]').forEach(b => { b.classList.toggle('on', P.repeat > 0); b.classList.toggle('rep-2', P.repeat === 2); });
+  const shuf = Remote.on ? !!Remote.st.shuffle : P.shuffle, rep = Remote.on ? Remote.st.repeat | 0 : P.repeat;
+  $$('[data-shuf]').forEach(b => b.classList.toggle('on', shuf));
+  $$('[data-rep]').forEach(b => { b.classList.toggle('on', rep > 0); b.classList.toggle('rep-2', rep === 2); });
   UI.modes();
 }
 let progRaf = 0;
@@ -2140,8 +2151,8 @@ function bindMediaSession() {
   set('play', partyToggle(play)); set('pause', partyToggle(pause)); set('stop', partyToggle(pause));
   set('previoustrack', prev); set('nexttrack', () => next());
   set('seekto', d => { if (d.fastSeek && D.a.fastSeek) D.a.fastSeek(d.seekTime); else seek(d.seekTime); setPositionState(); });
-  set('seekbackward', d => { seek(audio.currentTime - (d.seekOffset || 10)); setPositionState(); });
-  set('seekforward', d => { seek(audio.currentTime + (d.seekOffset || 10)); setPositionState(); });
+  set('seekbackward', d => { seek(curTime() - (d.seekOffset || 10)); setPositionState(); });
+  set('seekforward', d => { seek(curTime() + (d.seekOffset || 10)); setPositionState(); });
 }
 // Re-assert everything whenever playback (re)starts: the OS notification is built from this state,
 // and some Android builds rebuild the session when a new media source starts.
@@ -2232,12 +2243,22 @@ function nowPlaying(status) {
 }
 setInterval(() => { if (!audio.paused) nowPlaying('STREAMING'); }, 15000);
 
-/* Connect: device presence + playback hand-off between phones and computers */
+/* Connect: your phones and computers see each other. Each player reports what it's playing (a heartbeat, sent at
+   once when something changes) and hears about the others through a long poll (/api/devices/wait). While another of
+   your devices plays, this one shows that as its own player ("Playing on …") and its controls act there: play and
+   pause, skip, seek, volume, shuffle and repeat, and anything you pick to play. "This device" in the device menu brings
+   the music here. An account plays on one device at a time: starting one pauses the other (the server sees to it). */
+const CONNECT_CAN = ['play', 'pause', 'toggle', 'next', 'prev', 'seek', 'volume', 'mute', 'shuffle', 'repeat', 'play_rels', 'transfer_playback'];
+// Each tab is a device of its own (two tabs on one id would keep contradicting each other).
+const TAB_ID = (() => { try { let s = sessionStorage.getItem('axdio_tab'); if (!s) { s = Math.random().toString(36).slice(2, 6); sessionStorage.setItem('axdio_tab', s); } return s; } catch (e) { return ''; } })();
 const Connect = {
-  id: LS.raw(K.device) || '',
+  id: '',
   name: '',
   platform: 'mobile',
+  devs: [], active: '', rev: -1, skew: 0, loopN: 0, timer: 0, beating: false, again: false,
+  get kind() { return DESKTOP && DESKTOP.app ? DESKTOP.app : this.platform; },
   defaultName() {
+    if (DESKTOP && DESKTOP.app === 'windows') return 'Windows app';
     const ua = navigator.userAgent;
     const br = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /OPR\//.test(ua) ? 'Opera' : /CriOS|Chrome/.test(ua) ? 'Chrome' : /FxiOS|Firefox/.test(ua) ? 'Firefox' : /Safari/.test(ua) ? 'Safari' : 'Browser';
     if (this.platform === 'desktop') {
@@ -2249,42 +2270,239 @@ const Connect = {
   },
   init(platform) {
     this.platform = platform || this.platform;
-    if (!this.id) { this.id = 'dev_' + Math.random().toString(36).slice(2, 11); LS.setRaw(K.device, this.id); }
+    let base = LS.raw(K.device);
+    if (!base) { base = 'dev_' + Math.random().toString(36).slice(2, 11); LS.setRaw(K.device, base); }
+    this.id = base + (TAB_ID ? '.' + TAB_ID : '');
     this.name = S.deviceName || this.defaultName();
     if (!feat('connect')) return;
     this.beat();
+    this.loop();
     setInterval(() => { if (!document.hidden || !audio.paused) this.beat(); }, 5000);
+    D.els.forEach(el => ['play', 'pause', 'seeked', 'durationchange'].forEach(ev => el.addEventListener(ev, () => { if (el === D.a) this.soon(); })));
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.soon(); });
   },
   rename(n) { S.deviceName = n; this.name = n || this.defaultName(); saveS(); this.beat(); },
-  async beat() {
-    if (!this.id) return;
-    const t = curTrack();
-    try {
-      const d = await api('/api/devices/heartbeat', { device_id: this.id, device_name: this.name, state: { playing: !audio.paused, rel_path: t ? t.rel : '', currentTime: audio.currentTime || 0, volume: S.volume } });
-      if (d.sv != null && window.AX.Social) window.AX.Social.nudge(d.sv);
-      const cmd = d.command;
-      if (cmd && cmd.type === 'transfer_playback' && cmd.playback && cmd.playback.rel_path) {
-        const tr = L.byRel.get(cmd.playback.rel_path);
-        if (!tr) return;
-        stageTrack(tr, cmd.playback.currentTime || 0, cmd.playback.playing !== false);
-        UI.toast('Playback moved to this device');
-      }
-    } catch (e) { /* offline */ }
+  // Tell the others soon (changes come in bursts: a new song is a pause, a load and a play).
+  soon() { if (!this.id || !feat('connect')) return; clearTimeout(this.timer); this.timer = setTimeout(() => this.beat(), 120); },
+  state() {
+    const t = Remote.on ? null : curTrack();
+    const st = { playing: !!t && !D.a.paused && !P.pending, rel_path: t ? t.rel : '', currentTime: t ? (P.pending ? P.pending.t : D.a.currentTime || 0) : 0,
+                 duration: t ? ((P.pending ? P.dur : D.a.duration) || P.dur || 0) : 0, volume: S.volume, muted: !!S.muted, shuffle: P.shuffle, repeat: P.repeat,
+                 remote: Remote.on, can: CONNECT_CAN };
+    if (!isFinite(st.duration)) st.duration = 0;
+    if (t) st.track = { title: t.title, artist: t.artist, album: (albumOf(t) || {}).title || '', ...(t.ext && t.item ? { item: t.item } : {}) };
+    return st;
   },
-  async list() { try { return (await api('/api/devices/list')).devices || []; } catch (e) { return null; } },
+  async beat() {
+    if (!this.id || !feat('connect')) return;
+    if (this.beating) { this.again = true; return; }
+    this.beating = true;
+    try {
+      const d = await api('/api/devices/heartbeat', { device_id: this.id, device_name: this.name, kind: this.kind, state: this.state() });
+      if (d.sv != null && window.AX.Social) window.AX.Social.nudge(d.sv);
+      this.take(d);
+    } catch (e) { /* offline */ }
+    this.beating = false;
+    if (this.again) { this.again = false; this.beat(); }
+  },
+  // Waits for news of the account's devices (and commands for this one), again and again.
+  async loop() {
+    const my = ++this.loopN;
+    let fails = 0;
+    while (my === this.loopN) {
+      try {
+        const d = await api(`/api/devices/wait?device_id=${encodeURIComponent(this.id)}&rev=${this.rev}`);
+        if (my !== this.loopN) return;
+        fails = 0;
+        this.take(d);
+      } catch (e) {
+        if (my !== this.loopN) return;
+        if (e.status === 403 || e.status === 404) return;                  // Connect is off on this server
+        await new Promise(r => setTimeout(r, Math.min(15000, 1000 * 2 ** Math.min(4, fails++))));
+      }
+    }
+  },
+  // A view of the account's devices from the server, with any commands for this one.
+  take(d) {
+    if (!d) return;
+    if (d.now) this.skew = d.now * 1000 - Date.now();
+    for (const c of d.commands || (d.command ? [d.command] : [])) this.run(c);
+    if (Array.isArray(d.devices)) {
+      this.devs = d.devices; this.active = d.active || '';
+      if (d.rev != null) this.rev = d.rev;
+      Remote.consider();
+    }
+  },
+  nameOf(id) { const d = this.devs.find(x => x.id === id); return d ? d.name : 'another device'; },
+  // Another device asks this one to do something.
+  run(c) {
+    if (!c || !c.type) return;
+    if (c.at && Date.now() + this.skew - c.at * 1000 > 60000) return;     // waited too long: not what anyone wants now
+    const k = c.type;
+    if (k === 'pause' && Remote.on) return;                                // not playing here anyway
+    Remote.leave();
+    if (k === 'transfer_playback') {
+      const pb = c.playback || {};
+      if (pb.item && pb.item.src && !L.byRel.has(pb.rel_path)) Src.track(pb.item);
+      const tr = L.byRel.get(pb.rel_path);
+      if (!tr) return;
+      stageTrack(tr, pb.currentTime || 0, pb.playing !== false);
+      UI.toast('Playback moved to this device');
+    } else if (k === 'play_rels') {
+      for (const [rel, it] of Object.entries(c.items || {})) if (it && it.src && !L.byRel.has(rel)) Src.track(it);
+      const ids = (c.rels || []).map(r => L.byRel.get(r)).filter(Boolean).map(t => t.id);
+      if (!ids.length) { UI.toast("That isn't in the library here"); return; }
+      const first = c.index >= 0 ? L.byRel.get(c.rels[c.index]) : null, x = c.ctx || {};
+      playCtx(makeCtx(x.type || 'list', x.ref || 'connect', x.name || 'Connect', ids, x.recent || undefined), first ? ids.indexOf(first.id) : -1, { shuffle: !!c.shuffle });
+    } else if (k === 'play') play();
+    else if (k === 'pause') { if (!D.a.paused) { pause(); if (c.why === 'elsewhere') UI.toast(`Playing on ${this.nameOf(c.from)} now`); } }
+    else if (k === 'toggle') { if (D.a.paused || P.pending) play(); else pause(); }
+    else if (k === 'next') next();
+    else if (k === 'prev') prev();
+    else if (k === 'seek') seek(+c.pos || 0);
+    else if (k === 'volume') setVolume(+c.volume);
+    else if (k === 'mute') { if (!!S.muted !== !!c.on) toggleMute(); }
+    else if (k === 'shuffle') setShuffle(!!c.on, true);
+    else if (k === 'repeat') { P.repeat = clamp(c.mode | 0, 0, 2); S.repeat = P.repeat; saveS(); updateModes(); saveState(); }
+    this.soon();
+  },
+  async list() {
+    try { const d = await api('/api/devices/list?device_id=' + encodeURIComponent(this.id)); this.devs = d.devices || []; return this.devs; } catch (e) { return null; }
+  },
   async transfer(id, name) {
+    const rd = Remote.on ? Remote.dev : null;
+    if (rd && rd.id === id) return true;
     const t = curTrack();
     if (!t) { UI.toast('Play something first'); return false; }
+    const at = rd ? Remote.pos() : D.a.currentTime || (P.pending ? P.pending.t : 0);
     try {
-      const d = await api('/api/devices/transfer', { target_device_id: id, playback: { playing: true, rel_path: t.rel, currentTime: audio.currentTime || (P.pending ? P.pending.t : 0) } });
+      const d = await api('/api/devices/transfer', { target_device_id: id, playback: { playing: true, rel_path: t.rel, currentTime: at, ...(t.ext && t.item ? { item: t.item } : {}) } });
       if (!d.success) throw new Error(d.error || 'Device unreachable');
-      pause();
-      UI.remote(name);
+      if (rd) api('/api/devices/command', { target: rd.id, type: 'pause', from: this.id }).catch(() => {});
+      else pause();
       UI.toast(`Playing on ${name}`);
       return true;
     } catch (e) { UI.toast(`Couldn't connect to ${name}`); return false; }
   },
+  // Bring what another device is playing here.
+  pull() {
+    const d = Remote.dev, t = curTrack();
+    if (!d) return;
+    const at = Remote.pos();
+    api('/api/devices/command', { target: d.id, type: 'pause', from: this.id }).catch(() => {});
+    Remote.leave();
+    if (t) stageTrack(t, at, true);
+  },
 };
+
+// The other device this one shows and controls, while one of them plays.
+const Remote = {
+  on: false, dev: null, tick: 0, vol: null, volUntil: 0, volT: 0, volNext: null, hold: 0,
+  get st() { return (this.dev && this.dev.state) || {}; },
+  srvNow() { return (Date.now() + Connect.skew) / 1000; },
+  playing() { return !!this.st.playing; },
+  pos() {
+    const s = this.st;
+    let p = s.currentTime || 0;
+    if (s.playing) p += Math.max(0, this.srvNow() - (s.at || 0));
+    return s.duration ? Math.min(p, s.duration) : p;
+  },
+  volume() { return this.vol != null && Date.now() < this.volUntil ? this.vol : this.st.muted ? 0 : this.st.volume != null ? this.st.volume : 1; },
+  muted() { return !!this.st.muted; },
+  // Which device to show, if any: the one playing (the account's active one first). One shown stays while it's paused.
+  consider() {
+    const localPlaying = !D.a.paused && !P.pending;
+    if (PartyHook.h || localPlaying || Date.now() < this.hold || !feat('connect')) { this.leave(); return; }
+    const others = Connect.devs.filter(d => d.id !== Connect.id && d.state && !d.state.remote && d.state.rel_path);
+    let d = others.find(x => x.id === Connect.active && x.state.playing) || others.find(x => x.state.playing);
+    if (!d && this.on) {
+      const cur = others.find(x => x.id === this.dev.id);
+      if (cur && this.srvNow() - (cur.state.at || 0) < 15 * 60) d = cur;
+    }
+    if (d) this.show(d); else this.leave();
+  },
+  show(d) {
+    const s = d.state;
+    let t = L.byRel.get(s.rel_path);
+    if (!t && s.track && s.track.item && s.track.item.src && s.track.item.path === s.rel_path) t = Src.track(s.track.item);
+    if (!t) { this.leave(); return; }                                    // not in the library here (or not loaded yet)
+    this.on = true; this.dev = d;
+    const changed = P.cur !== t.id || !P.pending;
+    P.cur = t.id; P.pending = { id: t.id, t: this.pos() }; P.dur = s.duration || (changed ? 0 : P.dur);
+    if (changed) trackChanged(); else updatePlayButtons();
+    UI.remote(d.name);
+    updateModes(); UI.volume(); UI.progress(true); syncMediaSession();
+    if (!this.tick) this.tick = setInterval(() => this.frame(), 500);
+    this.mirror();
+  },
+  leave() {
+    if (!this.on) return;
+    this.on = false; this.dev = null; this.vol = null;
+    clearInterval(this.tick); this.tick = 0;
+    UI.remote(null);
+    updatePlayButtons(); updateModes(); UI.volume(); UI.progress(true); syncMediaSession();
+    this.mirror();
+    Connect.soon();
+  },
+  frame() {
+    if (!this.on) return;
+    if (P.pending) P.pending.t = this.pos();
+    UI.progress();
+  },
+  // For the Windows app: what plays, when it isn't this page's own <audio> (its preload reads this).
+  mirror() {
+    try {
+      const r = document.documentElement;
+      if (this.on) r.dataset.axRemote = JSON.stringify({ playing: this.playing(), pos: this.pos(), dur: this.st.duration || 0, at: Date.now(), name: this.dev.name });
+      else delete r.dataset.axRemote;
+      document.dispatchEvent(new Event('axdio:remote'));
+    } catch (e) { /* not there */ }
+  },
+  // Ask the device shown to do something; shown here at once, and it says what it really did.
+  async cmd(type, args = {}) {
+    const d = this.dev; if (!d) return;
+    const s = d.state, can = s.can || [];
+    if (can.length && !can.includes(type)) { UI.toast(`${d.name} can't do that`); return; }
+    if (type === 'play' || type === 'pause') { s.currentTime = this.pos(); s.at = this.srvNow(); s.playing = type === 'play'; }
+    else if (type === 'seek') { s.currentTime = args.pos; s.at = this.srvNow(); }
+    else if (type === 'mute') s.muted = !!args.on;
+    else if (type === 'shuffle') s.shuffle = !!args.on;
+    else if (type === 'repeat') s.repeat = args.mode;
+    if (type !== 'volume') { updatePlayButtons(); updateModes(); this.frame(); UI.volume(); syncMediaSession(); this.mirror(); }
+    try { Connect.take(await api('/api/devices/command', { target: d.id, type, from: Connect.id, ...args })); }
+    catch (e) {
+      UI.toast(e.status === 404 ? `${d.name} isn't there anymore` : `Couldn't reach ${d.name}`);
+      if (e.status === 404) { Connect.devs = Connect.devs.filter(x => x.id !== d.id); this.leave(); }
+    }
+  },
+  setVolume(v) {
+    this.vol = clamp(v, 0, 1); this.volUntil = Date.now() + 4000;
+    UI.volume();
+    // At most a few a second while the slider moves, and the last one always.
+    if (this.volT) { this.volNext = this.vol; return; }
+    this.cmd('volume', { volume: this.vol });
+    this.volT = setTimeout(() => { this.volT = 0; if (this.volNext != null) { const n = this.volNext; this.volNext = null; this.setVolume(n); } }, 200);
+  },
+  // Play a list there instead of here.
+  playCtx(ctx, start, opts) {
+    const d = this.dev; if (!d) return false;
+    let ids = ctx.ids, index = start;
+    if (ids.length > 500) { const from = Math.max(0, Math.min(ids.length - 500, (start < 0 ? 0 : start) - 100)); ids = ids.slice(from, from + 500); if (start >= 0) index = start - from; }
+    const tracks = ids.map(id => L.tracks[id]).filter(Boolean);
+    if (!tracks.length) return true;
+    const items = {};
+    for (const t of tracks) if (t.ext && t.item && Object.keys(items).length < 100) items[t.rel] = t.item;
+    const shuffle = opts && opts.shuffle != null ? !!opts.shuffle : !!d.state.shuffle;
+    this.cmd('play_rels', { rels: tracks.map(t => t.rel), index, items, shuffle, ctx: { type: ctx.type, ref: ctx.ref, name: ctx.name, recent: ctx.recent || '' } });
+    if (ctx.recent) touchRecent(ctx.recent);
+    const t = index >= 0 ? L.tracks[ids[index]] : null;
+    if (t) { Object.assign(d.state, { rel_path: t.rel, currentTime: 0, duration: 0, playing: true, at: this.srvNow(), track: { title: t.title, artist: t.artist } }); this.show(d); }
+    return true;
+  },
+};
+// The volume the player shows: this device's, or the one it controls.
+const volNow = () => Remote.on ? Remote.volume() : S.muted ? 0 : S.volume;
+const mutedNow = () => Remote.on ? Remote.muted() || Remote.volume() === 0 : !!S.muted;
 
 /* Share links: /track/<id>, /album/<id>, /artist/<id> open a page with link previews and a player.
    An id is the 64-bit FNV-1a hash of the item's key in base62, the same as server.py's share_id(),
@@ -2741,7 +2959,7 @@ window.AX = {
   SIGNOUT, HOME_CARDS, homeCards, audio, D, P, CTX, SM, makeCtx, setPartyHook, regCtx, curTrack, ctxPlaying, isPlaying, buildOrder, playCtx, playTrackAlone, load, play, pause, togglePlay, shuffleAll, next, prev,
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, applyVolume, stageTrack,
   SL, setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
-  LY, lyMsg, syncLyrics, Connect, share, shareId, trackLink, albumLink, artistLink, setOnline,
+  LY, lyMsg, syncLyrics, Connect, Remote, volNow, mutedNow, curTime, share, shareId, trackLink, albumLink, artistLink, setOnline,
   avatarHtml, libItems, itAlbum, itArtist, itPlaylist, itCollab, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds, itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort,
   boot,
 };

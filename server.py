@@ -25,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.22.1"
+AXDIO_VERSION = "2.23.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -960,78 +960,224 @@ def api_library_warm():
     if isinstance(rels, list): start_cache_want([r for r in rels if isinstance(r, str) and not FED_REMOTE_RE.match(r)][:12])
     return jsonify({"ok": True})
 
-# Device Registry & Connect System
+# --- Connect: see and control what your other devices are playing ---
+# Each player reports what it's playing (POST /api/devices/heartbeat: at once when something changes, and every few
+# seconds) and waits for news with a long poll (GET /api/devices/wait), which answers as soon as one of the account's
+# devices changes or a command for this one arrives. The others show the device that's playing as their own player and
+# control it (POST /api/devices/command): play, pause, skip, seek, volume, or play something else there. An account
+# plays on one device at a time: when one starts, the one that was playing pauses, the way Spotify Connect does.
+# Signed out, the devices on one network are one "account" (connect_owner), but those don't pause each other.
+DEVICE_ALIVE = 15          # seconds a device stays listed after it was last heard from (and while it waits)
+DEVICE_COMMANDS = ("play", "pause", "toggle", "next", "prev", "seek", "volume", "mute", "shuffle", "repeat", "play_rels", "transfer_playback")
+_dev_cv = threading.Condition(device_registry_lock)
+_dev_rev = {}              # owner -> counter of changes to the owner's devices
+_dev_active = {}           # owner -> the device that played last
+
+def _dev_bump(owner):
+    _dev_rev[owner] = _dev_rev.get(owner, 0) + 1
+    _dev_cv.notify_all()
+
+def _dev_alive(d, now):
+    return d.get("waiting", 0) > 0 or now - d["last_seen"] <= DEVICE_ALIVE
+
+def _dev_prune(owner, now):
+    devs = active_devices.get(owner) or {}
+    gone = [i for i, d in devs.items() if not _dev_alive(d, now)]
+    for i in gone:
+        devs.pop(i, None); device_command_queues.pop(i, None)
+        if _dev_active.get(owner) == i: _dev_active.pop(owner, None)
+    if gone: _dev_bump(owner)
+    return devs
+
+def _dev_pos(st, now):
+    """Where a device's song is now, from what it last said and when."""
+    pos = st.get("currentTime") or 0
+    if st.get("playing"): pos += max(0.0, now - (st.get("at") or now))
+    dur = st.get("duration") or 0
+    return min(pos, dur) if dur else pos
+
+def _dev_num(v, lo, hi, default=0.0):
+    try: v = float(v)
+    except (TypeError, ValueError): return default
+    return min(hi, max(lo, v)) if v == v else default
+
+def _dev_state(raw, now):
+    raw = raw if isinstance(raw, dict) else {}
+    st = {"playing": bool(raw.get("playing")), "rel_path": str(raw.get("rel_path") or "")[:1000],
+          "currentTime": _dev_num(raw.get("currentTime"), 0, 86400), "duration": _dev_num(raw.get("duration"), 0, 86400),
+          "volume": _dev_num(raw.get("volume"), 0, 1, 1.0), "muted": bool(raw.get("muted")), "shuffle": bool(raw.get("shuffle")),
+          "repeat": int(_dev_num(raw.get("repeat"), 0, 2)), "remote": bool(raw.get("remote")), "at": now,
+          "can": [c for c in raw.get("can") or [] if c in DEVICE_COMMANDS] if isinstance(raw.get("can"), list) else []}
+    tr = raw.get("track")
+    if isinstance(tr, dict):
+        tr = {k: v for k, v in tr.items() if k in ("title", "artist", "album", "cover", "item")}
+        if len(json.dumps(tr, default=str)) <= 6000: st["track"] = tr
+    if not st["rel_path"]: st["playing"] = False
+    return st
+
+def _dev_changed(old, new):
+    if not old: return True
+    if any(old.get(k) != new.get(k) for k in ("playing", "rel_path", "volume", "muted", "shuffle", "repeat", "remote", "duration")): return True
+    return abs(_dev_pos(old, new["at"]) - new["currentTime"]) > 2.5         # a seek (playing drifts a little)
+
+def _dev_view(owner, me, now, commands=None):
+    devs = _dev_prune(owner, now)
+    out = [{"id": d["id"], "name": d["name"], "kind": d.get("kind") or "", "is_active": now - d["last_seen"] <= 6 or d.get("waiting", 0) > 0,
+            "me": d["id"] == me, "state": d.get("state", {})} for d in devs.values()]
+    out.sort(key=lambda d: (not d["me"], d["name"].lower()))
+    res = {"success": True, "rev": _dev_rev.get(owner, 0), "now": now, "active": _dev_active.get(owner) or "", "devices": out}
+    if commands is not None:
+        res["commands"] = commands
+        res["command"] = commands[0] if commands else None             # players from before 2.23 read one command
+    return res
+
+def _dev_meta(st):
+    """A device's song as note_presence takes it (what a source's song is called, which the server doesn't know)."""
+    tr = st.get("track") or {}
+    item = tr.get("item") if isinstance(tr.get("item"), dict) else {}
+    if not tr.get("title"): return None
+    cover = str(item.get("cover") or tr.get("cover") or "")
+    return {"title": str(tr["title"])[:200], "artist": str(tr.get("artist") or "")[:200], "album": str(tr.get("album") or "")[:200],
+            "cover": cover if cover.startswith("https://") else "", "duration": st.get("duration") or 0}
+
+def _dev_take(did):
+    return device_command_queues.pop(did, []) if did else []
+
+def _dev_queue(owner, did, cmd):
+    q = device_command_queues.setdefault(did, [])
+    if cmd["type"] in ("seek", "volume", "mute"): q[:] = [c for c in q if c["type"] != cmd["type"]]   # only the last one counts
+    q.append(cmd)
+    del q[:-20]
+    _dev_bump(owner)
+
+def _dev_started(owner, did, now):
+    """This device just started playing: it's the one that plays now, and (for an account) the one before it pauses."""
+    _dev_active[owner] = did
+    if owner.startswith("guest@"): return
+    for oid, o in (active_devices.get(owner) or {}).items():
+        st = o.get("state") or {}
+        if oid != did and st.get("playing") and not st.get("remote"):
+            st.update(currentTime=_dev_pos(st, now), playing=False, at=now)
+            o["held"] = now
+            _dev_queue(owner, oid, {"type": "pause", "from": did, "why": "elsewhere", "at": now})
+
 @app.route("/api/devices/heartbeat", methods=["POST"])
 def api_devices_heartbeat():
     user = connect_owner()
-    data = request.json or {}
-    device_id = data.get("device_id")
-    device_name = data.get("device_name", "Web Player")
-    state = data.get("state", {})
-
+    data = request.get_json(silent=True) or {}
+    device_id = str(data.get("device_id") or "")[:64]
     if not device_id:
         return jsonify({"error": "Missing device_id"}), 400
-
     now = time.time()
-    with device_registry_lock:
-        active_devices.setdefault(user, {})[device_id] = {
-            "id": device_id,
-            "name": device_name,
-            "last_seen": now,
-            "state": state
-        }
-        pending_cmd = device_command_queues.get(device_id)
-        if pending_cmd:
-            del device_command_queues[device_id]
+    with _dev_cv:
+        devs = active_devices.setdefault(user, {})
+        d = devs.get(device_id)
+        st = _dev_state(data.get("state"), now)
+        name, kind = str(data.get("device_name") or "Web Player")[:60], str(data.get("kind") or "")[:20]
+        if not d:
+            d = devs[device_id] = {"id": device_id, "name": name, "kind": kind, "last_seen": now, "state": {}, "waiting": 0}
+        old = d.get("state") or {}
+        if device_command_queues.get(device_id) or (st["playing"] and not old.get("playing") and now - d.get("held", 0) < 4):
+            # Said before it got the commands waiting for it (or the pause it was just sent): what it'll do once it
+            # has them is what the others see until then.
+            st = old or st
+        changed = _dev_changed(old, st) or d["name"] != name
+        d.update(name=name, kind=kind or d.get("kind", ""), last_seen=now, state=st)
+        if st["playing"] and not old.get("playing"): _dev_started(user, device_id, now)
+        if changed: _dev_bump(user)
+        res = _dev_view(user, device_id, now, _dev_take(device_id))
+        playing_here = st["playing"] or _dev_active.get(user) == device_id
+    if not user.startswith("guest@"):
+        # What the account is playing (for friends and Discord): only from the device that's playing it.
+        if playing_here and not st["remote"]: note_presence(user, st["rel_path"], st["playing"], st["currentTime"], _dev_meta(st))
+        res["sv"] = social_version(user)
+    return jsonify(res)
 
-    if not user.startswith("guest@") and isinstance(state, dict):
-        note_presence(user, state.get("rel_path"), state.get("playing"), state.get("currentTime"))
-        return jsonify({"success": True, "command": pending_cmd, "sv": social_version(user)})
-    return jsonify({"success": True, "command": pending_cmd})
+@app.route("/api/devices/wait")
+def api_devices_wait():
+    """Long poll: answers as soon as one of the account's devices changes, or a command for this one arrives (or
+    after 25 s). While a device waits, it counts as there."""
+    user = connect_owner()
+    did = str(request.args.get("device_id") or "")[:64]
+    since = request.args.get("rev", type=int, default=-1)
+    deadline = time.time() + 25
+    with _dev_cv:
+        d = (active_devices.get(user) or {}).get(did)
+        if d: d["waiting"] = d.get("waiting", 0) + 1
+        try:
+            while _dev_rev.get(user, 0) == since and not device_command_queues.get(did) and time.time() < deadline:
+                _dev_cv.wait(timeout=min(10, max(0.05, deadline - time.time())))
+                _dev_prune(user, time.time())
+        finally:
+            if d:
+                d["waiting"] = max(0, d.get("waiting", 1) - 1)
+                d["last_seen"] = time.time()
+        now = time.time()
+        mine = d is not None and (active_devices.get(user) or {}).get(did) is d
+        return jsonify(_dev_view(user, did, now, _dev_take(did) if mine else []))
 
 @app.route("/api/devices/list", methods=["GET"])
 def api_devices_list():
     user = connect_owner()
+    with _dev_cv:
+        return jsonify(_dev_view(user, str(request.args.get("device_id") or ""), time.time()))
+
+@app.route("/api/devices/command", methods=["POST"])
+def api_devices_command():
+    """Control another device: {"target": id, "type": "play" | "pause" | "toggle" | "next" | "prev" | "seek" (pos) |
+    "volume" (volume) | "mute" (on) | "shuffle" (on) | "repeat" (mode) | "play_rels" (rels, index, items, ctx, shuffle)}."""
+    user = connect_owner()
+    data = request.get_json(silent=True) or {}
+    target, kind = str(data.get("target") or ""), str(data.get("type") or "")
+    if kind not in DEVICE_COMMANDS or kind == "transfer_playback":
+        return jsonify({"error": "Unknown command"}), 400
     now = time.time()
-    devices_out = []
-
-    with device_registry_lock:
-        user_devs = active_devices.get(user, {})
-        for d_id, d in list(user_devs.items()):
-            if now - d["last_seen"] <= 12:
-                devices_out.append({
-                    "id": d["id"],
-                    "name": d["name"],
-                    "is_active": (now - d["last_seen"] <= 6),
-                    "state": d.get("state", {})
-                })
-            else:
-                del user_devs[d_id]
-
-    return jsonify({"devices": devices_out})
+    cmd = {"type": kind, "from": str(data.get("from") or "")[:64], "at": now}
+    if kind == "seek": cmd["pos"] = _dev_num(data.get("pos"), 0, 86400)
+    if kind == "volume": cmd["volume"] = _dev_num(data.get("volume"), 0, 1, 1.0)
+    if kind in ("mute", "shuffle"): cmd["on"] = bool(data.get("on"))
+    if kind == "repeat": cmd["mode"] = int(_dev_num(data.get("mode"), 0, 2))
+    if kind == "play_rels":
+        rels = [str(r)[:1000] for r in (data.get("rels") or []) if isinstance(r, str)][:500]
+        if not rels: return jsonify({"error": "Nothing to play"}), 400
+        items = data.get("items") if isinstance(data.get("items"), dict) else {}
+        items = {k: v for k, v in list(items.items())[:100] if k in rels and isinstance(v, dict)}
+        if len(json.dumps(items, default=str)) > 200000: items = {}
+        ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
+        cmd.update(rels=rels, index=int(_dev_num(data.get("index"), -1, len(rels) - 1, -1)), items=items, shuffle=bool(data.get("shuffle")),
+                   ctx={k: str(ctx.get(k) or "")[:300] for k in ("type", "ref", "name", "recent")})
+    with _dev_cv:
+        devs = _dev_prune(user, now)
+        d = devs.get(target)
+        if not d: return jsonify({"success": False, "error": "That device isn't there anymore"}), 404
+        st = d.setdefault("state", {})
+        # What it'll do, shown at once (it says what it really did when it does it).
+        if st:
+            pos = _dev_pos(st, now)
+            if kind == "pause": st.update(currentTime=pos, playing=False, at=now)
+            elif kind in ("play", "toggle") and st.get("rel_path"): st.update(currentTime=pos, playing=kind == "play" or not st.get("playing"), at=now)
+            elif kind == "seek": st.update(currentTime=cmd["pos"], at=now)
+            elif kind == "volume": st.update(volume=cmd["volume"], muted=False)
+            elif kind == "mute": st["muted"] = cmd["on"]
+            elif kind == "shuffle": st["shuffle"] = cmd["on"]
+            elif kind == "repeat": st["repeat"] = cmd["mode"]
+        if kind in ("play", "play_rels") or (kind == "toggle" and st.get("playing")): _dev_started(user, target, now)
+        _dev_queue(user, target, cmd)
+        return jsonify(_dev_view(user, cmd["from"], now))
 
 @app.route("/api/devices/transfer", methods=["POST"])
 def api_devices_transfer():
     user = connect_owner()
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     target_id = data.get("target_device_id")
-    playback = data.get("playback", {})
-
+    playback = data.get("playback") if isinstance(data.get("playback"), dict) else {}
     if not target_id:
         return jsonify({"error": "Missing target_device_id"}), 400
-
-    with device_registry_lock:
-        user_devs = active_devices.get(user, {})
-        target = user_devs.get(target_id)
-        if not target or (time.time() - target["last_seen"] > 12):
+    now = time.time()
+    with _dev_cv:
+        if target_id not in _dev_prune(user, now):
             return jsonify({"success": False, "error": "Device is unreachable"}), 404
-
-        device_command_queues[target_id] = {
-            "type": "transfer_playback",
-            "playback": playback,
-            "timestamp": time.time()
-        }
-
+        _dev_queue(user, target_id, {"type": "transfer_playback", "playback": playback, "timestamp": now, "at": now})
     return jsonify({"success": True})
 
 # User Auth & Profile Settings Endpoints
@@ -7418,11 +7564,17 @@ def social_on(): return cfg().get("feature_social", True)
 def chat_on(): return social_on() and cfg().get("feature_chat", True)
 def collab_on(): return social_on() and cfg().get("feature_collab", True)
 
-def note_presence(user, rel, playing, pos=None):
+def note_presence(user, rel, playing, pos=None, meta=None):
+    """What an account plays now. meta (title, artist, album, cover, duration) comes from the player, for songs the
+    server has no tags of: a source's (External)."""
     if not user or user.startswith("guest@"): return
-    rel = rel or (_presence.get(user) or {}).get("rel")
+    prev = _presence.get(user) or {}
+    rel = rel or prev.get("rel")
     if rel:
-        _presence[user] = {"rel": rel, "t": time.time(), "playing": bool(playing), "pos": float(pos) if isinstance(pos, (int, float)) and 0 <= pos < 86400 else 0.0}
+        p = {"rel": rel, "t": time.time(), "playing": bool(playing), "pos": float(pos) if isinstance(pos, (int, float)) and 0 <= pos < 86400 else 0.0}
+        if isinstance(meta, dict) and meta.get("title"): p["meta"] = meta
+        elif prev.get("rel") == rel and prev.get("meta"): p["meta"] = prev["meta"]
+        _presence[user] = p
 
 def _iso_ts(v):
     try: return datetime.fromisoformat(str(v)).timestamp()
@@ -9562,6 +9714,8 @@ def user_presence():
     with users_lock: p = users_data[u].get("presence") or {}
     return jsonify({"available": discord_presence_ready(), "enabled": bool(p), "created": p.get("created"), "seen": _presence_polls.get(u, 0)})
 
+_presence_shared = {}   # username -> the External song whose share link its Discord status shows
+
 @app.route("/api/presence")
 def presence_feed():
     """What the listener is playing, shaped as a Discord activity, for their helper."""
@@ -9577,17 +9731,31 @@ def presence_feed():
     if not discord_presence_ready(): return jsonify({"app_id": None, "activity": None, "message": "Discord status is turned off on this server."})
     p = _presence.get(u)
     if not p or not p.get("playing") or time.time() - p["t"] > 45: return jsonify({"app_id": c["discord_client_id"], "activity": None, "poll": 5})
-    if not library_entry(p["rel"]): return jsonify({"app_id": c["discord_client_id"], "activity": None, "poll": 5})
-    meta = _track_meta(p["rel"])
-    meta["title"] = sanitize_title_and_extract_num(meta["title"], p["rel"])[0]
-    meta["duration"] = meta["duration"] or 0
     base, site = (c.get("public_url") or base_url()).rstrip("/"), str(c.get("site_title") or "Axdio")
+    src, item = source_of(p["rel"])
+    if src:
+        # A source's song (External): what the player said it is.
+        meta = dict(p.get("meta") or {})
+        if not meta.get("title"): return jsonify({"app_id": c["discord_client_id"], "activity": None, "poll": 5})
+        meta.update(artist=meta.get("artist") or "", album=meta.get("album") or "", duration=meta.get("duration") or 0)
+    else:
+        if not library_entry(p["rel"]): return jsonify({"app_id": c["discord_client_id"], "activity": None, "poll": 5})
+        meta = _track_meta(p["rel"])
+        meta["title"] = sanitize_title_and_extract_num(meta["title"], p["rel"])[0]
+        meta["duration"] = meta["duration"] or 0
     start = int(p["t"] - (p.get("pos") or 0))
     act = {"type": 2, "status_display_type": 2, "details": meta["title"][:128], "state": meta["artist"][:128] or "Unknown artist",
            "timestamps": {"start": start, **({"end": int(start + meta["duration"])} if meta["duration"] else {})},
            "assets": {"large_text": (meta["album"] or meta["title"])[:128]}}
     shareable = c.get("feature_sharing", True) and not FED_REMOTE_RE.match(p["rel"]) and (not c.get("require_login") or c.get("share_previews", True))
-    if shareable:
+    if src:
+        if meta.get("cover"): act["assets"]["large_image"] = meta["cover"]
+        if shareable and SOURCE_ITEM_RE.fullmatch(item or "") and source_shareable(src):
+            if _presence_shared.get(u) != p["rel"]:
+                ext_remember([("track", src["id"], item)], u)          # its link works for whoever clicks it
+                _presence_shared[u] = p["rel"]
+            act["buttons"] = [{"label": f"Listen on {site}"[:32], "url": base + ext_link("track", src["id"], item)}]
+    elif shareable:
         sid = share_id("t", p["rel"])
         act["assets"]["large_image"] = f"{base}/track/{sid}/cover.jpg"
         act["buttons"] = [{"label": f"Listen on {site}"[:32], "url": f"{base}/track/{sid}"}]

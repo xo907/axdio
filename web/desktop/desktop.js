@@ -21,7 +21,7 @@ const {
   Off, dlBadge, updateDlButton, toggleCtxDownload, EQ_BANDS, EQ_PRESETS, eqLabel, setBoost, toggleNormalize, toggleEq, setEqPreset, setEqBand,
   audio, D, P, CTX, makeCtx, regCtx, curTrack, ctxPlaying, isPlaying, playCtx, playTrackAlone, play, togglePlay, shuffleAll, next, prev,
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, stageTrack,
-  SL, setSleep, sleepLabel, trackChanged, LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink,
+  SL, setSleep, sleepLabel, trackChanged, LY, lyMsg, syncLyrics, Connect, Remote, volNow, mutedNow, share, trackLink, albumLink, artistLink,
   avatarHtml, libItems, itAlbum, itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds, itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort,
   Src, isLiked, relYear, relDate, DESKTOP, WINDOWS_APP_URL,
 } = window.AX;
@@ -1015,7 +1015,6 @@ function onPlayState(playing) {
   $$('.tr.playing .c-play').forEach(b => { b.innerHTML = playIcon(playing); });
   $$('.tr:not(.playing) .c-play').forEach(b => { if (b.querySelector('use').getAttribute('href') !== '#i-play') b.innerHTML = ic('play'); });
   byId('pb-play').dataset.tip = playing ? 'Pause' : 'Play';
-  if (playing) document.body.classList.remove('remote');
   renderPip();
 }
 function onProgress(force) {
@@ -1042,25 +1041,30 @@ bindRange(pb.range); bindRange(byId('fs-range'));
 // The player bar and the full-screen view each have a volume rocker; both mirror S.volume.
 const vols = [[pb.vol, pb.mute, byId('vol-wrap')], [byId('fs-vol'), byId('fs-mute'), byId('fs-vol-wrap')]];
 function onVolume() {
-  const v = S.muted ? 0 : S.volume;
+  const v = volNow(), muted = mutedNow();
   vols.forEach(([r, m]) => {
     r.value = Math.round(v * 100); r.style.setProperty('--pct', v * 100 + '%');
     setUse(m, v === 0 ? 'vol-0' : v < .34 ? 'vol-1' : v < .67 ? 'vol-2' : 'volume');
-    m.setAttribute('aria-label', S.muted ? 'Unmute' : 'Mute');
+    m.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
   });
-  pb.mute.dataset.tip = S.muted ? 'Unmute' : 'Mute';
+  pb.mute.dataset.tip = muted ? 'Unmute' : 'Mute';
   byId('fs-vol-pct').textContent = Math.round(v * 100);
 }
-const nudgeVolume = d => setVolume((S.muted ? 0 : S.volume) + d);
+const nudgeVolume = d => setVolume(volNow() + d);
 vols.forEach(([r, , wrap]) => {
   r.addEventListener('input', () => setVolume(r.value / 100));
   wrap.addEventListener('wheel', e => { e.preventDefault(); nudgeVolume(e.deltaY < 0 ? .05 : -.05); }, { passive: false });
 });
+// Showing (and controlling) what another device plays, or (name null) not anymore.
 function onRemote(name) {
-  document.body.classList.add('remote');
-  byId('remote-strip').innerHTML = `${ic('devices', 'sm')}Playing on ${esc(name)}`;
-  pb.a.textContent = `Playing on ${name}`; pb.a.classList.add('remote');
+  document.body.classList.toggle('remote', !!name);
+  byId('remote-strip').innerHTML = name ? `${ic('devices', 'sm')}Playing on ${esc(name)}` : '';
+  const t = curTrack();
+  if (name) { pb.a.textContent = `Playing on ${name}`; pb.a.classList.add('remote'); }
+  else if (t) { pb.a.innerHTML = credits(t); pb.a.classList.remove('remote'); }
+  renderPip();
 }
+const devIcon = d => (d && /^(desktop|windows)$/.test(d.kind)) || (d && !d.kind && /desktop|pc|mac|win|linux/i.test(d.name)) ? 'pc' : 'phone';
 function onQueue() { if (RP.mode) renderPanel(); }
 function onLyrics() {
   if (V.route && V.route.view === 'lyrics') VIEWS.lyrics(view);
@@ -2371,11 +2375,15 @@ const ACT = {
   credits: () => { const t = curTrack(); if (t) creditsDialog(t); },
   devices: async b => {
     const devs = await Connect.list();
-    const others = (devs || []).filter(d => d.id !== Connect.id);
-    menuAt(b, [{ head: 'Current device' }, { label: Connect.name, icon: 'pc', on: true }, { sep: true }, { head: 'Select another device' },
+    const rd = Remote.on ? Remote.dev : null;
+    const others = (devs || []).filter(d => d.id !== Connect.id && (!rd || d.id !== rd.id));
+    const note = d => d.state && d.state.playing ? 'Playing' : d.state && d.state.remote ? 'Remote' : d.is_active ? 'Available' : 'Idle';
+    menuAt(b, [{ head: rd ? 'Playing on' : 'Current device' }, rd ? { label: rd.name, icon: devIcon(rd), on: true, note: rd.state.playing ? 'Playing' : 'Paused' } : { label: Connect.name, icon: 'pc', on: true },
+      { sep: true }, { head: 'Select another device' },
+      ...(rd ? [{ label: 'This computer', icon: 'pc', note: Connect.name, act: () => Connect.pull() }] : []),
       ...(devs === null ? [{ label: "Couldn't reach the server", icon: 'cloud-off', disabled: true }]
-        : others.length ? others.map(d => ({ label: d.name, icon: /desktop|pc|mac|win|linux/i.test(d.name) ? 'pc' : 'phone', note: d.state && d.state.playing ? 'Playing' : d.is_active ? 'Available' : 'Idle', act: () => Connect.transfer(d.id, d.name) }))
-        : [{ label: 'No other devices found', icon: 'phone', disabled: true }]),
+        : others.length ? others.map(d => ({ label: d.name, icon: devIcon(d), note: note(d), act: () => Connect.transfer(d.id, d.name) }))
+        : rd ? [] : [{ label: 'No other devices found', icon: 'phone', disabled: true }]),
       { sep: true }, { label: 'Rename this device', icon: 'edit', act: ACT['rename-device'] }]);
   },
   mute: toggleMute,
@@ -2477,8 +2485,8 @@ document.addEventListener('keydown', e => {
   if (e.key === ' ' && !e.target.closest('button')) { e.preventDefault(); togglePlay(); }
   else if (mod && e.key === 'ArrowRight') { e.preventDefault(); next(); }
   else if (mod && e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
-  else if (mod && e.key === 'ArrowUp') { e.preventDefault(); setVolume((S.muted ? 0 : S.volume) + .1); }
-  else if (mod && e.key === 'ArrowDown') { e.preventDefault(); setVolume((S.muted ? 0 : S.volume) - .1); }
+  else if (mod && e.key === 'ArrowUp') { e.preventDefault(); setVolume(volNow() + .1); }
+  else if (mod && e.key === 'ArrowDown') { e.preventDefault(); setVolume(volNow() - .1); }
   else if (e.altKey && e.shiftKey && e.code === 'KeyB') { e.preventDefault(); const t = curTrack(); if (t) toggleLike(t); }
   else if (e.altKey && e.code === 'KeyS') { e.preventDefault(); setShuffle(!P.shuffle); }
   else if (e.altKey && e.code === 'KeyR') { e.preventDefault(); cycleRepeat(); }

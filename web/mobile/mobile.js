@@ -29,7 +29,7 @@ const {
   prev, setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove,
   queueMove, queueClear, seek, setVolume, toggleMute, applyVolume, stageTrack, SL,
   setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
-  LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink, setOnline, avatarHtml, itAlbum,
+  LY, lyMsg, syncLyrics, Connect, Remote, volNow, share, trackLink, albumLink, artistLink, setOnline, avatarHtml, itAlbum,
   itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds,
   itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort, Src, isLiked, relYear, relDate,
 } = window.AX;
@@ -1654,9 +1654,11 @@ function boostSheet() {
   });
 }
 async function devicesSheet() {
-  const sh = openSheet(`<div class="dev-hero">${ic('phone')}<div><small>Current device</small><b>${esc(Connect.name)}</b></div></div><div class="sheet-title" style="text-align:left;padding-bottom:4px">Select a device</div><div class="sheet-body" id="dev-list"><div class="list-foot">Looking for devices…</div></div>`, {
+  const rd = Remote.on ? Remote.dev : null;
+  const hero = rd ? `${ic(devIcon(rd))}<div><small>Playing on</small><b>${esc(rd.name)}</b></div>` : `${ic('phone')}<div><small>Current device</small><b>${esc(Connect.name)}</b></div>`;
+  const sh = openSheet(`<div class="dev-hero">${hero}</div><div class="sheet-title" style="text-align:left;padding-bottom:4px">Select a device</div><div class="sheet-body" id="dev-list"><div class="list-foot">Looking for devices…</div></div>`, {
     dev: async (b, close) => {
-      if (b.dataset.me) { toast('Already playing on this device'); return; }
+      if (b.dataset.here) { Connect.pull(); close(); return; }
       b.classList.add('busy');
       if (await Connect.transfer(b.dataset.id, b.dataset.name)) close(); else b.classList.remove('busy');
     },
@@ -1664,9 +1666,11 @@ async function devicesSheet() {
   const box = sh.el.querySelector('#dev-list');
   const devs = await Connect.list();
   if (!devs) { box.innerHTML = '<div class="list-foot">Couldn’t reach the server.</div>'; return; }
-  const others = devs.filter(d => d.id !== Connect.id);
-  box.innerHTML = others.length ? others.map(d => `<div class="dev" data-sa="dev" data-id="${esc(d.id)}" data-name="${esc(d.name)}">${ic(/desktop|pc|mac|win|linux/i.test(d.name) ? 'pc' : 'phone')}<div class="meta"><div class="t">${esc(d.name)}</div><div class="s">${d.state && d.state.playing ? 'Playing' : d.is_active ? 'Available' : 'Idle'}${d.state && d.state.rel_path && L.byRel.get(d.state.rel_path) ? ' • ' + esc(L.byRel.get(d.state.rel_path).title) : ''}</div></div></div>`).join('')
-    : `<div class="list-foot">No other devices found. Open ${esc(SITE.site_title || 'the player')} on another phone or computer${U.token ? ' signed in to the same account' : ''}.</div>`;
+  const others = devs.filter(d => d.id !== Connect.id && (!rd || d.id !== rd.id));
+  const what = d => { const st = d.state || {}, t = st.rel_path && L.byRel.get(st.rel_path), title = t ? t.title : st.track && st.track.title; return (st.playing ? 'Playing' : st.remote ? 'Controlling another device' : d.is_active ? 'Available' : 'Idle') + (st.playing && title ? ' • ' + esc(title) : ''); };
+  box.innerHTML = (rd ? `<div class="dev" data-sa="dev" data-here="1">${ic('phone')}<div class="meta"><div class="t">This phone</div><div class="s">Play here instead</div></div></div>` : '')
+    + (others.length ? others.map(d => `<div class="dev" data-sa="dev" data-id="${esc(d.id)}" data-name="${esc(d.name)}">${ic(devIcon(d))}<div class="meta"><div class="t">${esc(d.name)}</div><div class="s">${what(d)}</div></div></div>`).join('')
+      : rd ? '' : `<div class="list-foot">No other devices found. Open ${esc(SITE.site_title || 'the player')} on another phone or computer${U.token ? ' signed in to the same account' : ''}.</div>`);
 }
 function editProfileSheet() {
   const photos = feat('avatars');
@@ -1900,10 +1904,21 @@ function onTrackChange(t) {
   themePlayer();
   if (overlay.player) { requestAnimationFrame(fitTitle); renderCards(); }
 }
+// Showing (and controlling) what another device plays, or (name null) not anymore.
 function showRemote(name) {
+  document.body.classList.toggle('remote', !!name);
+  if (!name) { const t = curTrack(); el.miniS.textContent = t ? t.artist : ''; el.miniS.classList.remove('remote'); el.fpDev.innerHTML = ''; return; }
   el.miniS.textContent = `Playing on ${name}`; el.miniS.classList.add('remote');
-  el.fpDev.innerHTML = `${ic('pc', 'sm')}<span class="ell">Playing on ${esc(name)}</span>`;
+  const t = curTrack();
+  el.fpFromK.textContent = 'Now playing'; el.fpFromN.textContent = t ? albumOf(t).title : '';
+  el.fpDev.innerHTML = `${ic(devIcon(Remote.dev), 'sm')}<span class="ell">Playing on ${esc(name)}</span>`;
 }
+const devIcon = d => (d && /^(desktop|windows)$/.test(d.kind)) || (d && !d.kind && /desktop|pc|mac|win|linux/i.test(d.name)) ? 'pc' : 'phone';
+function showVolume() {
+  const r = byId('fp-rvol-r'), v = volNow();
+  if (r && !r.matches(':active')) { r.value = Math.round(v * 100); r.style.setProperty('--pct', v * 100 + '%'); }
+}
+byId('fp-rvol-r').addEventListener('input', e => { const v = e.target.value / 100; e.target.style.setProperty('--pct', v * 100 + '%'); setVolume(v); });
 let lastSec = -1, scrubbing = false;
 function updateProgress(force) {
   const dur = (P.pending ? P.dur : audio.duration) || P.dur || 0;
@@ -2405,7 +2420,7 @@ Object.assign(UI, {
   party(v) { document.querySelectorAll('[data-act="party"]').forEach(b => b.classList.toggle('on', !!v)); },
   openParty() { if (!(curPage() && curPage().view === 'party')) afterLayers(() => openPage('party')); },
   track: onTrackChange, queue: refreshQueue, progress: updateProgress, lyrics: renderLyrics, lyricLine,
-  remote: showRemote, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, pickPlaylist: playlistPicker, social: onSocial,
+  remote: showRemote, volume: showVolume, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, pickPlaylist: playlistPicker, social: onSocial,
 });
 Object.assign(window.AX, { H, T, openPage, toast });   // debug handles
 boot().catch(err => {

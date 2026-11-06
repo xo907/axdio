@@ -760,6 +760,7 @@ class TestDiscordStatus(Social):
         finally:
             self.settings(discord_client_id="", public_url="")
 
+    @unittest.skipIf(os.name == "nt", "on Windows the helper installs itself in the real profile and registry")
     def test_helper_sets_itself_up(self):
         """Opened once, the helper installs itself, runs in the background, starts at sign-in, and can be removed."""
         import socket
@@ -2194,6 +2195,105 @@ class TestAchievements(Social):
         self.assertEqual(server.xp_level(60)[0], 2)
         self.assertEqual(server.xp_level(59)[0], 1)
         self.assertEqual(server.xp_level(1620)[0], 10)
+
+
+class TestConnect(Social):
+    """Connect: devices see what the others play, control them, and an account plays on one device at a time."""
+    def beat(self, h, dev, **state):
+        return self.c.post("/api/devices/heartbeat", json={"device_id": dev, "device_name": dev.title(), "kind": "desktop", "state": state}, headers=h).get_json()
+
+    def test_remote_control(self):
+        h = self.user("cass")
+        rel = self.rel("Opening")
+        self.beat(h, "phone", playing=True, rel_path=rel, currentTime=10, duration=12, volume=.5)
+        v = self.beat(h, "laptop")
+        phone = next(d for d in v["devices"] if d["id"] == "phone")
+        self.assertEqual((phone["state"]["playing"], phone["state"]["rel_path"], v["active"]), (True, rel, "phone"))
+        self.assertEqual([d["me"] for d in v["devices"]], [True, False])         # this device first
+        # The laptop waits for news: a command for the phone wakes it (and the phone) at once.
+        rev = v["rev"]
+        got = {}
+        def wait(name, dev):
+            got[name] = self.c.get(f"/api/devices/wait?device_id={dev}&rev={rev}", headers=h).get_json()
+        ts = [threading.Thread(target=wait, args=("laptop", "laptop")), threading.Thread(target=wait, args=("phone", "phone"))]
+        for t in ts: t.start()
+        time.sleep(.3)
+        t0 = time.time()
+        r = self.c.post("/api/devices/command", json={"target": "phone", "type": "pause", "from": "laptop"}, headers=h).get_json()
+        for t in ts: t.join(10)
+        self.assertLess(time.time() - t0, 5)
+        self.assertFalse(next(d for d in r["devices"] if d["id"] == "phone")["state"]["playing"])      # shown paused at once
+        self.assertEqual([c["type"] for c in got["phone"]["commands"]], ["pause"])
+        self.assertEqual(got["laptop"]["commands"], [])
+        # Only the last volume waiting counts; and an unknown command or device is refused.
+        for vol in (.2, .3, .9): self.c.post("/api/devices/command", json={"target": "phone", "type": "volume", "volume": vol}, headers=h)
+        cmds = self.beat(h, "phone", playing=False, rel_path=rel, currentTime=10)["commands"]
+        self.assertEqual([(c["type"], c["volume"]) for c in cmds], [("volume", .9)])
+        self.assertEqual(self.c.post("/api/devices/command", json={"target": "phone", "type": "format"}, headers=h).status_code, 400)
+        self.assertEqual(self.c.post("/api/devices/command", json={"target": "nope", "type": "play"}, headers=h).status_code, 404)
+        # Play something else there: the list, where to start and how, for the device to play.
+        self.c.post("/api/devices/command", json={"target": "phone", "type": "play_rels", "rels": [rel, 5, "x"], "index": 0, "shuffle": True,
+                                                  "ctx": {"type": "album", "ref": "k", "name": "First Album"}}, headers=h)
+        c = self.beat(h, "phone", rel_path=rel)["commands"][0]
+        self.assertEqual((c["type"], c["rels"], c["index"], c["shuffle"], c["ctx"]["name"]), ("play_rels", [rel, "x"], 0, True, "First Album"))
+        # Another account doesn't see (or control) these devices.
+        other = self.user("dax")
+        self.assertEqual(self.beat(other, "tablet")["devices"][0]["id"], "tablet")
+        self.assertEqual(self.c.post("/api/devices/command", json={"target": "phone", "type": "play"}, headers=other).status_code, 404)
+
+    def test_one_device_plays_at_a_time(self):
+        h = self.user("eli")
+        rel = self.rel("Opening")
+        self.beat(h, "phone", playing=True, rel_path=rel, currentTime=3)
+        v = self.beat(h, "laptop", playing=True, rel_path=rel, currentTime=0)
+        self.assertEqual(v["active"], "laptop")
+        cmds = self.beat(h, "phone", playing=True, rel_path=rel, currentTime=4)["commands"]   # said before it heard
+        self.assertEqual([(c["type"], c["why"]) for c in cmds], [("pause", "elsewhere")])
+        v = self.beat(h, "laptop", playing=True, rel_path=rel, currentTime=1)
+        self.assertEqual((v["active"], next(d for d in v["devices"] if d["id"] == "phone")["state"]["playing"]), ("laptop", False))
+        self.assertEqual(self.beat(h, "laptop", playing=True, rel_path=rel, currentTime=2)["commands"], [])   # the laptop isn't paused back
+        # Signed out, devices on one network see each other but don't pause each other.
+        g = server.app.test_client()
+        g.post("/api/devices/heartbeat", json={"device_id": "g1", "state": {"playing": True, "rel_path": rel}})
+        g.post("/api/devices/heartbeat", json={"device_id": "g2", "state": {"playing": True, "rel_path": rel}})
+        d = g.post("/api/devices/heartbeat", json={"device_id": "g1", "state": {"playing": True, "rel_path": rel}}).get_json()
+        self.assertEqual((d["commands"], sorted(x["id"] for x in d["devices"])), ([], ["g1", "g2"]))
+
+    def test_devices_go_away(self):
+        h = self.user("fay")
+        self.beat(h, "old")
+        server.active_devices["fay"]["old"]["last_seen"] -= server.DEVICE_ALIVE + 1
+        self.assertEqual([d["id"] for d in self.beat(h, "new")["devices"]], ["new"])
+
+    def test_discord_status_from_the_playing_device(self):
+        """Discord status shows what the device that's playing plays: an idle player that's open somewhere else
+        doesn't clear it, and External songs show too (what they are comes from the player)."""
+        self.settings(discord_client_id="123456789012345678", discord_presence=True, library_source_far=True)
+        server.LIBRARY_SOURCES["far"] = {"pid": "x", "id": "far", "name": "Far Away", "search": None, "stream": None}
+        try:
+            h = self.user("gus")
+            key = self.c.post("/api/user/presence", headers=h).get_json()["key"]
+            feed = lambda: self.c.get("/api/presence", headers={"Authorization": "Bearer " + key}).get_json()["activity"]
+            rel = self.rel("Opening")
+            self.beat(h, "phone", playing=True, rel_path=rel, currentTime=2, duration=12)
+            self.assertEqual(feed()["details"], "Opening")
+            self.beat(h, "laptop", playing=False)                  # open, doing nothing
+            self.assertEqual(feed()["details"], "Opening")
+            ext = "@far/connectsong"
+            self.beat(h, "phone", playing=True, rel_path=ext, currentTime=1, duration=200,
+                      track={"title": "Far Song", "artist": "Far Artist", "album": "Far Album", "item": {"cover": "https://img.example.com/a.jpg", "src": "far"}})
+            act = feed()
+            self.assertEqual((act["details"], act["state"], act["assets"]["large_image"]), ("Far Song", "Far Artist", "https://img.example.com/a.jpg"))
+            self.assertEqual(act["timestamps"]["end"] - act["timestamps"]["start"], 200)
+            link = act["buttons"][0]["url"]
+            self.assertIn("/track/", link)
+            sid = link.rsplit("/", 1)[1]                                       # remembered, so the link works for anyone
+            with server._db_lock: self.assertTrue(server.db().execute("SELECT 1 FROM ext_shares WHERE id = ?", (sid,)).fetchone())
+            self.beat(h, "phone", playing=False, rel_path=ext, currentTime=5, duration=200)
+            self.assertIsNone(feed())
+        finally:
+            server.LIBRARY_SOURCES.pop("far", None)
+            self.settings(discord_client_id="", library_source_far=False)
 
 
 class TestNotes(Social):

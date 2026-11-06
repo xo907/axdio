@@ -29,19 +29,23 @@ if (location.protocol === 'file:') {
     const audios = [...document.querySelectorAll('audio')].filter(a => a.currentSrc);
     return audios.find(a => !a.paused && !a.ended) || audios.sort((x, y) => y.currentTime - x.currentTime)[0] || null;
   };
+  // While the player shows and controls another device (Connect), it says what plays there.
+  const remote = () => { try { return JSON.parse(document.documentElement.dataset.axRemote || 'null'); } catch (e) { return null; } };
   const report = force => {
-    const a = deck();
-    const playing = !!(a && !a.paused && !a.ended);
+    const a = deck(), r = remote();
+    const playing = r ? !!r.playing : !!(a && !a.paused && !a.ended);
     const md = navigator.mediaSession && navigator.mediaSession.metadata;
-    const hasTrack = !!((md && md.title) || a);
+    const hasTrack = !!((md && md.title) || a || r);
     const art = md && md.artwork && md.artwork.length ? (md.artwork.find(x => x.sizes === '384x384') || md.artwork[md.artwork.length - 1]).src : '';
     const s = {
       playing, hasTrack,
       title: md ? md.title || '' : '', artist: md ? md.artist || '' : '', album: md ? md.album || '' : '',
       art: art ? new URL(art, location.href).href : '',
-      pos: a ? a.currentTime || 0 : 0, dur: a && isFinite(a.duration) ? a.duration : 0,
+      pos: r ? r.pos + (r.playing ? (Date.now() - r.at) / 1000 : 0) : a ? a.currentTime || 0 : 0,
+      dur: r ? r.dur || 0 : a && isFinite(a.duration) ? a.duration : 0,
+      remote: r ? r.name || '' : '',
     };
-    const key = JSON.stringify([s.playing, s.hasTrack, s.title, s.artist, s.art, Math.round(s.dur)]);
+    const key = JSON.stringify([s.playing, s.hasTrack, s.title, s.artist, s.art, Math.round(s.dur), s.remote]);
     // Position: sent each second while playing (the mini player moves smoothly in between), and on any jump.
     const jumped = Math.abs(s.pos - lastPos) > 2.5 || !playing;
     if (!force && key === last && !(playing || jumped)) return;
@@ -52,5 +56,6 @@ if (location.protocol === 'file:') {
   for (const ev of ['play', 'playing', 'pause', 'ended', 'emptied', 'loadedmetadata', 'seeked', 'durationchange']) {
     document.addEventListener(ev, () => setTimeout(() => report(true), 50), true);
   }
+  document.addEventListener('axdio:remote', () => setTimeout(() => report(true), 50));
   setInterval(() => report(false), 1000);
 }

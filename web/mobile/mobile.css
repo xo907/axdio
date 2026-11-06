@@ -348,6 +348,10 @@ body.is-playing .eqb i { animation: eqb .9s ease-in-out infinite; }
 .mini-t { font-size: 13.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mini-s { font-size: 12.5px; color: rgba(255,255,255,.72); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; display: flex; align-items: center; gap: 4px; }
 .mini-s.remote { color: var(--accent); }
+/* Controlling another device: its volume, under the controls */
+.fp-rvol { display: none; align-items: center; gap: 10px; flex-shrink: 0; margin: 2px 0 0; color: rgba(255,255,255,.75); }
+.fp-rvol .i { width: 20px; height: 20px; flex-shrink: 0; }
+body.remote .fp-rvol { display: flex; }
 #mini .ib { width: 40px; height: 40px; color: #fff; }
 #mini .ib.liked { color: var(--accent); }
 .mini-prog { position: absolute !important; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 1px; background: rgba(255,255,255,.25); overflow: hidden; }

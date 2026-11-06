@@ -519,7 +519,7 @@ body.buffering .spin { display: block; }
 .pb-dev { display: none; }
 .hover-tip { position: fixed; z-index: 900; background: var(--elev-2); color: #fff; font-size: 13px; font-weight: 600; padding: 6px 10px; border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.5); pointer-events: none; white-space: nowrap; animation: tipIn .12s ease; }
 @keyframes tipIn { from { opacity: 0; transform: translateY(2px); } }
-.remote-strip { position: fixed; left: 8px; right: 8px; bottom: 0; height: 24px; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 700; display: none; align-items: center; justify-content: flex-end; gap: 6px; padding: 0 16px; border-radius: 6px 6px 0 0; z-index: 40; }
+.remote-strip { cursor: pointer; position: fixed; left: 8px; right: 8px; bottom: 0; height: 24px; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 700; display: none; align-items: center; justify-content: flex-end; gap: 6px; padding: 0 16px; border-radius: 6px 6px 0 0; z-index: 40; }
 body.remote #shell { --bar-h: 72px; bottom: 24px; }
 body.remote .remote-strip { display: flex; }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.23.0
+
+Made for **Axdio for Windows 1.1.1** and **Axdio for Android 1.4** (both work with it as before without updating).
+
+- **Control your other devices, like Spotify Connect.** While one of your devices plays, the others show it as their own player ("Playing on …"): the song, how far in, play or paused. Their controls act there: play and pause, skip, seek, volume, shuffle and repeat, and whatever you pick to play starts on that device. Changes show on every device at once (the players wait for news instead of asking every few seconds). Choose **This computer** / **This phone** in the device menu (or click the green "Playing on" strip) to bring the music over, or another device to send it there.
+- **One device plays at a time.** Starting music on one of your devices pauses the one that was playing. (Signed out, devices on one network still see each other but don't pause each other.)
+- **Discord status shows External songs**, with their artwork and a "Listen" link that works for whoever clicks it. Before, songs not in the library showed nothing.
+- **Discord status no longer flickers off** when another player of yours is open: only the device that's playing says what you're playing.
+- Each browser tab is a device of its own, so two tabs no longer contradict each other.
+
 ## 2.22.1
 
 - **Liked External songs stay liked when they play.** Starting an External song you liked showed its heart (in its row and the player bar) as not liked, though it stayed in Liked Songs; liking it again then actually removed it. The hearts, the now-playing panel, the miniplayer and the rows on phones now count likes of songs that aren't in the library yet.
