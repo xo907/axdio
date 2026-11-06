@@ -25,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.23.0"
+AXDIO_VERSION = "2.23.1"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -1037,8 +1037,11 @@ def _dev_meta(st):
     item = tr.get("item") if isinstance(tr.get("item"), dict) else {}
     if not tr.get("title"): return None
     cover = str(item.get("cover") or tr.get("cover") or "")
+    if cover.startswith("/api/sources/"):
+        # The player's copy of a source's artwork ("/api/sources/<id>/art?u=…"): the artwork itself, for Discord.
+        cover = (urllib.parse.parse_qs(urllib.parse.urlsplit(cover).query).get("u") or [""])[0]
     return {"title": str(tr["title"])[:200], "artist": str(tr.get("artist") or "")[:200], "album": str(tr.get("album") or "")[:200],
-            "cover": cover if cover.startswith("https://") else "", "duration": st.get("duration") or 0}
+            "cover": cover[:1000] if cover.startswith("https://") else "", "duration": st.get("duration") or 0}
 
 def _dev_take(did):
     return device_command_queues.pop(did, []) if did else []

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.23.1
+
+- **Discord status shows External songs' artwork** instead of the app's icon (the player keeps their artwork as a link through the server, which wasn't passed on).
+
 ## 2.23.0
 
 Made for **Axdio for Windows 1.1.1** and **Axdio for Android 1.4** (both work with it as before without updating).

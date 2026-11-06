@@ -2289,6 +2289,10 @@ class TestConnect(Social):
             self.assertIn("/track/", link)
             sid = link.rsplit("/", 1)[1]                                       # remembered, so the link works for anyone
             with server._db_lock: self.assertTrue(server.db().execute("SELECT 1 FROM ext_shares WHERE id = ?", (sid,)).fetchone())
+            # Artwork the player has through the server (its copy of a source's) shows as the artwork itself.
+            self.beat(h, "phone", playing=True, rel_path=ext, currentTime=2, duration=200,
+                      track={"title": "Far Song", "item": {"src": "far", "cover": "/api/sources/far/art?u=https%3A%2F%2Fimg.example.com%2Fb.jpg&s=x"}})
+            self.assertEqual(feed()["assets"]["large_image"], "https://img.example.com/b.jpg")
             self.beat(h, "phone", playing=False, rel_path=ext, currentTime=5, duration=200)
             self.assertIsNone(feed())
         finally:
