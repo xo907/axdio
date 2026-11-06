@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.21.0
+
+- **Local songs start as fast as External ones, also from a network share.** The first 2 MB of songs (about 10 seconds of FLAC, a minute of MP3) are kept on the server's own disk: songs played lately, and songs the player expects next (the next in the queue, the first songs of the page or search you're looking at). A kept song starts from there at once while the music folder (a NAS, a drive that went to sleep) catches up with the rest, and asking for them ahead wakes the share's disks before you press play. **Library → Start cache** sets its size (1500 MB, about 750 songs; 0 turns it off).
+- Smart transitions measure a song a few seconds after it starts playing, at the lowest disk priority, instead of reading the whole song from the music folder at the same moment it starts streaming.
+- Songs stream from the music folder in larger reads (better over a network), and a FLAC's header is read for its length only once, not every play.
+
 ## 2.20.1
 
 - **Shared libraries sync one at a time.** When the background sync of a library another server shares with this one ran at the same moment as one started by hand (or by connecting), one of them could fail writing the library's file, and the connection showed an error. Each library now syncs once at a time.

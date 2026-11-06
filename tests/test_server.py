@@ -248,6 +248,45 @@ class TestStreaming(Base):
         cached.close()
 
 
+    def test_start_cache(self):
+        """The first part of a song kept on the server's own disk: the stream begins from it, and the rest comes from
+        the music folder; a changed file isn't served from it."""
+        rel = self.rel("Opening")
+        whole = (MUSIC / rel).read_bytes()
+        old = server.START_BYTES
+        server.START_BYTES = 1000                        # a small copy, so the rest comes from the file
+        try:
+            for _ in range(100):                          # songs earlier tests played are kept in the background: let them be
+                with server._start_lock: busy = bool(server._start_waiting)
+                if not busy: break
+                time.sleep(0.05)
+            server._start_forget(rel)
+            self.assertIsNone(server.start_cache_get(rel))
+            self.assertEqual(self.c.post("/api/library/warm", json={"rels": [rel, "../etc/passwd", 5]}).status_code, 200)
+            for _ in range(50):
+                if server.start_cache_get(rel): break
+                time.sleep(0.1)
+            m = server.start_cache_get(rel)
+            self.assertEqual((m["len"], m["size"]), (1000, len(whole)))
+            with server.app.test_request_context(headers={"Range": "bytes=0-"}):
+                self.assertIsNotNone(server.start_cache_stream(rel, None))     # it's the copy that answers
+            r = self.c.get("/api/stream_path", query_string={"path": rel}, headers={"Range": "bytes=0-"})
+            self.assertEqual((r.status_code, r.data), (206, whole))
+            r = self.c.get("/api/stream_path", query_string={"path": rel}, headers={"Range": "bytes=500-1499"})
+            self.assertEqual((r.data, r.headers["Content-Range"]), (whole[500:1500], f"bytes 500-1499/{len(whole)}"))
+            # The library says the file changed: the copy isn't used.
+            with server.library_cache_lock: server.library_cache_data[rel]["mtime"] += 1
+            try: self.assertIsNone(server.start_cache_get(rel))
+            finally:
+                with server.library_cache_lock: server.library_cache_data[rel]["mtime"] -= 1
+            r = self.c.get("/api/stream_path", query_string={"path": rel}, headers={"Range": "bytes=0-"})
+            self.assertEqual(r.data, whole)
+            r.close()
+        finally:
+            server.START_BYTES = old
+            server._start_forget(rel)
+
+
 class TestSubsonic(Base):
     def setUp(self):
         super().setUp()

@@ -1627,7 +1627,20 @@ const P = {
 const CTX = new Map();
 let ctxSeq = 0;
 function makeCtx(type, ref, name, ids, recent) { return { type, ref, name, ids, key: type + ':' + ref, recent, rid: '' }; }
-function regCtx(ctx) { ctx.rid = 'c' + (++ctxSeq); CTX.set(ctx.rid, ctx); return ctx; }
+function regCtx(ctx) { ctx.rid = 'c' + (++ctxSeq); CTX.set(ctx.rid, ctx); warmLocal(ctx.ids.slice(0, 3)); return ctx; }
+// Songs likely to play soon (the next in the queue, the first of a page or a search): the server keeps their starts
+// on its own disk, so they start at once even when the music folder is a network share (and that wakes early).
+const WARM = { asked: new Set(), q: [], t: 0 };
+function warmLocal(ids) {
+  for (const id of ids || []) {
+    const t = L.tracks[id];
+    if (!t || t.ext || t.rel[0] === '@' || WARM.asked.has(t.rel) || Off.set.has(t.rel)) continue;
+    WARM.asked.add(t.rel); WARM.q.push(t.rel);
+  }
+  if (!WARM.q.length) return;
+  clearTimeout(WARM.t);
+  WARM.t = setTimeout(() => { const rels = WARM.q.splice(0, 12); if (navigator.onLine) api('/api/library/warm', { rels }).catch(() => {}); }, 500);
+}
 const curTrack = () => (P.cur != null ? L.tracks[P.cur] : null);
 const ctxPlaying = ctx => !!(ctx && P.ctx && P.ctx.key === ctx.key);
 const isPlaying = () => !audio.paused && !P.pending;
@@ -1688,6 +1701,7 @@ async function load(id, autoplay, seek = 0) {
   P.cur = id; P.pending = null; P.listened = 0; P.lastT = 0; P.counted = false; P.scrobbled = false; P.startedAt = Math.floor(Date.now() / 1000); P.seekTo = seek > 0 ? seek : 0; P.dur = 0;
   clearTimeout(SM.cut); SM.cut = 0;
   { const n = peekNext(); SM.want([t.rel, n != null && L.tracks[n] ? L.tracks[n].rel : ''], t.rel); }
+  { const up = []; if (P.queue.length) up.push(...P.queue.slice(0, 2)); else if (P.ctx) for (let k = 1; k <= 2 && P.pos + k < P.order.length; k++) up.push(P.ctx.ids[P.order[P.pos + k]]); warmLocal(up); }
   if (prepared >= 0) {
     // The next song is already buffered on the other deck (gapless), or already fading in (crossfade).
     const old = D.i;

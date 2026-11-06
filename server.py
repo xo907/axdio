@@ -25,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.20.1"
+AXDIO_VERSION = "2.21.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -736,12 +736,18 @@ def stream_by_path():
     if not rel_path: abort(404)
     if FED_REMOTE_RE.match(rel_path): return remote_stream(rel_path, QUALITY_KBPS.get(request.args.get("q", "")))
     if is_source_path(rel_path): return source_stream(rel_path)
+    kbps = QUALITY_KBPS.get(request.args.get("q", ""))
+    # The start of the song from this server's own disk, when it's kept there (see START CACHE): it plays at once
+    # while the music folder (a network share, a drive that went to sleep) catches up with the rest.
+    quick = start_cache_stream(rel_path, kbps)
+    if quick is not None: return quick
     file_path = resolve_safe_music_file(rel_path)
     if not file_path or not file_path.exists():
         if library_entry(rel_path) is not None and not (Path(get_real_music_dir()) / rel_path).exists():
             threading.Thread(target=forget_library_paths, args=([rel_path],), daemon=True).start()   # deleted outside Axdio
         abort(404)
-    return stream_file_response(file_path, rel_path, QUALITY_KBPS.get(request.args.get("q", "")))
+    start_cache_want(rel_path, soon=False)     # kept for next time
+    return stream_file_response(file_path, rel_path, kbps)
 
 def stream_file_response(file_path, rel_path, kbps=None):
     """The audio for one song: a data saver MP3 when `kbps` is set and possible, else the file (with Range support)."""
@@ -749,8 +755,11 @@ def stream_file_response(file_path, rel_path, kbps=None):
         resp = serve_transcoded(file_path, rel_path, kbps)
         if resp is not None: return resp
 
-    if file_path.suffix.lower() == ".flac" and request.headers.get("Range", "bytes=0-").startswith("bytes=0-"):
-        note_duration(rel_path, flac_duration(file_path))
+    if request.headers.get("Range", "bytes=0-").startswith("bytes=0-"):
+        _last_stream[0] = time.time()
+        # The length of a FLAC from its header, once (the library may not have it): not another read every play.
+        if file_path.suffix.lower() == ".flac" and not (library_entry(rel_path) or {}).get("duration"):
+            note_duration(rel_path, flac_duration(file_path))
     mime = AUDIO_TYPES.get(file_path.suffix.lower(), "application/octet-stream")
     file_size = file_path.stat().st_size
     range_header = request.headers.get('Range', None)
@@ -775,7 +784,7 @@ def stream_file_response(file_path, rel_path, kbps=None):
         with open(file_path, 'rb') as f:
             f.seek(byte1)
             remaining = length
-            chunk_size = 64 * 1024
+            chunk_size = STREAM_CHUNK
             while remaining > 0:
                 data = f.read(min(remaining, chunk_size))
                 if not data: break
@@ -787,6 +796,169 @@ def stream_file_response(file_path, rel_path, kbps=None):
     resp.headers.add('Accept-Ranges', 'bytes')
     resp.headers.add('Content-Length', str(length))
     return resp
+
+# ============================================================
+# START CACHE: the first seconds of songs, on this server's own disk
+# ============================================================
+# A music folder on a network share (or a drive that sleeps) can take seconds to answer the first read of a song;
+# songs from library sources come from this server's disk and start at once. So the first 2 MB of songs (about 10 s of
+# FLAC, a minute of MP3) are kept in config/cache/starts: songs that were played, and songs the player says are likely
+# next (the next in the queue, the first songs of a page or a search). A song kept there starts from it straight away,
+# and the rest comes from the music folder while that plays. Asking for them also wakes the share's disks early.
+# A copy is used only while the file's size and time in the library are the ones it was taken from.
+STREAM_CHUNK = 256 * 1024
+START_DIR = CONFIG_DIR / "cache" / "starts"
+START_BYTES = 2 * 1024 * 1024
+_last_stream = [0.0]                     # when the last song started streaming (the analysis waits a moment after it)
+_start_q = collections.deque()
+_start_waiting = set()
+_start_lock = threading.Lock()
+_start_wake = threading.Event()
+_start_meta = collections.OrderedDict()  # rel -> its copy's description, lately used
+_start_count = [0]
+
+def start_cache_on():
+    return int(cfg().get("start_cache_mb", 1500) or 0) > 0
+
+def _start_paths(rel):
+    h = hashlib.md5(rel.encode("utf-8")).hexdigest()
+    return START_DIR / f"{h}.bin", START_DIR / f"{h}.json"
+
+def start_cache_get(rel):
+    """The kept start of a song ({"size", "mtime", "len", "path"}), or None when there's none or the file changed."""
+    if not rel or rel.startswith("@") or not start_cache_on(): return None
+    with library_cache_lock: e = library_cache_data.get(rel)
+    if not isinstance(e, dict): return None
+    with _start_lock: m = _start_meta.get(rel)
+    if m is None:
+        binp, jsonp = _start_paths(rel)
+        try: m = json.loads(jsonp.read_text())
+        except (OSError, ValueError): return None
+        m["path"] = str(binp)
+        with _start_lock:
+            _start_meta[rel] = m
+            while len(_start_meta) > 4000: _start_meta.popitem(last=False)
+    if m.get("rel") != rel or m.get("mtime") != e.get("mtime") or not os.path.exists(m["path"]): return None
+    return m
+
+def _start_forget(rel):
+    with _start_lock: _start_meta.pop(rel, None)
+    for p in _start_paths(rel): p.unlink(missing_ok=True)
+
+def start_cache_want(rels, soon=True):
+    """Keep the starts of these songs (a path, or a list of them); `soon` puts them first."""
+    if not start_cache_on(): return
+    for rel in ([rels] if isinstance(rels, str) else list(rels))[:12]:
+        if not isinstance(rel, str) or not rel or rel.startswith("@"): continue
+        with _start_lock:
+            if rel in _start_waiting: continue
+            if len(_start_q) >= 200: break
+            _start_waiting.add(rel)
+            if soon: _start_q.appendleft(rel)
+            else: _start_q.append(rel)
+        _start_wake.set()
+
+def _start_fill(rel):
+    with library_cache_lock: e = dict(library_cache_data.get(rel) or {})
+    if not e: return
+    m = start_cache_get(rel)
+    if m:
+        try: os.utime(m["path"])            # used lately: kept longest
+        except OSError: pass
+        return
+    p = resolve_safe_music_file(rel)
+    if not p: return
+    st = p.stat()
+    if e.get("mtime") != st.st_mtime: return     # changed since the library read it: the next scan comes first
+    with open(p, "rb") as f: data = f.read(START_BYTES)
+    if not data: return
+    START_DIR.mkdir(parents=True, exist_ok=True)
+    binp, jsonp = _start_paths(rel)
+    tmp = binp.with_suffix(f".{secrets.token_hex(4)}.part")
+    tmp.write_bytes(data)
+    os.replace(tmp, binp)
+    jsonp.write_text(json.dumps({"rel": rel, "size": st.st_size, "mtime": e.get("mtime"), "len": len(data)}))
+    with _start_lock: _start_meta.pop(rel, None)
+    _start_count[0] += 1
+    if _start_count[0] % 50 == 0: _start_prune()
+
+def _start_prune():
+    """Keep the cache under its size (Library: Start cache), dropping the songs not used for longest."""
+    cap = int(cfg().get("start_cache_mb", 1500) or 0) * 1024 * 1024
+    try: files = sorted(START_DIR.glob("*.bin"), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError: return
+    total = 0
+    for f in files:
+        try: total += f.stat().st_size
+        except OSError: continue
+        if total > cap:
+            f.unlink(missing_ok=True); f.with_suffix(".json").unlink(missing_ok=True)
+    with _start_lock: _start_meta.clear()
+
+def start_cache_worker():
+    while True:
+        _start_wake.wait()
+        with _start_lock:
+            if not _start_q: _start_wake.clear(); continue
+            rel = _start_q.popleft()
+        try: _start_fill(rel)
+        except Exception as ex: print(f"[WARN] Couldn't keep the start of {rel}: {ex}")
+        finally:
+            with _start_lock: _start_waiting.discard(rel)
+
+def start_cache_stream(rel, kbps):
+    """A song's audio beginning with its kept start, or None to stream it the usual way. Only for the original file
+    (data saver copies are made on this server already) and for players asking from its beginning part."""
+    rng = request.headers.get("Range")
+    m = re.match(r"bytes=(\d+)-(\d*)$", rng or "")
+    if not m: return None
+    meta = start_cache_get(rel)
+    if not meta: return None
+    if kbps and cfg().get("feature_transcoding", True) and not rel.lower().endswith(".mp3"): return None
+    size, have = int(meta["size"]), int(meta["len"])
+    start = int(m.group(1))
+    end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
+    if start >= have or start > end: return None
+    if start == 0: _last_stream[0] = time.time()
+    head_path = meta["path"]
+
+    def body():
+        with open(head_path, "rb") as f:
+            f.seek(start)
+            left = min(have, end + 1) - start
+            while left > 0:
+                data = f.read(min(left, STREAM_CHUNK))
+                if not data: return
+                left -= len(data)
+                yield data
+        if end < have: return
+        p = resolve_safe_music_file(rel)
+        try:
+            if not p or p.stat().st_size != size:      # changed behind the library's back: this copy is no good
+                _start_forget(rel); return
+            with open(p, "rb") as f:
+                f.seek(have)
+                left = end + 1 - have
+                while left > 0:
+                    data = f.read(min(left, STREAM_CHUNK))
+                    if not data: return
+                    left -= len(data)
+                    yield data
+        except OSError: return
+
+    resp = Response(body(), 206, mimetype=AUDIO_TYPES.get(Path(rel).suffix.lower(), "application/octet-stream"), direct_passthrough=True)
+    resp.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Content-Length"] = str(end - start + 1)
+    start_cache_want(rel, soon=False)              # used: kept longest
+    return resp
+
+@app.route("/api/library/warm", methods=["POST"])
+def api_library_warm():
+    """Songs the player expects to play soon ({"rels": [...]}, up to 12): their starts are kept ready on this server."""
+    rels = (request.get_json(silent=True) or {}).get("rels") or []
+    if isinstance(rels, list): start_cache_want([r for r in rels if isinstance(r, str) and not FED_REMOTE_RE.match(r)][:12])
+    return jsonify({"ok": True})
 
 # Device Registry & Connect System
 @app.route("/api/devices/heartbeat", methods=["POST"])
@@ -4085,6 +4257,8 @@ ADMIN_SCHEMA = [
          "options": [["5", "Every 5 minutes"], ["15", "Every 15 minutes"], ["60", "Every hour"], ["360", "Every 6 hours"],
                      ["1440", "Once a day"], ["0", "Only when I press Scan now"]],
          "help": "Each scan checks every file in the music folder, so remote or network storage is happier with longer gaps. Downloads made here appear straight away."},
+        {"key": "start_cache_mb", "type": "number", "label": "Start cache (MB)", "default": 1500, "min": 0, "max": 100000,
+         "help": "The first seconds of songs played lately, and of songs likely to play next, are kept on this server's own disk (config/cache/starts), so they start at once even when the music folder is a network share or a drive that sleeps. About 2 MB a song. 0 turns it off."},
     ]},
     {"id": "backups", "title": "Automatic backups", "fields": [
         {"key": "backup_schedule", "type": "select", "label": "Back up automatically", "default": "daily",
@@ -12381,6 +12555,7 @@ def measure_song(path):
     """Loudness (LUFS) and where a song's sound starts, reaches full level, starts to fade and ends, in seconds."""
     cmd = ["nice", "-n", "15", "ffmpeg", "-hide_banner", "-nostats", "-nostdin", "-i", str(path), "-map", "0:a:0",
            "-af", "ebur128=framelog=info", "-f", "null", "-"]
+    if shutil.which("ionice"): cmd = ["ionice", "-c", "3"] + cmd   # reads only when nothing else needs the disk
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     frames = [(float(t), float(m) if m not in ("-inf", "nan") else -120.0) for t, m in _EBU_FRAME.findall(p.stderr)]
     got = _EBU_I.search(p.stderr)
@@ -12427,6 +12602,12 @@ def analysis_worker():
         try:
             data, path = analysis_cached(rel)
             if path and not data:
+                # Reading a whole song (over a network share, say) as another starts would slow that one: wait until
+                # the song that just started has been playing a few seconds.
+                for _ in range(20):
+                    wait = 6 - (time.time() - _last_stream[0])
+                    if wait <= 0: break
+                    time.sleep(min(wait, 1))
                 mtime = path.stat().st_mtime
                 data = measure_song(path) or {"v": ANALYSIS_VERSION, "failed": True}
                 with _db_lock:
@@ -12927,6 +13108,7 @@ threading.Thread(target=duration_flusher, daemon=True, name="duration-flusher").
 threading.Thread(target=social_janitor, daemon=True, name="social-janitor").start()
 threading.Thread(target=chat_expiry, daemon=True, name="chat-expiry").start()
 threading.Thread(target=analysis_worker, daemon=True, name="song-analysis").start()
+threading.Thread(target=start_cache_worker, daemon=True, name="start-cache").start()
 threading.Thread(target=rewind_backfill, daemon=True, name="rewind-backfill").start()
 threading.Thread(target=daily_loop, daemon=True, name="daily").start()
 threading.Thread(target=fed_sync_loop, daemon=True, name="library-sharing").start()
