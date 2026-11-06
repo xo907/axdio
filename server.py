@@ -25,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.21.0"
+AXDIO_VERSION = "2.22.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -5625,7 +5625,8 @@ def av2_overview():
     by_user.sort(key=lambda x: x["plays"], reverse=True)
     now = time.time()
     if now - _overview_cache["t"] > 120:
-        _overview_cache["caches"] = {k: _dir_size(str(p)) for k, p in (("covers", COVERS_CACHE_DIR), ("lyrics", LYRICS_CACHE_DIR), ("quarantine", QUARANTINE_DIR))}
+        _overview_cache["caches"] = {k: _dir_size(str(p)) for k, p in (("covers", COVERS_CACHE_DIR), ("lyrics", LYRICS_CACHE_DIR), ("quarantine", QUARANTINE_DIR),
+                                                                          ("starts", START_DIR))}
         _overview_cache["t"] = now
     listening = []
     with listeners_lock:
@@ -9551,7 +9552,8 @@ def user_presence():
             save_users(u)
         activity("account", "Set up Discord status", u)
         server = (cfg().get("public_url") or "").rstrip("/") or page_origin(request.headers.get("Origin")) or base_url()
-        return jsonify({"ok": True, "filename": "axdio-discord.py", "script": presence_helper(server, key)})
+        # The helper script carries the key; Axdio for Windows talks to Discord itself and keeps the key ("key").
+        return jsonify({"ok": True, "filename": "axdio-discord.py", "script": presence_helper(server, key), "key": key})
     if request.method == "DELETE":
         with users_lock:
             users_data[u].pop("presence", None)

@@ -205,6 +205,9 @@ function streamQuality() {
 const playUrl = rel => { const q = streamQuality(); return streamUrl(rel) + (q !== 'original' ? '&q=' + q : ''); };
 function setQuality(q, cellular) { if (cellular) S.cellQuality = q; else S.quality = q; saveS(); UI.dirty(['settings'], true); }
 const SITE = {};
+// Axdio for Windows (windows/): the app gives the player its mini player, Discord status and a few other things.
+const DESKTOP = window.axdioApp || null;
+const WINDOWS_APP_URL = 'https://github.com/xo907/axdio/releases/tag/windows-latest';
 
 /* ======================================================================
    3. Colours & covers
@@ -2728,7 +2731,7 @@ window.AX = {
   byId, $$, esc, norm, clamp, fmt, nf, count, ic, EQB, debounce, uniq, now, setUse, collator, haptic, hashStr, rng, shuffled, pick, dayKey, weekKey, monthYear,
   LS, K, S, saveS, saveSSoon, AUDIO_CACHE, META_CACHE, streamUrl, playUrl, QUALITIES, streamQuality, setQuality, onCellular, SITE, feat, featOn, CREDIT, minPassword, pendingInvite, authGate,
   PH, coverUrl, img, tone, hexRgb, dominant, applyAccent, ACCENTS, setAccent, setThemeColor,
-  L, Src, refreshLibrary, relYear, relDate, sortName, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
+  L, Src, refreshLibrary, relYear, relDate, sortName, DESKTOP, WINDOWS_APP_URL, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
   U, api, signIn, signOut, finishSignIn, takeDiscordNote, discordSignIn, discordLink, discordUnlink, discordFinish, discordButton, presenceInfo, presenceSetup, presenceOff, updateProfile, pickImage, squarePhoto, uploadAvatar, removeAvatar, changePassword, listSessions, revokeSession, exportMyData, deleteAccount, subsonicInfo, subsonicPassword, scrobbleInfo, connectListenBrainz, disconnectScrobbler, cacheUser, recordPlay, toggleLike, setLikedMany, toggleFollow, toggleSaveAlbum,
   addToPlaylist, removeFromPlaylist, reorderPlaylist, plCreate, plRename, plDelete, pushLibrary, pushPrefs, Collab,
   RECENTS, touchRecent, recentTs, SEARCHES, rememberSearch, forgetSearch, clearSearches,

@@ -827,6 +827,7 @@ class TestDiscordStatus(Social):
             made = self.c.post("/api/user/presence", headers=h).get_json()
             compile(made["script"], "axdio-discord.py", "exec")
             key = re.search(r"KEY = '(axp_[^']+)'", made["script"]).group(1)
+            self.assertEqual(made["key"], key)          # Axdio for Windows keeps the key itself (2.22)
             feed = lambda: self.c.get("/api/presence", headers={"Authorization": "Bearer " + key})
             self.assertEqual(feed().get_json()["activity"], None)
             rel = self.rel("Opening")
@@ -839,6 +840,10 @@ class TestDiscordStatus(Social):
             self.assertIn("/track/", act["assets"]["large_image"])
             c.post("/api/player/now_playing", json={"src": "/api/stream_path?path=" + urllib.parse.quote(rel), "status": "PAUSED", "pos": 5})
             self.assertIsNone(feed().get_json()["activity"])
+            again = self.c.post("/api/user/presence", json={}, headers=h).get_json()["key"]
+            self.assertEqual(feed().status_code, 401)                # the old key stops: a helper set up before stops
+            key = again
+            self.assertEqual(feed().status_code, 200)
             self.c.delete("/api/user/presence", headers=h)
             self.assertEqual(feed().status_code, 401)
         finally:

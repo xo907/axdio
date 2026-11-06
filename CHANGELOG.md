@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.22.0
+
+Made for **Axdio for Windows 1.1** (released alongside it), and fine without it.
+
+- **The player knows when it runs in the Windows app.** Its miniplayer button opens the app's own mini player (a small window that stays on top), and Settings → Discord has a switch instead of a helper to download: the app talks to Discord on the computer itself.
+- **Get the Windows app** from Settings when you use the player in a browser on Windows (a new Apps section, linking to the latest release).
+- Turning on Discord status gives back the key it made (`POST /api/user/presence`), for apps that talk to Discord themselves. Making a new key still turns off the one before, so a helper set up earlier stops when the app takes over.
+- The admin overview shows the start cache (how much it holds, and for how many songs) with the cover and lyrics caches.
+
 ## 2.21.0
 
 - **Local songs start as fast as External ones, also from a network share.** The first 2 MB of songs (about 10 seconds of FLAC, a minute of MP3) are kept on the server's own disk: songs played lately, and songs the player expects next (the next in the queue, the first songs of the page or search you're looking at). A kept song starts from there at once while the music folder (a NAS, a drive that went to sleep) catches up with the rest, and asking for them ahead wakes the share's disks before you press play. **Library → Start cache** sets its size (1500 MB, about 750 songs; 0 turns it off).

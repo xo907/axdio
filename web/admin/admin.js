@@ -408,6 +408,7 @@ async function pageOverview(el) {
         <dt>Without embedded artwork</dt><dd>${nf(lib.missing_art)} songs · <a class="link" href="#/metadata">Fix artwork</a></dd>
         <dt>Cover cache</dt><dd>${fmtBytes(caches.covers.bytes)} · ${plural(caches.covers.files, 'image')}</dd>
         <dt>Lyrics cache</dt><dd>${fmtBytes(caches.lyrics.bytes)} · ${plural(caches.lyrics.files, 'song')}</dd>
+        ${caches.starts && caches.starts.files ? `<dt>Start cache</dt><dd>${fmtBytes(caches.starts.bytes)} · ${plural(Math.round(caches.starts.files / 2), 'song')}</dd>` : ''}
         ${caches.quarantine && caches.quarantine.bytes ? `<dt>Old quarantine</dt><dd>${fmtBytes(caches.quarantine.bytes)} · ${plural(caches.quarantine.files, 'file')} · <a class="link" href="#/audit">Delete</a></dd>` : ''}
       </dl></div></section>
       ${d.social ? `<section class="card"><div class="card-h"><h2>Social</h2><a class="link" href="#/features">Settings</a></div><div class="card-b"><dl class="kv">

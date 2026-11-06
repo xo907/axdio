@@ -23,7 +23,7 @@ const {
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, stageTrack,
   SL, setSleep, sleepLabel, trackChanged, LY, lyMsg, syncLyrics, Connect, share, trackLink, albumLink, artistLink,
   avatarHtml, libItems, itAlbum, itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds, itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort,
-  Src, relYear, relDate,
+  Src, relYear, relDate, DESKTOP, WINDOWS_APP_URL,
 } = window.AX;
 
 /* ======================================================================
@@ -582,6 +582,15 @@ VIEWS.list = (el, p) => {
 };
 
 /* Settings, EQ, profile */
+// Discord status inside Axdio for Windows: the app talks to Discord itself. Its state comes from the app.
+let DSK_DISCORD = null;
+function desktopDiscordRow() {
+  if (!DSK_DISCORD) { DESKTOP.discord.get().then(s => { DSK_DISCORD = s || { on: false }; if (V.route && V.route.view === 'settings') render(view.scrollTop); }).catch(() => {}); }
+  const on = !!(DSK_DISCORD && DSK_DISCORD.on);
+  return setRow({ act: 'desktop-discord', title: 'Show what I play on Discord',
+    sub: on ? `On: while Discord is open on this computer, your status shows the song, artist and artwork.${DSK_DISCORD.connected === false ? ' Discord isn\'t open right now.' : ''}` : 'Built into Axdio for Windows: nothing else to install. Your status shows the song, artist and artwork while you listen.',
+    ctl: tog(on) });
+}
 const setRow = ({ act, title, sub, ctl, attrs = '' }) => `<div class="set-row"${act ? ` data-act="${act}" style="cursor:pointer"` : ''} ${attrs}><div class="meta"><div class="t">${esc(title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ''}</div>${ctl || ''}</div>`;
 const tog = on => `<span class="tog${on ? ' on' : ''}" role="switch" aria-checked="${!!on}"></span>`;
 VIEWS.settings = el => {
@@ -599,8 +608,14 @@ VIEWS.settings = el => {
     h += `<div class="set-sec">Discord</div>`
       + (featOn('discord_login') ? setRow({ title: 'Discord account', sub: U.discord ? `Connected as @${U.discord.username}. You can sign in with Discord.` : 'Connect it to sign in with Discord.',
           ctl: U.discord ? '<button class="btn ghost sm" data-act="discord-unlink">Disconnect</button>' : `<button class="btn ghost sm" data-act="discord-link">${ic('discord', 'sm')}Connect</button>` }) : '')
-      + (featOn('discord_presence') ? setRow({ title: 'Show what I play on Discord', sub: U.presence ? 'On. Keep the helper running on the computer where Discord is open.' : 'Your Discord status shows the song, artist, album and artwork while you listen.',
+      + (featOn('discord_presence') && DESKTOP && DESKTOP.discord ? desktopDiscordRow()
+        : featOn('discord_presence') ? setRow({ title: 'Show what I play on Discord', sub: U.presence ? 'On. Keep the helper running on the computer where Discord is open.' : 'Your Discord status shows the song, artist, album and artwork while you listen.',
           ctl: `<div style="display:flex;gap:8px"><button class="btn ghost sm" data-act="presence-setup">${U.presence ? 'Set up again' : 'Set up'}</button>${U.presence ? '<button class="btn ghost sm" data-act="presence-off">Turn off</button>' : ''}</div>` }) : '');
+  }
+  // The Windows app, for people using the player in a browser on Windows.
+  if (!DESKTOP && /Windows NT/.test(navigator.userAgent)) {
+    h += `<div class="set-sec">Apps</div>`
+      + setRow({ title: 'Axdio for Windows', sub: 'The player as an app: a mini player, media keys, taskbar controls, Discord status built in, and it keeps playing in the tray', ctl: `<a class="btn ghost sm" href="${WINDOWS_APP_URL}" target="_blank" rel="noopener">${ic('dl', 'sm')}Get the app</a>` });
   }
   if (socialOn()) {
     const st = Social.me.settings || {};
@@ -1165,6 +1180,7 @@ const PIP_CSS = `body{margin:0;background:#121212;color:#fff;font:14px 'Plus Jak
 .pip-ctl button{background:none;border:0;color:#fff;cursor:pointer;display:grid;place-items:center;width:36px;height:36px;border-radius:50%}
 .pip-ctl button.play{background:#fff;color:#000}.pip-ctl button.liked{color:var(--acc,#1ed760)}.i{width:22px;height:22px;fill:currentColor}`;
 async function togglePip() {
+  if (DESKTOP && DESKTOP.mini) { DESKTOP.mini(); return; }
   if (PIP.win) { PIP.win.close(); PIP.win = null; return; }
   if (!('documentPictureInPicture' in window)) { toast("Your browser doesn't support the miniplayer yet — try Chrome or Edge"); return; }
   try {
@@ -2298,6 +2314,15 @@ const ACT = {
   'discord-link': () => discordLink(),
   'discord-unlink': async () => { if (await confirmDlg({ title: 'Disconnect Discord?', text: "You won't be able to sign in with Discord until you connect it again.", ok: 'Disconnect' })) { try { await discordUnlink(); toast('Discord disconnected'); render(view.scrollTop); } catch (e) { toast(e.message); } } },
   'presence-setup': () => presenceDialog(),
+  'desktop-discord': async () => {
+    const on = !(DSK_DISCORD && DSK_DISCORD.on);
+    const r = await DESKTOP.discord.set(on).catch(e => ({ error: e.message }));
+    if (r && r.error) { toast(r.error); return; }
+    DSK_DISCORD = r || { on };
+    U.presence = on;
+    toast(on ? 'Discord status is on' : 'Discord status is off');
+    render(view.scrollTop);
+  },
   'presence-off': async () => { if (await confirmDlg({ title: 'Turn off Discord status?', text: 'The helper on your computer stops working. You can set it up again any time.', ok: 'Turn off' })) { try { await presenceOff(); toast('Discord status turned off'); render(view.scrollTop); } catch (e) { toast(e.message); } } },
   'fa-play': b => { const t = L.byRel.get(b.dataset.rel); if (t) playTrackAlone(t.id); else toast("That song isn't in the library"); },
   'open-user': b => go('user', { u: b.dataset.u }),

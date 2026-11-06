@@ -100,11 +100,12 @@ docker compose up -d --build
 
 ## Windows app
 
-**Axdio for Windows** is your server's player as a desktop app: download `Axdio-Setup-<version>.exe` (or the portable
-`.exe`) from the [releases](https://github.com/xo907/axdio/releases) marked *Axdio for Windows*, run it, and enter your
-server's address. Media keys and the Windows media flyout work, play/pause/next sit under the taskbar thumbnail and in
-the tray, and it keeps playing in the tray when the window is closed. It runs the server's own player, so it works with
-any Axdio server and picks up new features when the server updates. Its source is in [`windows/`](windows/).
+**Axdio for Windows** is your server's player as a desktop app: download `Axdio-Setup-<version>.exe` from the
+[latest Windows release](https://github.com/xo907/axdio/releases/tag/windows-latest), run it, and enter your server's
+address. It has a mini player that stays on top, Discord status built in (no helper to install), media keys and the
+Windows media flyout, play/pause/next under the taskbar thumbnail, in the jump list and in the tray, and it keeps
+playing in the tray when the window is closed. It updates itself. It runs the server's own player, so it works with any
+Axdio server and picks up new features when the server updates. Its source is in [`windows/`](windows/).
 
 ## Configuration
 
