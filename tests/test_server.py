@@ -4,7 +4,7 @@ Run inside the app image (it has Flask, mutagen and ffmpeg):
     docker build -t axdio .
     docker run --rm -v "$PWD":/src -w /src --entrypoint python axdio -m unittest discover -s tests -v
 """
-import gzip, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, unittest, urllib.parse
+import gzip, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, threading, time, unittest, unittest.mock, urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -2298,6 +2298,39 @@ class TestConnect(Social):
         finally:
             server.LIBRARY_SOURCES.pop("far", None)
             self.settings(discord_client_id="", library_source_far=False)
+
+
+class TestGetTheApp(Base):
+    """The player's "Install app" links: the newest Windows installer and Android APK of Axdio's GitHub releases."""
+    def test_newest_apps(self):
+        rels = [{"tag_name": "windows-v1.1.0", "assets": [{"name": "Axdio-Setup-1.1.0.exe", "browser_download_url": "https://dl/w110", "size": 9}]},
+                {"tag_name": "windows-v1.10.0", "assets": [{"name": "Axdio-Setup-1.10.0.exe", "browser_download_url": "https://dl/w1100", "size": 10},
+                                                            {"name": "Axdio-1.10.0-portable.exe", "browser_download_url": "https://dl/p"}]},
+                {"tag_name": "windows-latest", "assets": [{"name": "Axdio-Setup-9.9.9.exe", "browser_download_url": "https://dl/nope"}]},
+                {"tag_name": "android-v1.4.0", "draft": True, "assets": [{"name": "Axdio-1.4.0.apk", "browser_download_url": "https://dl/draft"}]},
+                {"tag_name": "android-v1.3.0", "assets": [{"name": "Axdio-1.3.0.apk", "browser_download_url": "https://dl/a130", "size": 3}]},
+                {"tag_name": "v2.23.1", "assets": []}]
+        class Res(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        calls = []
+        def fake(req, timeout=0):
+            calls.append(req.full_url)
+            return Res(json.dumps(rels).encode())
+        server._apps.update(t=0, data=None)
+        with unittest.mock.patch.object(server.urllib.request, "urlopen", fake):
+            d = self.c.get("/api/apps").get_json()
+            self.assertEqual(d, {"windows": {"version": "1.10.0", "size": 10, "url": "/download/windows"},
+                                 "android": {"version": "1.3.0", "size": 3, "url": "/download/android"}})
+            self.assertEqual(self.c.get("/download/windows").headers["Location"], "https://dl/w1100")
+            self.assertEqual(self.c.get("/download/android").headers["Location"], "https://dl/a130")
+            self.assertEqual(len(calls), 1)                          # looked up once, then kept for an hour
+        # GitHub unreachable before anything was known: the release pages instead of the files.
+        server._apps.update(t=0, data=None)
+        with unittest.mock.patch.object(server.urllib.request, "urlopen", side_effect=OSError("offline")):
+            self.assertEqual(self.c.get("/api/apps").get_json(), {})
+            self.assertIn("/releases", self.c.get("/download/android").headers["Location"])
+        server._apps.update(t=0, data=None)
 
 
 class TestNotes(Social):

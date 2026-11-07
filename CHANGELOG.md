@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.24.0
+
+- **Get the app from the player, like Spotify.** In a browser on Windows, an **Install app** button in the top bar downloads the newest Axdio for Windows installer. On an Android phone, a banner on Home (and Settings → Apps) gets the Android app. On an iPhone, it shows how to add the player to the Home Screen; elsewhere, where the browser can install the player as an app, it offers that. None of this shows inside the apps themselves. The server looks up the newest releases on GitHub (at most once an hour), and `/download/windows` and `/download/android` always lead to the newest file.
+
 ## 2.23.1
 
 - **Discord status shows External songs' artwork** instead of the app's icon (the player keeps their artwork as a link through the server, which wasn't passed on).

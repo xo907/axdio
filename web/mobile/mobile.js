@@ -29,7 +29,7 @@ const {
   prev, setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove,
   queueMove, queueClear, seek, setVolume, toggleMute, applyVolume, stageTrack, SL,
   setSleep, sleepLabel, saveState, trackChanged, refreshLike, updatePlayButtons, updateModes, syncMediaSession,
-  LY, lyMsg, syncLyrics, Connect, Remote, volNow, share, trackLink, albumLink, artistLink, setOnline, avatarHtml, itAlbum,
+  LY, lyMsg, syncLyrics, Connect, Remote, volNow, appOffer, installApp, share, trackLink, albumLink, artistLink, setOnline, avatarHtml, itAlbum,
   itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds,
   itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort, Src, isLiked, relYear, relDate,
 } = window.AX;
@@ -282,6 +282,18 @@ function skeletonShelves() {
   return `<div class="quick">${'<div class="sk" style="height:56px"></div>'.repeat(6)}</div>${sec}${sec}`;
 }
 
+// Get the app, at the top of Home (until it's closed, for a month): the Android app, or on an iPhone, how to put the
+// player on the Home Screen.
+const APP_BANNER = 'axdio_app_banner';
+function appBanner() {
+  const o = appOffer();
+  if (!o || o.kind === 'windows' || Date.now() - (+LS.raw(APP_BANNER) || 0) < 30 * 864e5) return '';
+  const close = `<button class="ab-x" data-act="app-banner-close" aria-label="Close">${ic('close')}</button>`;
+  if (o.kind === 'ios') return `<div class="app-banner">${close}<div class="ab-ic">${ic('dl')}</div><div class="ab-t"><b>Install ${esc(SITE.site_title || 'Axdio')}</b><small>Tap ${ic('share', 'sm')} Share, then <b>Add to Home Screen</b></small></div></div>`;
+  return `<div class="app-banner">${close}<div class="ab-ic">${ic('dl')}</div><div class="ab-t"><b>${esc(o.name)}</b><small>${o.kind === 'android' ? 'Keeps playing in the background, with downloads and lock-screen controls' : 'Open it like any other app'}</small></div><button class="btn primary sm" data-act="install-app">${o.kind === 'android' ? 'Get' : 'Install'}</button></div>`;
+}
+function onAppOffer() { markDirty(['home', 'settings'], true); }
+
 VIEWS.home = pg => {
   const hr = new Date().getHours();
   const greet = hr < 5 ? 'Good night' : hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
@@ -296,6 +308,7 @@ VIEWS.home = pg => {
   U.history.forEach(hh => { const t = L.byRel.get(hh.rel_path); if (t) addQ(itAlbum(albumOf(t))); });
   const bigAlbums = L.albums.filter(a => a.type === 'Album');
   shuffled(bigAlbums.length > 8 ? bigAlbums : L.albums, rand).slice(0, 12).forEach(a => addQ(itAlbum(a)));
+  h += appBanner();
   h += `<div class="quick">${quick.slice(0, quick.length >= 6 ? (quick.length >= 8 ? 8 : 6) : quick.length).map(quickHtml).join('')}</div>`;
   if (window.AX.homeCards) h += `<div class="hc-wrap">${window.AX.homeCards()}</div>`;
   h += friendsShelf();
@@ -784,6 +797,8 @@ VIEWS.settings = pg => {
     + setRow({ act: 'dl-remove-all', title: 'Remove all downloads', danger: true })
     + setRow({ act: 'clear-cache', title: 'Clear cached data', sub: 'Refetch the library and artwork colours. Downloads are kept.' });
   if (px) h += px.settingsHtml();
+  { const o = appOffer(); if (o && o.kind !== 'windows') h += `<div class="set-sec">Apps</div>` + setRow({ act: 'install-app', title: o.kind === 'ios' ? 'Add to Home Screen' : o.name + (o.version ? ` ${o.version}` : ''),
+      sub: o.kind === 'ios' ? 'Open the player like an app, full screen' : o.kind === 'android' ? 'Keeps playing in the background, with downloads and lock-screen controls' : 'Open the player like any other app', chev: true }); }
   h += `<div class="set-sec">About</div>`
     + setRow({ act: 'rename-device', title: 'Device name', sub: 'How this phone appears in Connect', val: Connect.name })
     + setRow({ title: 'Library', val: `${nf(L.tracks.length)} songs` })
@@ -2020,6 +2035,8 @@ el.qBody.addEventListener('click', e => {
    12. Actions, gestures, Connect & boot
    ====================================================================== */
 const ACT = {
+  'install-app': async () => { if (await installApp() === 'ios') toast('In Safari, tap Share, then Add to Home Screen'); },
+  'app-banner-close': b => { LS.setRaw(APP_BANNER, String(Date.now())); const x = b.closest('.app-banner'); if (x) x.remove(); },
   back: goBack,
   tab: b => switchTab(b.dataset.tab),
   nav: b => { if (b.dataset.view === curPage().view) return; openPage(b.dataset.view, {}); },
@@ -2420,7 +2437,7 @@ Object.assign(UI, {
   party(v) { document.querySelectorAll('[data-act="party"]').forEach(b => b.classList.toggle('on', !!v)); },
   openParty() { if (!(curPage() && curPage().view === 'party')) afterLayers(() => openPage('party')); },
   track: onTrackChange, queue: refreshQueue, progress: updateProgress, lyrics: renderLyrics, lyricLine,
-  remote: showRemote, volume: showVolume, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, pickPlaylist: playlistPicker, social: onSocial,
+  remote: showRemote, volume: showVolume, appOffer: onAppOffer, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, pickPlaylist: playlistPicker, social: onSocial,
 });
 Object.assign(window.AX, { H, T, openPage, toast });   // debug handles
 boot().catch(err => {

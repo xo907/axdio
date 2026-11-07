@@ -23,7 +23,7 @@ const {
   setShuffle, cycleRepeat, addToQueue, upcoming, queueJump, ctxJump, queueRemove, queueMove, queueClear, seek, setVolume, toggleMute, stageTrack,
   SL, setSleep, sleepLabel, trackChanged, LY, lyMsg, syncLyrics, Connect, Remote, volNow, mutedNow, share, trackLink, albumLink, artistLink,
   avatarHtml, libItems, itAlbum, itArtist, itPlaylist, itSearchPl, itLiked, itDownloads, itMix, itFromKey, searchItem, itemIds, itemCtx, plCover, mixCover, emptyHtml, COMP_RE, chunkRender, dragSort,
-  Src, isLiked, relYear, relDate, DESKTOP, WINDOWS_APP_URL,
+  Src, isLiked, relYear, relDate, DESKTOP, WINDOWS_APP_URL, appOffer, installApp,
 } = window.AX;
 
 /* ======================================================================
@@ -612,10 +612,12 @@ VIEWS.settings = el => {
         : featOn('discord_presence') ? setRow({ title: 'Show what I play on Discord', sub: U.presence ? 'On. Keep the helper running on the computer where Discord is open.' : 'Your Discord status shows the song, artist, album and artwork while you listen.',
           ctl: `<div style="display:flex;gap:8px"><button class="btn ghost sm" data-act="presence-setup">${U.presence ? 'Set up again' : 'Set up'}</button>${U.presence ? '<button class="btn ghost sm" data-act="presence-off">Turn off</button>' : ''}</div>` }) : '');
   }
-  // The Windows app, for people using the player in a browser on Windows.
-  if (!DESKTOP && /Windows NT/.test(navigator.userAgent)) {
+  // The app, for people using the player in a browser.
+  const app = appOffer();
+  if (app && app.kind !== 'ios') {
     h += `<div class="set-sec">Apps</div>`
-      + setRow({ title: 'Axdio for Windows', sub: 'The player as an app: a mini player, media keys, taskbar controls, Discord status built in, and it keeps playing in the tray', ctl: `<a class="btn ghost sm" href="${WINDOWS_APP_URL}" target="_blank" rel="noopener">${ic('dl', 'sm')}Get the app</a>` });
+      + setRow({ title: app.name + (app.version ? ` ${app.version}` : ''), sub: app.kind === 'windows' ? 'The player as an app: a mini player, media keys, taskbar controls, Discord status built in, and it keeps playing in the tray' : 'The player in a window of its own, opened like any other app',
+        ctl: `<button class="btn ghost sm" data-act="install-app">${ic('dl', 'sm')}Install</button>` });
   }
   if (socialOn()) {
     const st = Social.me.settings || {};
@@ -1055,6 +1057,13 @@ vols.forEach(([r, , wrap]) => {
   r.addEventListener('input', () => setVolume(r.value / 100));
   wrap.addEventListener('wheel', e => { e.preventDefault(); nudgeVolume(e.deltaY < 0 ? .05 : -.05); }, { passive: false });
 });
+// "Install app" in the top bar, while there's an app for this computer.
+function onAppOffer() {
+  const o = appOffer(), b = byId('btn-install');
+  b.hidden = !o || o.kind === 'ios';
+  if (o) b.dataset.tip = o.name + (o.version ? ` ${o.version}` : '');
+  if (V.route && V.route.view === 'settings') render(view.scrollTop);
+}
 // Showing (and controlling) what another device plays, or (name null) not anymore.
 function onRemote(name) {
   document.body.classList.toggle('remote', !!name);
@@ -2252,6 +2261,7 @@ function cplMenu(pl) {
    8. Actions, keyboard shortcuts & boot
    ====================================================================== */
 const ACT = {
+  'install-app': () => installApp(),
   go: b => {
     const v = b.dataset.view, id = b.dataset.id;
     if (v === 'album') goAlbum(id);
@@ -2615,7 +2625,7 @@ Object.assign(UI, {
   party(v) { const b = byId('btn-party'); if (b) b.classList.toggle('on', !!v); if (RP.mode === 'party') layout(); },
   openParty() { if (RP.mode !== 'party') setPanel('party'); },
   track: onTrack, playState: onPlayState, queue: onQueue, progress: onProgress, volume: onVolume, lyrics: onLyrics, lyricLine: onLyricLine,
-  remote: onRemote, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, online: () => { if (V.route) render(view.scrollTop); }, social: onSocial,
+  remote: onRemote, appOffer: onAppOffer, dirty: markDirty, refresh: refreshAll, toast, confirm: confirmDlg, online: () => { if (V.route) render(view.scrollTop); }, social: onSocial,
   pickPlaylist: ids => openMenu(innerWidth / 2 - 120, innerHeight - 380, playlistSub(ids)),
 });
 Object.assign(window.AX, { go, render, SEL, openMenu });   // debug handles

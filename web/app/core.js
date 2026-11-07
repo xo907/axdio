@@ -14,7 +14,7 @@
 /* Hooks a UI overrides. Defaults are no-ops so the engine never depends on a view. */
 const UI = {
   track() {}, playState() {}, modes() {}, queue() {}, like() {}, progress() {}, sleep() {}, volume() {},
-  lyrics() {}, lyricLine() {}, remote() {}, online() {},
+  lyrics() {}, lyricLine() {}, remote() {}, online() {}, appOffer() {},
   dirty() {}, refresh() {},
   toast() {}, confirm: async () => true, pickPlaylist() {},
 };
@@ -208,6 +208,41 @@ const SITE = {};
 // Axdio for Windows (windows/): the app gives the player its mini player, Discord status and a few other things.
 const DESKTOP = window.axdioApp || null;
 const WINDOWS_APP_URL = 'https://github.com/xo907/axdio/releases/tag/windows-latest';
+// Get the app, the way Spotify offers its own: in a browser, the Windows app (on Windows), the Android app (on Android),
+// the player on the Home Screen (iPhone), or the browser's own "install" (elsewhere, where it offers one). The server
+// knows the newest Windows and Android releases (/api/apps) and sends /download/<app> straight to the file.
+const PWA = { ev: null };
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); PWA.ev = e; if (UI.appOffer) UI.appOffer(); });
+window.addEventListener('appinstalled', () => { PWA.ev = null; if (UI.appOffer) UI.appOffer(); });
+const STANDALONE = (() => { try { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch (e) { return false; } })();
+const APPS = { info: null };
+function appOffer() {
+  if (DESKTOP || STANDALONE) return null;
+  const ua = navigator.userAgent, a = APPS.info || {};
+  if (/Android/.test(ua)) return a.android ? { kind: 'android', name: 'Axdio for Android', url: a.android.url, version: a.android.version } : null;
+  if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return { kind: 'ios', name: 'Axdio on your Home Screen' };
+  if (/Windows NT/.test(ua) && a.windows) return { kind: 'windows', name: 'Axdio for Windows', url: a.windows.url, version: a.windows.version };
+  if (PWA.ev) return { kind: 'pwa', name: 'Axdio as an app' };
+  return null;
+}
+async function loadApps() {
+  try { APPS.info = await api('/api/apps'); } catch (e) { APPS.info = {}; }
+  if (UI.appOffer) UI.appOffer();
+}
+// Returns what it did: 'download', 'prompt', or 'ios' (the view shows how to add it to the Home Screen).
+async function installApp() {
+  const o = appOffer(); if (!o) return '';
+  if (o.kind === 'ios') return 'ios';
+  if (o.kind === 'pwa') {
+    const ev = PWA.ev; PWA.ev = null;
+    try { ev.prompt(); await ev.userChoice; } catch (e) { /* closed */ }
+    if (UI.appOffer) UI.appOffer();
+    return 'prompt';
+  }
+  location.href = o.url;
+  UI.toast(`Downloading ${o.name}. Open it when it's done to install it.`);
+  return 'download';
+}
 
 /* ======================================================================
    3. Colours & covers
@@ -2944,6 +2979,7 @@ async function boot({ platform = 'mobile', log = () => {}, onLibrary = () => {} 
   if (pendingDl.length && navigator.onLine) Off.enqueue(pendingDl);
   Connect.init(platform);
   Src.load();
+  loadApps();
 }
 
 window.AX = {
@@ -2951,7 +2987,7 @@ window.AX = {
   byId, $$, esc, norm, clamp, fmt, nf, count, ic, EQB, debounce, uniq, now, setUse, collator, haptic, hashStr, rng, shuffled, pick, dayKey, weekKey, monthYear,
   LS, K, S, saveS, saveSSoon, AUDIO_CACHE, META_CACHE, streamUrl, playUrl, QUALITIES, streamQuality, setQuality, onCellular, SITE, feat, featOn, CREDIT, minPassword, pendingInvite, authGate,
   PH, coverUrl, img, tone, hexRgb, dominant, applyAccent, ACCENTS, setAccent, setThemeColor,
-  L, Src, isLiked, refreshLibrary, relYear, relDate, sortName, DESKTOP, WINDOWS_APP_URL, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
+  L, Src, isLiked, refreshLibrary, relYear, relDate, sortName, DESKTOP, WINDOWS_APP_URL, appOffer, installApp, fileExt, buildLibrary, albumArtist, albumSource, albumOf, artistOf, creditParts, relatedArtists, topArtists, popular, radioIds, MIX, PALETTE, buildMixes, getMix, searchAll,
   U, api, signIn, signOut, finishSignIn, takeDiscordNote, discordSignIn, discordLink, discordUnlink, discordFinish, discordButton, presenceInfo, presenceSetup, presenceOff, updateProfile, pickImage, squarePhoto, uploadAvatar, removeAvatar, changePassword, listSessions, revokeSession, exportMyData, deleteAccount, subsonicInfo, subsonicPassword, scrobbleInfo, connectListenBrainz, disconnectScrobbler, cacheUser, recordPlay, toggleLike, setLikedMany, toggleFollow, toggleSaveAlbum,
   addToPlaylist, removeFromPlaylist, reorderPlaylist, plCreate, plRename, plDelete, pushLibrary, pushPrefs, Collab,
   RECENTS, touchRecent, recentTs, SEARCHES, rememberSearch, forgetSearch, clearSearches,

@@ -25,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.23.1"
+AXDIO_VERSION = "2.24.0"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -4990,9 +4990,51 @@ def api_branding():
     return jsonify({"settings": get_public_settings(),
                     "viewer": {"authenticated": bool(user), "admin": bool(session.get("is_admin"))}})
 
+# --- The apps: "Install app" in the player links to the newest Windows installer and Android APK ---
+# Both are GitHub releases of Axdio (windows-v<version> with Axdio-Setup-<version>.exe, android-v<version> with
+# Axdio-<version>.apk). The newest are looked up at most once an hour; /download/windows and /download/android
+# send the browser straight to the file.
+APPS_REPO = "xo907/axdio"
+APP_FILES = {"windows": (r"windows-v(\d[\d.]*)", r"Axdio-Setup-[\d.]+\.exe"), "android": (r"android-v(\d[\d.]*)", r"Axdio-[\d.]+\.apk")}
+APP_PAGES = {"windows": f"https://github.com/{APPS_REPO}/releases/tag/windows-latest", "android": f"https://github.com/{APPS_REPO}/releases"}
+_apps = {"t": 0.0, "data": None}
+_apps_lock = threading.Lock()
+
+def apps_latest():
+    with _apps_lock:
+        if _apps["data"] is not None and time.time() - _apps["t"] < 3600: return _apps["data"]
+        out = {}
+        try:
+            req = urllib.request.Request(f"https://api.github.com/repos/{APPS_REPO}/releases?per_page=50",
+                                         headers={"Accept": "application/vnd.github+json", "User-Agent": f"Axdio/{AXDIO_VERSION}"})
+            with urllib.request.urlopen(req, timeout=10) as r: rels = json.load(r)
+            for rel in rels if isinstance(rels, list) else []:
+                if rel.get("draft"): continue
+                for kind, (tag_re, file_re) in APP_FILES.items():
+                    m = re.fullmatch(tag_re, str(rel.get("tag_name") or ""))
+                    a = m and next((a for a in rel.get("assets") or [] if re.fullmatch(file_re, str(a.get("name") or ""))), None)
+                    if a and (kind not in out or _vtuple(m.group(1)) > _vtuple(out[kind]["version"])):
+                        out[kind] = {"version": m.group(1), "url": a.get("browser_download_url"), "size": a.get("size") or 0}
+        except Exception as ex:
+            print(f"[WARN] Couldn't look up the newest apps: {ex}")
+            if _apps["data"] is None: _apps["data"] = {}
+            _apps["t"] = time.time() - 3000                     # try again in 10 minutes
+            return _apps["data"]
+        _apps.update(t=time.time(), data=out)
+        return out
+
+@app.route("/api/apps")
+def api_apps():
+    return jsonify({k: {"version": v["version"], "size": v["size"], "url": f"/download/{k}"} for k, v in apps_latest().items()})
+
+@app.route("/download/<any(windows, android):kind>")
+def download_app(kind):
+    a = apps_latest().get(kind)
+    return redirect(a["url"] if a and a.get("url") else APP_PAGES[kind])
+
 # --- Request gates: maintenance, private server, feature switches ---
 _OPEN_PREFIXES = ("/admin", "/api/admin/", "/api/auth/", "/api/branding", "/api/app-icon", "/api/health", "/metrics", "/rest/", "/web/", "/favicon.ico",
-                  "/manifest.json", "/robots.txt", "/api/federation/", "/api/presence", "/sw.js")
+                  "/manifest.json", "/robots.txt", "/api/federation/", "/api/presence", "/sw.js", "/api/apps", "/download/")
 _PAGE_PATHS = {"/", "/offline", "/history", "/artists", "/albums", "/liked", "/playlist", "/profile", "/settings", "/messages", "/friends", "/user",
                "/mobile", "/mobile.html"}
 
