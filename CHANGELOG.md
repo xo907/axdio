@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.24.2
+
+- **Shared pages show the song that's playing.** Playing one of the similar songs (or skipping to one) puts its artwork, title, artist and album on the left, with the page's colours from its artwork, and its title links to its own page. Back on the shared song, the page shows it again.
+- **No more "Track 8 of 5".** The count was the album's songs in the library, not the album's: it now comes from the tags (like "8/12") when they have it, and otherwise a song past the songs here shows as just "Track 8".
+- Install app no longer overlaps "Now playing" on shared pages in medium-width windows (it's an icon there).
+
 ## 2.24.1
 
 - **Install app on shared pages too.** Opened on Windows or Android, a shared song, album or artist page has an **Install app** button next to Open, for the newest Windows or Android app.

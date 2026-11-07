@@ -269,6 +269,30 @@
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(refit);
   }
 
+  // ---------- The stage follows the music: a similar song shows there while it plays ----------
+  const stInfo = stage && stage.querySelector('.info'), stArt = $('art');
+  let stOwn = null, stShown = -1;
+  const recolor = img => { if (!img) return; if (img.complete && img.naturalWidth) palette(img); else img.addEventListener('load', () => palette(img), { once: true }); };
+  function stageShow(i) {
+    if (!stInfo || i === stShown) return;
+    if (!stOwn) stOwn = { info: stInfo.innerHTML, art: stArt ? stArt.innerHTML : '', round: !!(stArt && stArt.classList.contains('round')) };
+    stShown = i;
+    if (i < 0) {
+      stInfo.innerHTML = stOwn.info;
+      if (stArt) { stArt.innerHTML = stOwn.art; stArt.classList.toggle('round', stOwn.round); }
+    } else {
+      const t = tracks[i], n = t.t.length;
+      stInfo.innerHTML = `<div class="kind"><span>Now playing</span><span>Song</span></div>`
+        + `<h1${n > 40 ? ' class="xl"' : n > 22 ? ' class="l"' : ''}><a href="${esc(t.u)}">${esc(t.t)}</a></h1>`
+        + `<div class="who-line"><span>${esc(t.a)}</span></div>`
+        + `<div class="by">${t.al ? `<span>${esc(t.al)}</span>` : ''}${t.d ? `<span>${fmt(t.d)}</span>` : ''}</div>`;
+      if (stArt) { stArt.classList.remove('round'); stArt.innerHTML = `<img id="art-img" src="${esc(t.c || D.cover || '')}" alt="">${'<span class="sheen" aria-hidden="true"></span>'}`; }
+    }
+    stInfo.classList.remove('swap'); void stInfo.offsetWidth; stInfo.classList.add('swap');
+    recolor($('art-img'));
+    refit();
+  }
+
   const artImg = $('art-img');
   if (artImg) { if (artImg.complete && artImg.naturalWidth) palette(artImg); else artImg.addEventListener('load', () => palette(artImg), { once: true }); }
 
@@ -405,9 +429,12 @@
     audio.src = t.src;
     if (startAt && i === 0) audio.addEventListener('loadedmetadata', () => { try { audio.currentTime = Math.min(startAt, Math.max(0, audio.duration - 2)); } catch (e) { /* not seekable */ } }, { once: true });
     if (dur) dur.textContent = fmt(t.d);
-    // Under the controls: what's playing, when it isn't the song the page is about.
+    // The stage shows the song playing when it isn't one of the page's own; under the controls, which of an album's
+    // or artist's own songs is playing.
+    const mine = D.kind === 'track' ? i === 0 : i < D.main;
+    stageShow(mine ? -1 : i);
     const np = $('np');
-    if (np) { $('np-t').textContent = `${t.t} · ${t.a}`; np.classList.toggle('show', !(D.kind === 'track' && i === 0)); }
+    if (np) { $('np-t').textContent = `${t.t} · ${t.a}`; np.classList.toggle('show', mine && D.kind !== 'track'); }
     if (mini) {
       $('mini-t').textContent = t.t; $('mini-a').textContent = t.a;
       const art = $('mini-art'), src = t.c || D.cover;

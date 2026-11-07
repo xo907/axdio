@@ -2300,6 +2300,17 @@ class TestConnect(Social):
             self.settings(discord_client_id="", library_source_far=False)
 
 
+class TestShareTrackNumbers(unittest.TestCase):
+    def test_track_of(self):
+        """Track 8 of an album with 5 of its songs here isn't "8 of 5": the tags' total when they say, else just "8"."""
+        of = server._track_of
+        self.assertEqual(of({"track_number": "8/12"}, 5), 12)
+        self.assertEqual(of({"track_number": "8"}, 5), 0)
+        self.assertEqual(of({"track_number": "3"}, 5), 5)
+        self.assertEqual(of({"track_number": "8/4"}, 9), 9)            # a total smaller than the number is wrong: not used
+        self.assertEqual(of({}, 5), 5)
+
+
 class TestGetTheApp(Base):
     """The player's "Install app" links: the newest Windows installer and Android APK of Axdio's GitHub releases."""
     def test_newest_apps(self):

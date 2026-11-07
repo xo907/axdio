@@ -25,7 +25,7 @@ except Exception:
     HAS_MUTAGEN = False
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-AXDIO_VERSION = "2.24.1"
+AXDIO_VERSION = "2.24.2"
 SERVER_START_TIME = time.time()
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or "/app/config")
 
@@ -6894,6 +6894,13 @@ def _track_no(t):
     m = re.match(r"\d+", str(t.get("track_number") or ""))
     return int(m.group()) if m else 0
 
+def _track_of(t, have):
+    """How many songs the album has, for "Track 8 of 12": the tags' total ("8/12") when they say, else the album's songs
+    in the library, unless the number is past them (the library doesn't have the whole album): then 0, unknown."""
+    m = re.match(r"\s*\d+\s*/\s*(\d+)", str(t.get("track_number") or ""))
+    if m and int(m.group(1)) >= _track_no(t): return int(m.group(1))
+    return have if _track_no(t) <= have else 0
+
 def _album_tracks(al):
     """An album's songs in order, each once (the same song filed twice under one release is shown once)."""
     seen, out = set(), []
@@ -6961,7 +6968,7 @@ def share_item(kind, sid):
                 "artist_url": link("artist", e["artist"]), "album": album, "album_url": link("album", e["album"]) if al else "",
                 "label": "Song", "cover_rel": t["rel_path"] if t.get("has_cover") else _cover_rel(al["tracks"] if al else [t]),
                 "tracks": [t], "duration": t.get("duration") or 0, "single": n <= 1 or album.lower() == str(t.get("title") or "").lower(),
-                "akey": e["artist"], "album_key": e["album"] if al else "", "no": _track_no(t), "of": n,
+                "akey": e["artist"], "album_key": e["album"] if al else "", "no": _track_no(t), "of": _track_of(t, n),
                 "date": str(t.get("date") or "") or _min_date(at), "app": "/?" + urllib.parse.urlencode({"play": t["rel_path"]})}
     if kind == "album":
         tracks = _album_tracks(e)
@@ -7109,7 +7116,7 @@ def share_extras(kind, item, can_play, cover_url):
         top = max((plays.get(t["rel_path"], 0) for t in ts), default=0)
         out = []
         for t in ts:
-            songs.append({"t": t.get("title") or Path(t["rel_path"]).stem, "a": t.get("display_artist") or t.get("artist") or "",
+            songs.append({"t": t.get("title") or Path(t["rel_path"]).stem, "a": t.get("display_artist") or t.get("artist") or "", "al": _ALBUM_SUFFIX.sub("", str(t.get("album") or "")),
                           "d": t.get("duration") or 0, "c": f"/track/{tid(t)}/cover.jpg" if own_art else cover_url, "u": f"/track/{tid(t)}",
                           "src": "/api/stream_path?" + urllib.parse.urlencode({"path": t["rel_path"]}) if can_play else ""})
             p = plays.get(t["rel_path"], 0)
@@ -7131,7 +7138,8 @@ def share_extras(kind, item, can_play, cover_url):
     fmt = _format(item["tracks"] if kind != "artist" else (ar["tracks"] if ar else []))
     if kind == "track":
         if item["album_url"] and not item["single"]: facts.append(("disc", "Album", item["album"], item["album_url"]))
-        if item["no"] and item["of"] > 1: facts.append(("hash", "Track", f"{item['no']} of {item['of']}", ""))
+        if item["no"] and (item["of"] > 1 or not item["of"]):
+            facts.append(("hash", "Track", f"{item['no']} of {item['of']}" if item["of"] else str(item["no"]), ""))
         if item["date"]: facts.append(("cal", "Released", _nice_date(item["date"]), ""))
         if item["duration"]: facts.append(("clock", "Length", _mmss(item["duration"]), ""))
         if fmt: facts.append(("wave", "Quality", fmt, ""))
