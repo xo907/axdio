@@ -273,6 +273,23 @@
   if (artImg) { if (artImg.complete && artImg.naturalWidth) palette(artImg); else artImg.addEventListener('load', () => palette(artImg), { once: true }); }
 
   // ---------- Copy link ----------
+  // ---------- Install app (like the player's): the Windows app on Windows, the Android app on Android ----------
+  (async () => {
+    const b = $('install');
+    if (!b || window.axdioApp) return;
+    const ua = navigator.userAgent;
+    const kind = /Android/.test(ua) ? 'android' : /Windows NT/.test(ua) ? 'windows' : '';
+    if (!kind) return;
+    let apps = {};
+    try { const r = await fetch('/api/apps', { cache: 'no-store' }); if (r.ok) apps = await r.json(); } catch (e) { /* offline */ }
+    const a = apps[kind];
+    if (!a || !a.url) return;
+    const name = kind === 'windows' ? 'Windows' : 'Android';
+    b.title = `${(document.querySelector('.brand .name') || {}).textContent || 'Axdio'} for ${name} ${a.version || ''}`.trim();
+    b.hidden = false;
+    b.addEventListener('click', () => { location.href = a.url; toast(`Downloading the ${name} app. Open it when it's done to install it.`); });
+  })();
+
   const copy = $('copy');
   if (copy) copy.addEventListener('click', async () => {
     const url = location.origin + location.pathname;

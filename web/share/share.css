@@ -323,6 +323,7 @@ body.has-mini .foot { padding-bottom: 104px; }
   .stage .links .pill { height: 34px; padding: 0 14px; font-size: 12.5px; }
   .stage .links #copy { width: 34px; padding: 0; }
   .stage .links #copy span { display: none; }
+  .stage .links #install { padding: 0 14px 0 12px; }
   /* Short windows: the artwork and the title side by side, the player under them */
   body.side .stage-body { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art info" "deck deck"; align-content: center; align-items: center; text-align: left; }
   body.side .art-wrap { grid-area: art; margin: calc(var(--aw) * .2 + 4px) calc(var(--aw) * .22 + 18px) calc(var(--aw) * .2 + 4px) calc(var(--aw) * .2); }
