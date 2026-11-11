@@ -17,3 +17,20 @@ services:
       - PUID=1000                      # owner of ./config (id -u)
       - PGID=1000
       # - CHAT_DIR=/chat                # where private messages are stored (default: /app/config/chat)
+      # Optional: the Downloader plugin (1.13+) reaches YouTube through this proxy. YouTube asks most servers in data
+      # centres to "confirm you're not a bot"; through the warp service below it doesn't. Only YouTube's traffic uses it.
+      # - AXDIO_YOUTUBE_PROXY=http://warp:1080
+
+  # Optional: Cloudflare WARP, a free way out to the internet from somewhere other than this server's address, for
+  # services that block servers (see AXDIO_YOUTUBE_PROXY above). It's reachable only by Axdio: no ports are published.
+  # warp:
+  #   image: caomingjun/warp:latest
+  #   container_name: warp
+  #   restart: unless-stopped
+  #   cap_add:
+  #     - NET_ADMIN
+  #   sysctls:
+  #     - net.ipv6.conf.all.disable_ipv6=0
+  #     - net.ipv4.conf.all.src_valid_mark=1
+  #   volumes:
+  #     - ./warp:/var/lib/cloudflare-warp
